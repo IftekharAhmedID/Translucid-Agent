@@ -39,7 +39,7 @@ export class E2BRuntime implements InvestigatorRuntime {
     });
     try {
       for (const file of await workspaceFiles(input.caseDirectory)) await sandbox.files.write(file.path, Uint8Array.from(file.data).buffer);
-      await sandbox.commands.run("/opt/investigator/runtime/start.sh", { background: true, timeoutMs: 30_000 });
+      await sandbox.commands.run("/opt/investigator/runtime/start.sh", { background: true, timeoutMs: input.timeoutMs });
       const openCodeUrl = `https://${sandbox.getHost(4096)}`;
       const accessHeaders = {
         authorization: `Basic ${Buffer.from(`opencode:${input.openCodePassword}`).toString("base64")}`,
