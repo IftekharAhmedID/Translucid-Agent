@@ -1,0 +1,17 @@
+node_modules/
+.next/
+coverage/
+dist/
+.debug/
+runtime-manifest.json
+
+.env
+.env.local
+.env.*.local
+!.env.example
+
+*.pem
+*.key
+*.log
+*.tsbuildinfo
+.DS_Store
