@@ -14,7 +14,7 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "runtime:manifest": "tsx scripts/runtime-manifest.ts",
     "test": "tsx --test \"src/**/*.test.ts\"",
-    "test:integration": "tsx --test \"src/**/*.integration.ts\"",
+    "test:integration": "tsx --test --test-concurrency=1 \"src/**/*.integration.ts\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "check": "npm run test && npm run typecheck && npm run lint && npm run build"

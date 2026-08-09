@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS entities (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS entities_case_name_idx ON entities(investigation_id, canonical_name);
+CREATE UNIQUE INDEX IF NOT EXISTS entities_case_type_name_unique
+  ON entities(investigation_id, type, lower(canonical_name));
 -- statement-breakpoint
 CREATE TABLE IF NOT EXISTS entity_identifiers (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -89,6 +91,8 @@ CREATE TABLE IF NOT EXISTS entity_identifiers (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS entity_identifiers_lookup_idx ON entity_identifiers(investigation_id, type, normalized_value);
+CREATE UNIQUE INDEX IF NOT EXISTS entity_identifiers_entity_value_unique
+  ON entity_identifiers(entity_id, type, normalized_value);
 -- statement-breakpoint
 CREATE TABLE IF NOT EXISTS entity_links (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

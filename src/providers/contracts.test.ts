@@ -1,0 +1,66 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  decideProfessionalProfileRoute,
+  parseToolRequest,
+  shouldAllowSocialResearch,
+} from "./contracts.ts";
+
+test("tool requests require a durable question and public rationale", () => {
+  assert.throws(() =>
+    parseToolRequest({
+      tool: "web.search",
+      arguments: { query: "Ada Lovelace" },
+    }),
+  );
+
+  const parsed = parseToolRequest({
+    tool: "web.search",
+    arguments: {
+      query: "Ada Lovelace analytical engine",
+      questionId: "11111111-1111-4111-8111-111111111111",
+      claimIds: ["22222222-2222-4222-8222-222222222222"],
+      publicRationale: "Checking a material authorship claim.",
+      mode: "fast",
+    },
+  });
+  assert.equal(parsed.tool, "web.search");
+});
+
+test("a satisfactory LinkdAPI profile blocks Bright Data and PDL escalation", () => {
+  assert.equal(
+    decideProfessionalProfileRoute({
+      linkdAttempted: true,
+      linkdValid: true,
+      requiredMaterialFieldPresent: true,
+      brightAttempted: false,
+    }),
+    "STOP_SATISFIED",
+  );
+  assert.equal(
+    decideProfessionalProfileRoute({
+      linkdAttempted: true,
+      linkdValid: false,
+      requiredMaterialFieldPresent: false,
+      brightAttempted: false,
+    }),
+    "BRIGHTDATA_ONCE",
+  );
+  assert.equal(
+    decideProfessionalProfileRoute({
+      linkdAttempted: true,
+      linkdValid: false,
+      requiredMaterialFieldPresent: false,
+      brightAttempted: true,
+    }),
+    "STOP_UNRESOLVED",
+  );
+});
+
+test("social research needs an explicit permitted reason", () => {
+  assert.equal(shouldAllowSocialResearch("PROFILE_MIGHT_EXIST"), false);
+  assert.equal(shouldAllowSocialResearch("EXPLICIT_SOCIAL_CLAIM"), true);
+  assert.equal(shouldAllowSocialResearch("PUBLIC_IDENTITY_CROSS_LINK"), true);
+  assert.equal(shouldAllowSocialResearch("MATERIAL_ACTIVITY_QUESTION"), true);
+});
