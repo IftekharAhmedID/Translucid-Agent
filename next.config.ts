@@ -16,6 +16,7 @@ const contentSecurityPolicy = [
 ].join("; ");
 
 const nextConfig: NextConfig = {
+  agentRules: false,
   poweredByHeader: false,
   serverExternalPackages: ["pdfkit", "postgres"],
   turbopack: { root: process.cwd() },
