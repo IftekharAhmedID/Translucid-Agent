@@ -2,8 +2,9 @@
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
+import type { DataClassification } from "../../../core/contracts.ts";
 
-export function IntakeForm() {
+export function IntakeForm({ dataClassification }: { dataClassification: DataClassification }) {
   const router = useRouter();
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
@@ -24,7 +25,7 @@ export function IntakeForm() {
       <div className="field-group">
         <label htmlFor="submission">Candidate submission <span>required</span></label>
         <p className="field-help">Paste arbitrary text or JSON exactly as received. It is retained unchanged and normalized separately.</p>
-        <textarea id="submission" name="submission" rows={13} maxLength={1_048_576} required placeholder={'Name: Synthetic Candidate\nClaim: Principal Engineer at Acme Synthetic Labs, 2021–2025'} />
+        <textarea id="submission" name="submission" rows={13} maxLength={1_048_576} required placeholder={'Name: Candidate\nClaim: Principal Engineer at Acme, 2021–2025'} />
       </div>
       <div className="form-grid">
         <div className="field-group">
@@ -36,8 +37,8 @@ export function IntakeForm() {
           <select id="runtime" name="runtime" defaultValue="LOCAL"><option value="LOCAL">Local Docker</option><option value="E2B">E2B sandbox</option></select>
         </div>
       </div>
-      <input type="hidden" name="dataClassification" value="SYNTHETIC" />
-      <div className="boundary-note"><strong>Development boundary</strong><p>Only synthetic data is accepted. The result describes evidence and uncertainty; it never scores, ranks, or recommends a candidate.</p></div>
+      <input type="hidden" name="dataClassification" value={dataClassification} />
+      <div className="boundary-note"><strong>Investigation boundary</strong><p>{dataClassification === "SYNTHETIC" ? "Only synthetic data is accepted." : "Only authorized public professional material is accepted."} The result describes evidence and uncertainty; it never scores, ranks, or recommends a candidate.</p></div>
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       <div className="form-actions"><button className="button button-primary" type="submit" disabled={submitting}>{submitting ? "Queuing…" : "Queue investigation"}</button></div>
     </form>

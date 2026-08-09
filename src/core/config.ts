@@ -12,7 +12,8 @@ const environmentSchema = z
     APP_ORIGIN: z.url().default("http://127.0.0.1:3000"),
     RUNNER_GATEWAY_ORIGIN: z.url().default("http://127.0.0.1:3001"),
     E2B_GATEWAY_PUBLIC_URL: z.string().optional(),
-    DATA_CLASSIFICATION: z.string().default("SYNTHETIC"),
+    DATA_CLASSIFICATION: z.enum(["SYNTHETIC", "PUBLIC_PROFESSIONAL"]).default("SYNTHETIC"),
+    OPENCODE_PROVIDER: z.enum(["ZEN", "GO"]).default("ZEN"),
     PROVIDER_MODE: z.enum(["fixture", "live"]).default("fixture"),
     RUNTIME_DEFAULT: z.enum(["LOCAL", "E2B"]).default("LOCAL"),
     E2B_API_KEY: z.string().optional(),
@@ -42,9 +43,6 @@ export type AppConfig = ReturnType<typeof loadConfig>;
 export function loadConfig(environment: Record<string, string | undefined>) {
   const parsed = environmentSchema.parse(environment);
 
-  if (parsed.DATA_CLASSIFICATION !== "SYNTHETIC") {
-    throw new Error("DATA_CLASSIFICATION must be SYNTHETIC for this development version.");
-  }
   if (parsed.PDL_LIVE_ENABLED === "true") {
     throw new Error("PDL live execution is disabled by policy.");
   }
@@ -62,7 +60,11 @@ export function loadConfig(environment: Record<string, string | undefined>) {
     appOrigin: parsed.APP_ORIGIN,
     runnerGatewayOrigin: parsed.RUNNER_GATEWAY_ORIGIN,
     e2bGatewayPublicUrl: parsed.E2B_GATEWAY_PUBLIC_URL,
-    dataClassification: "SYNTHETIC" as const,
+    dataClassification: parsed.DATA_CLASSIFICATION,
+    openCodeProvider: parsed.OPENCODE_PROVIDER,
+    openCodeUpstreamUrl: parsed.OPENCODE_PROVIDER === "GO"
+      ? "https://opencode.ai/zen/go/v1/chat/completions"
+      : "https://opencode.ai/zen/v1/chat/completions",
     providerMode: parsed.PROVIDER_MODE,
     runtimeDefault: parsed.RUNTIME_DEFAULT,
     pdlLiveEnabled: false as const,

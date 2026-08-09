@@ -81,7 +81,7 @@ export class OpenCodeInvestigationController {
       knownSessions.add(lead.id);
       input.signal.throwIfAborted();
       await getSql()`UPDATE runs SET opencode_primary_session_id = ${lead.id}, updated_at = now() WHERE id = ${input.runId}`;
-      await client.session.promptAsync({ sessionID: lead.id, directory, agent: "lead-investigator", model: { providerID: "translucid", modelID: "deepseek-v4-flash" }, variant: "max", parts: [{ type: "text", text: "Begin the synthetic investigation from /workspace/case/input/manifest.json. Persist all claims, entities, questions, observations, evidence, and public notes through semantic tools. Complete the durable frontier; do not write a final adjudication." }] }, { signal: input.signal });
+      await client.session.promptAsync({ sessionID: lead.id, directory, agent: "lead-investigator", model: { providerID: "translucid", modelID: "deepseek-v4-flash" }, variant: "max", parts: [{ type: "text", text: "Begin the authorized investigation from /workspace/case/input/manifest.json. Obey the classification declared in that manifest. Persist all claims, entities, questions, observations, evidence, and public notes through semantic tools. Complete the durable frontier; do not write a final adjudication." }] }, { signal: input.signal });
       const remainingAtResearchStart = Math.max(1, input.deadlineAt.getTime() - Date.now());
       const reviewReserve = Math.min(8 * 60_000, Math.floor(remainingAtResearchStart * (8 / 30)));
       const researchDeadline = new Date(input.deadlineAt.getTime() - reviewReserve);

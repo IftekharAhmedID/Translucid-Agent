@@ -8,7 +8,7 @@ export const metadata: Metadata = {
     default: "Translucid Investigations",
     template: "%s · Translucid Investigations",
   },
-  description: "Evidence-backed synthetic candidate investigation workspace.",
+  description: "Evidence-backed professional investigation workspace.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

@@ -10,7 +10,7 @@ export const investigationStatusSchema = z.enum([
 ]);
 
 export const runtimeKindSchema = z.enum(["LOCAL", "E2B"]);
-export const dataClassificationSchema = z.literal("SYNTHETIC");
+export const dataClassificationSchema = z.enum(["SYNTHETIC", "PUBLIC_PROFESSIONAL"]);
 
 export const entityTypeSchema = z.enum([
   "PERSON",
@@ -87,6 +87,7 @@ export const adjudicationOutputSchema = z
 
 export type InvestigationStatus = z.infer<typeof investigationStatusSchema>;
 export type RuntimeKind = z.infer<typeof runtimeKindSchema>;
+export type DataClassification = z.infer<typeof dataClassificationSchema>;
 export type EntityType = z.infer<typeof entityTypeSchema>;
 export type ResearchQuestionStatus = z.infer<typeof researchQuestionStatusSchema>;
 export type ClaimVerdict = z.infer<typeof claimVerdictSchema>;

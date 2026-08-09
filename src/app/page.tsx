@@ -32,7 +32,7 @@ export default async function InvestigationDashboard() {
       {items.length === 0 ? <section className="empty-state" aria-labelledby="empty-title">
         <div className="empty-glyph" aria-hidden="true">⌁</div>
         <h2 id="empty-title">No investigations yet</h2>
-        <p>Submit synthetic PDF and JSON or text input to start the first evidence-backed case.</p>
+        <p>Submit an authorized PDF and JSON or text input to start an evidence-backed case.</p>
         <Link className="button button-secondary" href="/investigations/new">
           Create the first case
         </Link>

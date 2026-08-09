@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS investigations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   status text NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED','RUNNING','COMPLETED','FAILED','CANCELLED','TIMED_OUT')),
   runtime_kind text NOT NULL CHECK (runtime_kind IN ('LOCAL','E2B')),
-  data_classification text NOT NULL DEFAULT 'SYNTHETIC' CHECK (data_classification = 'SYNTHETIC'),
+  data_classification text NOT NULL DEFAULT 'SYNTHETIC' CHECK (data_classification IN ('SYNTHETIC','PUBLIC_PROFESSIONAL')),
   submission_kind text NOT NULL CHECK (submission_kind IN ('JSON','TEXT')),
   submission_raw text NOT NULL,
   submission_normalized text NOT NULL,
@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS investigations (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS investigations_status_created_idx ON investigations(status, created_at);
+-- statement-breakpoint
+ALTER TABLE investigations DROP CONSTRAINT IF EXISTS investigations_data_classification_check;
+ALTER TABLE investigations ADD CONSTRAINT investigations_data_classification_check
+  CHECK (data_classification IN ('SYNTHETIC','PUBLIC_PROFESSIONAL'));
 -- statement-breakpoint
 CREATE TABLE IF NOT EXISTS runs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

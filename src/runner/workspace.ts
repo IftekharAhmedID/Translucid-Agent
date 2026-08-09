@@ -11,10 +11,11 @@ export async function prepareCaseWorkspace(investigationId: string, runId: strin
     submissionNormalized: string;
     submissionSha256: string;
     resumeArtifactId: string | null;
+    dataClassification: string;
   }>>`
     SELECT submission_kind AS "submissionKind", submission_raw AS "submissionRaw",
       submission_normalized AS "submissionNormalized", submission_sha256 AS "submissionSha256",
-      resume_artifact_id AS "resumeArtifactId"
+      resume_artifact_id AS "resumeArtifactId", data_classification AS "dataClassification"
     FROM investigations WHERE id = ${investigationId} AND latest_run_id = ${runId}
   `;
   if (!investigation) throw new Error("Investigation intake not found.");
@@ -38,7 +39,7 @@ export async function prepareCaseWorkspace(investigationId: string, runId: strin
   await writeFile(join(inputDirectory, "intake.json"), JSON.stringify({
     investigationId,
     runId,
-    classification: "SYNTHETIC",
+    classification: investigation.dataClassification,
     submission: {
       kind: investigation.submissionKind,
       rawPath: "/workspace/case/input/submission.raw.txt",

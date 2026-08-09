@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type postgres from "postgres";
 
 import { buildCapabilityRegistry } from "../core/capabilities.ts";
-import type { InvestigationStatus, RuntimeKind } from "../core/contracts.ts";
+import { dataClassificationSchema, type DataClassification, type InvestigationStatus, type RuntimeKind } from "../core/contracts.ts";
 import {
   normalizeSubmission,
   sha256,
@@ -13,7 +13,7 @@ import { getSql } from "./client.ts";
 export type CreateInvestigationInput = {
   submission: string;
   runtimeKind: RuntimeKind;
-  dataClassification: "SYNTHETIC";
+  dataClassification: DataClassification;
   resume?: {
     bytes: Uint8Array;
     fileName: string;
@@ -58,9 +58,7 @@ export async function createInvestigation(input: CreateInvestigationInput): Prom
   investigationId: string;
   runId: string;
 }> {
-  if (input.dataClassification !== "SYNTHETIC") {
-    throw new Error("Only SYNTHETIC investigations are accepted.");
-  }
+  const dataClassification = dataClassificationSchema.parse(input.dataClassification);
   const submission = normalizeSubmission(input.submission);
   if (input.resume) validatePdfBytes(input.resume.bytes);
 
@@ -75,7 +73,7 @@ export async function createInvestigation(input: CreateInvestigationInput): Prom
         id, status, runtime_kind, data_classification, submission_kind,
         submission_raw, submission_normalized, submission_sha256, latest_run_id
       ) VALUES (
-        ${investigationId}, 'QUEUED', ${input.runtimeKind}, 'SYNTHETIC',
+        ${investigationId}, 'QUEUED', ${input.runtimeKind}, ${dataClassification},
         ${submission.kind}, ${submission.raw}, ${submission.normalized},
         ${sha256(submission.raw)}, ${runId}
       )

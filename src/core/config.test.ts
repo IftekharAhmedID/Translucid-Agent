@@ -9,20 +9,34 @@ test("configuration defaults to the safe synthetic fixture runtime", () => {
   });
 
   assert.equal(config.dataClassification, "SYNTHETIC");
+  assert.equal(config.openCodeProvider, "ZEN");
+  assert.equal(config.openCodeUpstreamUrl, "https://opencode.ai/zen/v1/chat/completions");
   assert.equal(config.providerMode, "fixture");
   assert.equal(config.runtimeDefault, "LOCAL");
   assert.equal(config.pdlLiveEnabled, false);
   assert.equal(config.runnerConcurrency, 4);
 });
 
-test("configuration rejects non-synthetic data classification", () => {
+test("configuration accepts the explicit public-professional boundary", () => {
+  const config = loadConfig({
+    DATABASE_URL: "postgres://example.test/translucid",
+    DATA_CLASSIFICATION: "PUBLIC_PROFESSIONAL",
+    OPENCODE_PROVIDER: "GO",
+  });
+
+  assert.equal(config.dataClassification, "PUBLIC_PROFESSIONAL");
+  assert.equal(config.openCodeProvider, "GO");
+  assert.equal(config.openCodeUpstreamUrl, "https://opencode.ai/zen/go/v1/chat/completions");
+});
+
+test("configuration rejects unapproved data classifications", () => {
   assert.throws(
     () =>
       loadConfig({
         DATABASE_URL: "postgres://example.test/translucid",
         DATA_CLASSIFICATION: "PERSONAL",
       }),
-    /SYNTHETIC/i,
+    /DATA_CLASSIFICATION/i,
   );
 });
 

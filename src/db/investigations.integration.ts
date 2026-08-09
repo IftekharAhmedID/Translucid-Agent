@@ -119,3 +119,17 @@ test("cancellation and agent events remain durable and ordered", async () => {
   assert.equal(cancelled.status, "CANCELLED");
   assert.ok(cancelled.cancelRequestedAt instanceof Date);
 });
+
+test("public-professional intake is persisted without widening the data boundary", async () => {
+  const created = await createInvestigation({
+    submission: "Public professional source supplied by its author.",
+    runtimeKind: "E2B",
+    dataClassification: "PUBLIC_PROFESSIONAL",
+  });
+
+  const [investigation] = await sql<Array<{ dataClassification: string }>>`
+    SELECT data_classification AS "dataClassification"
+    FROM investigations WHERE id = ${created.investigationId}
+  `;
+  assert.equal(investigation?.dataClassification, "PUBLIC_PROFESSIONAL");
+});

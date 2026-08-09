@@ -123,7 +123,7 @@ async function handleModel(request: IncomingMessage, response: ServerResponse): 
   response.once("close", () => upstreamAbort.abort(new DOMException("Runtime response disconnected.", "AbortError")));
   let upstream: Response;
   try {
-    upstream = await fetch("https://opencode.ai/zen/v1/chat/completions", {
+    upstream = await fetch(getConfig().openCodeUpstreamUrl, {
       method: "POST",
       headers: { authorization: `Bearer ${upstreamKey}`, "content-type": "application/json" },
       body: JSON.stringify({ ...body, model }),
