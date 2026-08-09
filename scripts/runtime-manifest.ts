@@ -23,7 +23,7 @@ for (const file of files) {
 }
 const packageJson = JSON.parse(await readFile(resolve(root, "package.json"), "utf8")) as { dependencies: Record<string, string> };
 const manifest = {
-  node: process.version,
+  node: `v${process.versions.node.split(".")[0]}`,
   packages: Object.fromEntries(["opencode-ai", "@opencode-ai/sdk", "@opencode-ai/plugin", "pdfjs-dist"].map((name) => [name, packageJson.dependencies[name]])),
   files: hashes,
 };
