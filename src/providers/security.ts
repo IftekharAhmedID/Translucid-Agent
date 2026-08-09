@@ -2,13 +2,11 @@ import { createHash, randomBytes } from "node:crypto";
 import type postgres from "postgres";
 
 import { getSql } from "../db/client.ts";
-import type { ToolName } from "./contracts.ts";
-
 type CaseTokenScope = {
   digest: string;
   investigationId: string;
   expiresAt: string;
-  allowedTools: ToolName[];
+  allowedTools: string[];
   allowedModels: string[];
 };
 
@@ -23,7 +21,7 @@ function asJson(value: unknown): postgres.JSONValue {
 export async function issueCaseToken(input: {
   investigationId: string;
   runId: string;
-  allowedTools: ToolName[];
+  allowedTools: string[];
   allowedModels: string[];
   ttlMs: number;
 }): Promise<{ token: string; expiresAt: Date }> {

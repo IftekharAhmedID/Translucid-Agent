@@ -11,10 +11,12 @@ import {
   captureEvidence,
   createClaim,
   linkEntities,
+  linkEvidence,
   listTimeline,
   openResearchQuestion,
   recordObservation,
   resolveResearchQuestion,
+  updateResearchQuestion,
   upsertEntity,
 } from "./state.ts";
 
@@ -91,6 +93,8 @@ test("entity graph requires independent evidence-backed anchors", async () => {
     claimIds: [claim.id],
     entityIds: [person.id, account.id],
   });
+  const linkedEvidence = await linkEvidence({ ...ids, evidenceId: evidenceA.id, claimIds: [], entityIds: [account.id] });
+  assert.ok(linkedEvidence.entityIds.includes(account.id));
 
   await assert.rejects(
     () =>
@@ -196,7 +200,7 @@ test("search snippets cannot become evidence and temporal observations remain se
     validFrom: new Date("2024-01-01T00:00:00Z"),
   });
 
-  const timeline = await listTimeline(ids.investigationId);
+  const timeline = await listTimeline(ids.investigationId, ids.runId);
   assert.deepEqual(
     timeline.map((entry) => (entry.value as { title: string }).title),
     ["Software Engineer", "Principal Engineer"],
@@ -217,6 +221,9 @@ test("research questions persist route selection and resolution", async () => {
     possibleRoutes: ["company-site", "archives"],
     createdByAgent: "lead-investigator",
   });
+  const updated = await updateResearchQuestion({ ...ids, questionId: question.id, priority: "MEDIUM", possibleRoutes: ["archives"] });
+  assert.equal(updated.priority, "MEDIUM");
+  assert.deepEqual(updated.possibleRoutes, ["archives"]);
   const resolved = await resolveResearchQuestion({
     investigationId: ids.investigationId,
     runId: ids.runId,

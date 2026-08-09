@@ -71,6 +71,7 @@ export function buildCapabilityRegistry(environment: Environment): CapabilityReg
     environment.LINKDAPI_API_KEY ? "linkdapi" : undefined,
     hasBrightProfile ? "brightdata-linkedin-profile" : undefined,
   ].filter((route): route is string => Boolean(route));
+  const identifiedPublicClient = Boolean(environment.PUBLIC_API_CONTACT_EMAIL);
 
   return {
     WEB_SEARCH: environment.EXA_API_KEY
@@ -114,50 +115,36 @@ export function buildCapabilityRegistry(environment: Environment): CapabilityReg
       [],
       "Live PDL use is disabled by employment-evaluation policy.",
     ),
-    GITHUB: environment.GITHUB_TOKEN
+    GITHUB: environment.GITHUB_TOKEN && identifiedPublicClient
       ? entry("GITHUB", "READY", ["github"], "Read-only GitHub token is configured.")
-      : entry("GITHUB", "DISABLED_MISSING_CONFIG", [], "GITHUB_TOKEN is missing."),
-    ARCHIVES: entry(
-      "ARCHIVES",
-      "READY",
-      ["wayback", "common-crawl"],
-      "Public archive routes require no credential.",
-    ),
-    PUBLIC_RECORDS: entry(
-      "PUBLIC_RECORDS",
-      "READY",
-      ["sec-edgar", "ietf-datatracker"],
-      "Public SEC and IETF routes are available.",
-    ),
-    PATENTS: environment.USPTO_API_KEY
+      : entry("GITHUB", "DISABLED_MISSING_CONFIG", [], "GITHUB_TOKEN and PUBLIC_API_CONTACT_EMAIL are required."),
+    ARCHIVES: identifiedPublicClient
+      ? entry("ARCHIVES", "READY", ["wayback", "common-crawl"], "Public archive routes are available.")
+      : entry("ARCHIVES", "DISABLED_MISSING_CONFIG", [], "PUBLIC_API_CONTACT_EMAIL is required."),
+    PUBLIC_RECORDS: identifiedPublicClient
+      ? entry("PUBLIC_RECORDS", "READY", ["sec-edgar", "ietf-datatracker"], "Public SEC and IETF routes are available.")
+      : entry("PUBLIC_RECORDS", "DISABLED_MISSING_CONFIG", [], "PUBLIC_API_CONTACT_EMAIL is required."),
+    PATENTS: environment.USPTO_API_KEY && identifiedPublicClient
       ? entry("PATENTS", "READY", ["uspto-odp"], "USPTO API configuration is present.")
-      : entry("PATENTS", "DISABLED_MISSING_CONFIG", [], "USPTO_API_KEY is missing."),
-    SCHOLARLY: environment.OPENALEX_API_KEY
+      : entry("PATENTS", "DISABLED_MISSING_CONFIG", [], "USPTO_API_KEY and PUBLIC_API_CONTACT_EMAIL are required."),
+    SCHOLARLY: environment.OPENALEX_API_KEY && identifiedPublicClient
       ? entry(
           "SCHOLARLY",
           "READY",
           ["openalex", "crossref"],
           "OpenAlex and Crossref routes are available.",
         )
-      : entry(
+      : identifiedPublicClient ? entry(
           "SCHOLARLY",
           "DEGRADED",
           ["crossref"],
           "OPENALEX_API_KEY is missing; Crossref remains available.",
-        ),
-    PACKAGES: entry(
-      "PACKAGES",
-      "READY",
-      ["npm", "pypi", "hugging-face"],
-      "Public package registries are available.",
-    ),
-    SECURITY_RECORDS: entry(
-      "SECURITY_RECORDS",
-      "READY",
-      ["osv", "github-advisories", "nvd"],
-      environment.NVD_API_KEY
-        ? "Public routes are available; NVD enhanced rate limits are configured."
-        : "Public routes are available; NVD uses anonymous rate limits.",
-    ),
+        ) : entry("SCHOLARLY", "DISABLED_MISSING_CONFIG", [], "PUBLIC_API_CONTACT_EMAIL is required."),
+    PACKAGES: identifiedPublicClient
+      ? entry("PACKAGES", "READY", ["npm", "pypi", "hugging-face"], "Public package registries are available.")
+      : entry("PACKAGES", "DISABLED_MISSING_CONFIG", [], "PUBLIC_API_CONTACT_EMAIL is required."),
+    SECURITY_RECORDS: identifiedPublicClient
+      ? entry("SECURITY_RECORDS", "READY", ["osv", ...(environment.GITHUB_TOKEN ? ["github-advisories"] : []), "nvd"], environment.NVD_API_KEY ? "Public routes are available; NVD enhanced rate limits are configured." : "Public routes are available; NVD uses anonymous rate limits.")
+      : entry("SECURITY_RECORDS", "DISABLED_MISSING_CONFIG", [], "PUBLIC_API_CONTACT_EMAIL is required."),
   };
 }

@@ -15,4 +15,6 @@ test("secret redaction removes credential-shaped object fields", () => {
     redactSecrets({ token: "secret", nested: { authorization: "Bearer secret", useful: "kept" } }),
     { token: "[REDACTED]", nested: { authorization: "[REDACTED]", useful: "kept" } },
   );
+  assert.equal(redactSecrets("https://example.test/path?token=secret&query=kept"), "https://example.test/path?token=%5BREDACTED%5D&query=kept");
+  assert.equal(redactSecrets("Bearer secret-value"), "Bearer [REDACTED]");
 });

@@ -10,6 +10,15 @@ export function redactSecrets(value: unknown): unknown {
       Object.entries(value).map(([key, item]) => [key, secretKey.test(key) ? "[REDACTED]" : redactSecrets(item)]),
     );
   }
+  if (typeof value === "string") {
+    try {
+      const url = new URL(value);
+      for (const key of [...url.searchParams.keys()]) if (secretKey.test(key)) url.searchParams.set(key, "[REDACTED]");
+      return url.toString();
+    } catch {
+      return value.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/-]+=*/gi, "$1 [REDACTED]");
+    }
+  }
   return value;
 }
 

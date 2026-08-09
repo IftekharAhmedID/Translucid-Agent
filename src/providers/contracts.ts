@@ -10,6 +10,7 @@ export const toolNames = [
   "social.profile",
   "github.graphql",
   "github.rest",
+  "github.clone",
   "archives.search",
   "public_records.search",
   "scholarly.search",
@@ -40,6 +41,11 @@ const schemas = {
   }),
   "github.graphql": contextSchema.extend({ query: z.string().min(1).max(20_000), variables: z.record(z.string(), z.unknown()).default({}) }),
   "github.rest": contextSchema.extend({ path: z.string().regex(/^\/(users|repos|search|commits|issues|pulls|orgs)\b/).max(1_000) }),
+  "github.clone": contextSchema.extend({
+    repository: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,99})\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/),
+    ref: z.string().regex(/^(?![-/])(?!.*\.\.)(?!.*\/\.)(?!.*\.lock(?:\/|$))[A-Za-z0-9._/-]{1,200}$/).optional(),
+    authorHint: z.string().trim().min(1).max(200).optional(),
+  }),
   "archives.search": contextSchema.extend({ url: httpUrl, fromYear: z.number().int().min(1996).max(2100).optional(), toYear: z.number().int().min(1996).max(2100).optional() }),
   "public_records.search": contextSchema.extend({ recordType: z.enum(["PATENT", "SEC", "IETF"]), query: searchText }),
   "scholarly.search": contextSchema.extend({ query: searchText }),
@@ -67,12 +73,18 @@ export const toolCapabilities: Record<ToolName, Capability> = {
   "social.profile": "SOCIAL_PROFILE",
   "github.graphql": "GITHUB",
   "github.rest": "GITHUB",
+  "github.clone": "GITHUB",
   "archives.search": "ARCHIVES",
   "public_records.search": "PUBLIC_RECORDS",
   "scholarly.search": "SCHOLARLY",
   "packages.inspect": "PACKAGES",
   "security_records.search": "SECURITY_RECORDS",
 };
+
+export function capabilityForRequest(request: ParsedToolRequest): Capability {
+  if (request.tool === "public_records.search" && request.arguments.recordType === "PATENT") return "PATENTS";
+  return toolCapabilities[request.tool];
+}
 
 export const toolResultStatusSchema = z.enum([
   "OK",

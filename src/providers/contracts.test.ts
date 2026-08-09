@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  capabilityForRequest,
   decideProfessionalProfileRoute,
   parseToolRequest,
   shouldAllowSocialResearch,
@@ -63,4 +64,41 @@ test("social research needs an explicit permitted reason", () => {
   assert.equal(shouldAllowSocialResearch("EXPLICIT_SOCIAL_CLAIM"), true);
   assert.equal(shouldAllowSocialResearch("PUBLIC_IDENTITY_CROSS_LINK"), true);
   assert.equal(shouldAllowSocialResearch("MATERIAL_ACTIVITY_QUESTION"), true);
+});
+
+test("patent searches use the separately gated PATENTS capability", () => {
+  const request = parseToolRequest({
+    tool: "public_records.search",
+    arguments: {
+      questionId: "00000000-0000-4000-8000-000000000001",
+      claimIds: [],
+      publicRationale: "Checking a material synthetic patent claim.",
+      recordType: "PATENT",
+      query: "synthetic patent",
+    },
+  });
+  assert.equal(capabilityForRequest(request), "PATENTS");
+});
+
+test("repository inspection accepts bounded GitHub coordinates, not arbitrary clone URLs", () => {
+  const request = parseToolRequest({
+    tool: "github.clone",
+    arguments: {
+      questionId: "00000000-0000-4000-8000-000000000001",
+      claimIds: [],
+      publicRationale: "Inspecting public patches for a material contribution claim.",
+      repository: "openai/codex",
+      authorHint: "Synthetic Candidate",
+    },
+  });
+  assert.equal(request.tool, "github.clone");
+  assert.throws(() => parseToolRequest({
+    tool: "github.clone",
+    arguments: {
+      questionId: "00000000-0000-4000-8000-000000000001",
+      claimIds: [],
+      publicRationale: "Attempting an arbitrary repository location.",
+      repository: "https://example.test/owner/repo",
+    },
+  }));
 });

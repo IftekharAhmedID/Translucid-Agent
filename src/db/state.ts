@@ -19,11 +19,12 @@ async function assertRowsBelongToCase(
   table: "claims" | "entities" | "evidence",
   ids: string[],
   investigationId: string,
+  runId: string,
 ): Promise<void> {
   if (ids.length === 0) return;
   const rows = await getSql()<{ id: string }[]>`
     SELECT id FROM ${getSql()(table)}
-    WHERE investigation_id = ${investigationId} AND id IN ${getSql()(ids)}
+    WHERE investigation_id = ${investigationId} AND run_id = ${runId} AND id IN ${getSql()(ids)}
   `;
   if (rows.length !== new Set(ids).size) {
     throw new Error(`One or more ${table} IDs do not belong to this investigation.`);
@@ -141,6 +142,7 @@ export async function captureEvidence(
     SELECT content_bytes AS "contentBytes", provenance, mime_type AS "mimeType"
     FROM artifacts
     WHERE id = ${input.artifactId} AND investigation_id = ${input.investigationId}
+      AND run_id = ${input.runId}
   `;
   if (!artifact) throw new Error("Artifact does not belong to this investigation.");
   if (artifact.provenance.isSearchSnippet === true) {
@@ -156,8 +158,8 @@ export async function captureEvidence(
   }
 
   await Promise.all([
-    assertRowsBelongToCase("claims", input.claimIds, input.investigationId),
-    assertRowsBelongToCase("entities", input.entityIds, input.investigationId),
+    assertRowsBelongToCase("claims", input.claimIds, input.investigationId, input.runId),
+    assertRowsBelongToCase("entities", input.entityIds, input.investigationId, input.runId),
   ]);
 
   const id = randomUUID();
@@ -175,6 +177,28 @@ export async function captureEvidence(
   return { id };
 }
 
+export async function linkEvidence(input: CaseIds & {
+  evidenceId: string;
+  claimIds: string[];
+  entityIds: string[];
+}): Promise<{ id: string; claimIds: string[]; entityIds: string[] }> {
+  await Promise.all([
+    assertRowsBelongToCase("evidence", [input.evidenceId], input.investigationId, input.runId),
+    assertRowsBelongToCase("claims", input.claimIds, input.investigationId, input.runId),
+    assertRowsBelongToCase("entities", input.entityIds, input.investigationId, input.runId),
+  ]);
+  const [row] = await getSql()<Array<{ id: string; claimIds: string[]; entityIds: string[] }>>`
+    UPDATE evidence
+    SET claim_ids = ARRAY(SELECT DISTINCT unnest(claim_ids || ${input.claimIds}::uuid[])),
+        entity_ids = ARRAY(SELECT DISTINCT unnest(entity_ids || ${input.entityIds}::uuid[]))
+    WHERE id = ${input.evidenceId} AND investigation_id = ${input.investigationId}
+      AND run_id = ${input.runId}
+    RETURNING id, claim_ids AS "claimIds", entity_ids AS "entityIds"
+  `;
+  if (!row) throw new Error("Evidence not found.");
+  return row;
+}
+
 export async function addEntityIdentifier(
   input: CaseIds & {
     entityId: string;
@@ -185,8 +209,8 @@ export async function addEntityIdentifier(
   },
 ): Promise<{ id: string; normalizedValue: string }> {
   await Promise.all([
-    assertRowsBelongToCase("entities", [input.entityId], input.investigationId),
-    assertRowsBelongToCase("evidence", [input.evidenceId], input.investigationId),
+    assertRowsBelongToCase("entities", [input.entityId], input.investigationId, input.runId),
+    assertRowsBelongToCase("evidence", [input.evidenceId], input.investigationId, input.runId),
   ]);
   if (input.confidence < 0 || input.confidence > 1) {
     throw new Error("Identifier confidence must be between 0 and 1.");
@@ -227,11 +251,13 @@ export async function linkEntities(
       "entities",
       [input.fromEntityId, input.toEntityId],
       input.investigationId,
+      input.runId,
     ),
     assertRowsBelongToCase(
       "evidence",
       input.anchors.map((anchor) => anchor.evidenceId),
       input.investigationId,
+      input.runId,
     ),
   ]);
   const assessment = assessEntityLink(input.anchors);
@@ -265,10 +291,11 @@ export async function recordObservation(
     validTo?: Date;
   },
 ): Promise<{ id: string }> {
-  await assertRowsBelongToCase("entities", [input.entityId], input.investigationId);
+  await assertRowsBelongToCase("entities", [input.entityId], input.investigationId, input.runId);
   const [artifact] = await getSql()<{ id: string }[]>`
     SELECT id FROM artifacts
     WHERE id = ${input.artifactId} AND investigation_id = ${input.investigationId}
+      AND run_id = ${input.runId}
   `;
   if (!artifact) throw new Error("Artifact does not belong to this investigation.");
 
@@ -287,7 +314,7 @@ export async function recordObservation(
   return { id };
 }
 
-export async function listTimeline(investigationId: string): Promise<
+export async function listTimeline(investigationId: string, runId: string, entityId?: string): Promise<
   {
     id: string;
     entityId: string;
@@ -317,10 +344,25 @@ export async function listTimeline(investigationId: string): Promise<
       observed_at AS "observedAt", source_event_at AS "sourceEventAt",
       valid_from AS "validFrom", valid_to AS "validTo", artifact_id AS "artifactId"
     FROM observations
-    WHERE investigation_id = ${investigationId}
+    WHERE investigation_id = ${investigationId} AND run_id = ${runId}
+      AND (${entityId ?? null}::uuid IS NULL OR entity_id = ${entityId ?? null})
     ORDER BY valid_from NULLS LAST, observed_at, id
   `;
   return [...rows];
+}
+
+export async function getEntityGraph(investigationId: string, runId: string): Promise<{
+  entities: unknown[];
+  identifiers: unknown[];
+  links: unknown[];
+}> {
+  const sql = getSql();
+  const [entityRows, identifierRows, linkRows] = await Promise.all([
+    sql`SELECT id, type, canonical_name AS "canonicalName", metadata, created_at AS "createdAt" FROM entities WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
+    sql`SELECT id, entity_id AS "entityId", type, value, normalized_value AS "normalizedValue", confidence, evidence_id AS "evidenceId" FROM entity_identifiers WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
+    sql`SELECT id, from_entity_id AS "fromEntityId", to_entity_id AS "toEntityId", relationship, confidence, evidence_ids AS "evidenceIds" FROM entity_links WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
+  ]);
+  return { entities: [...entityRows], identifiers: [...identifierRows], links: [...linkRows] };
 }
 
 export async function openResearchQuestion(
@@ -333,7 +375,7 @@ export async function openResearchQuestion(
     createdBySession?: string;
   },
 ): Promise<{ id: string; status: "OPEN" }> {
-  await assertRowsBelongToCase("claims", input.claimIds, input.investigationId);
+  await assertRowsBelongToCase("claims", input.claimIds, input.investigationId, input.runId);
   const id = randomUUID();
   await getSql()`
     INSERT INTO research_questions (
@@ -381,4 +423,58 @@ export async function resolveResearchQuestion(
   `;
   if (!row) throw new Error("Research question not found.");
   return row;
+}
+
+export async function selectResearchRoute(input: CaseIds & {
+  questionId: string;
+  route: string;
+}): Promise<{ id: string; status: "IN_PROGRESS"; selectedRoute: string }> {
+  const [row] = await getSql()<Array<{ id: string; status: "IN_PROGRESS"; selectedRoute: string }>>`
+    UPDATE research_questions
+    SET selected_route = ${input.route}, status = 'IN_PROGRESS', updated_at = now()
+    WHERE id = ${input.questionId}
+      AND investigation_id = ${input.investigationId}
+      AND run_id = ${input.runId}
+      AND status IN ('OPEN', 'IN_PROGRESS')
+      AND possible_routes ? ${input.route}
+    RETURNING id, status, selected_route AS "selectedRoute"
+  `;
+  if (!row) throw new Error("Research route is unavailable or question is closed.");
+  return row;
+}
+
+export async function updateResearchQuestion(input: CaseIds & {
+  questionId: string;
+  priority?: Priority;
+  possibleRoutes?: string[];
+  status?: Extract<ResearchQuestionStatus, "OPEN" | "IN_PROGRESS">;
+}): Promise<{ id: string; priority: Priority; possibleRoutes: string[]; status: ResearchQuestionStatus }> {
+  if (!input.priority && !input.possibleRoutes && !input.status) throw new Error("A research question update is required.");
+  const possibleRoutes = input.possibleRoutes ? getSql().json(toJson(input.possibleRoutes)) : null;
+  const [row] = await getSql()<Array<{ id: string; priority: Priority; possibleRoutes: string[]; status: ResearchQuestionStatus }>>`
+    UPDATE research_questions
+    SET priority = COALESCE(${input.priority ?? null}, priority),
+        possible_routes = COALESCE(${possibleRoutes}::jsonb, possible_routes),
+        status = COALESCE(${input.status ?? null}, status), updated_at = now()
+    WHERE id = ${input.questionId} AND investigation_id = ${input.investigationId}
+      AND run_id = ${input.runId} AND status IN ('OPEN', 'IN_PROGRESS')
+    RETURNING id, priority, possible_routes AS "possibleRoutes", status
+  `;
+  if (!row) throw new Error("Open research question not found.");
+  return row;
+}
+
+export async function listResearchQuestions(investigationId: string, runId: string): Promise<unknown[]> {
+  const rows = await getSql()`
+    SELECT id, run_id AS "runId", claim_ids AS "claimIds", question, priority,
+      status, possible_routes AS "possibleRoutes", selected_route AS "selectedRoute",
+      created_by_agent AS "createdByAgent", created_by_session AS "createdBySession",
+      resolution_summary AS "resolutionSummary", resolved_at AS "resolvedAt",
+      created_at AS "createdAt", updated_at AS "updatedAt"
+    FROM research_questions
+    WHERE investigation_id = ${investigationId} AND run_id = ${runId}
+    ORDER BY CASE priority WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END,
+      created_at, id
+  `;
+  return [...rows];
 }
