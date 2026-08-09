@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 
-import { Sandbox } from "e2b";
+import { ALL_TRAFFIC, Sandbox } from "e2b";
 
 import { waitForHttp } from "./process.ts";
 import type { InvestigatorRuntime, RunHandle, RunStatus, RuntimeStartInput } from "./types.ts";
@@ -34,7 +34,7 @@ export class E2BRuntime implements InvestigatorRuntime {
         HOME: "/workspace/case",
         XDG_CONFIG_HOME: "/workspace/case/.config",
       },
-      network: { allowOut: [gatewayHost], allowPublicTraffic: false },
+      network: { allowOut: [gatewayHost], denyOut: [ALL_TRAFFIC], allowPublicTraffic: false },
       lifecycle: { onTimeout: "kill" },
     });
     try {
