@@ -7,6 +7,7 @@ import { toolNames } from "../providers/contracts.ts";
 import { authorizeCaseToken, consumeBudget } from "../providers/security.ts";
 import { executeStateTool, isStateTool } from "./state-tools.ts";
 import { fixtureCompletion, writeFixtureCompletion } from "./fixture-model.ts";
+import { encodeModelToolNames, SseToolNameDecoder } from "./model-tool-names.ts";
 
 const MAX_TOOL_BODY = 1024 * 1024;
 const MAX_MODEL_BODY = 16 * 1024 * 1024;
@@ -117,6 +118,7 @@ async function handleModel(request: IncomingMessage, response: ServerResponse): 
 
   const upstreamKey = process.env.OPENCODE_API_KEY;
   if (!upstreamKey) throw new Error("OPENCODE_API_KEY is not configured on the host gateway.");
+  const encoded = encodeModelToolNames(body);
   const upstreamAbort = new AbortController();
   const timeout = setTimeout(() => upstreamAbort.abort(new DOMException("Investigation deadline reached.", "TimeoutError")), Math.min(remaining, 300_000));
   request.once("aborted", () => upstreamAbort.abort(new DOMException("Runtime request disconnected.", "AbortError")));
@@ -126,7 +128,7 @@ async function handleModel(request: IncomingMessage, response: ServerResponse): 
     upstream = await fetch(getConfig().openCodeUpstreamUrl, {
       method: "POST",
       headers: { authorization: `Bearer ${upstreamKey}`, "content-type": "application/json" },
-      body: JSON.stringify({ ...body, model }),
+      body: JSON.stringify({ ...encoded.body, model }),
       signal: upstreamAbort.signal,
     });
   } catch (error) {
@@ -140,12 +142,16 @@ async function handleModel(request: IncomingMessage, response: ServerResponse): 
   });
   if (!upstream.body) { clearTimeout(timeout); return void response.end(); }
   const reader = upstream.body.getReader();
+  const toolNames = new SseToolNameDecoder(encoded.wireToSemantic);
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (!response.write(Buffer.from(value))) await new Promise<void>((resolve) => response.once("drain", resolve));
+      const decoded = toolNames.push(value);
+      if (decoded && !response.write(decoded)) await new Promise<void>((resolve) => response.once("drain", resolve));
     }
+    const final = toolNames.flush();
+    if (final) response.write(final);
   } finally {
     clearTimeout(timeout);
     response.end();
