@@ -13,8 +13,7 @@ async function ensureImage(): Promise<void> {
 }
 
 export async function getPinnedLocalManifestHash(): Promise<string> {
-  await ensureImage();
-  const result = await runProcess("docker", ["run", "--rm", "--entrypoint", "/opt/investigator/node_modules/.bin/tsx", imageName, "scripts/runtime-manifest.ts"], { timeoutMs: 60_000 });
+  const result = await runProcess(process.execPath, ["--import", "tsx", "scripts/runtime-manifest.ts"], { timeoutMs: 60_000 });
   return (JSON.parse(result.stdout) as { manifestHash: string }).manifestHash;
 }
 
