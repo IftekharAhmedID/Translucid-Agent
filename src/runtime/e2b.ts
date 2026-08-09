@@ -43,7 +43,7 @@ export class E2BRuntime implements InvestigatorRuntime {
       const openCodeUrl = `https://${sandbox.getHost(4096)}`;
       const accessHeaders = {
         authorization: `Basic ${Buffer.from(`opencode:${input.openCodePassword}`).toString("base64")}`,
-        ...(sandbox.trafficAccessToken ? { "x-access-token": sandbox.trafficAccessToken } : {}),
+        ...(sandbox.trafficAccessToken ? { "e2b-traffic-access-token": sandbox.trafficAccessToken } : {}),
       };
       await waitForHttp(openCodeUrl, accessHeaders);
       const manifest = JSON.parse(await sandbox.files.read("/workspace/case/runtime-manifest.json")) as { manifestHash: string };
