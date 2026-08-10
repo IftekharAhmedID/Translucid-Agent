@@ -304,8 +304,8 @@ export class ProviderExecutor {
   private webFetch(request: Extract<ParsedToolRequest, { tool: "web.fetch" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
     const url = request.arguments.url;
     if (this.environment.EXA_API_KEY) {
-      return this.call(request, context, capability, "exa", "exa.contents", { urls: [url], text: true }, async (signal, onAttempt) => {
-        const data = await apiFetch("https://api.exa.ai/contents", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.environment.EXA_API_KEY! }, body: JSON.stringify({ urls: [url], text: true }), signal }, onAttempt);
+      return this.call(request, context, capability, "exa", "exa.contents", { urls: [url], text: true, highlights: true }, async (signal, onAttempt) => {
+        const data = await apiFetch("https://api.exa.ai/contents", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.environment.EXA_API_KEY! }, body: JSON.stringify({ urls: [url], text: true, highlights: true }), signal }, onAttempt);
         return { data, sourceUrl: url, ...this.exaCost(data), artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: data, provenance: { captureMethod: "EXA_CONTENTS" } }] };
       });
     }

@@ -7,6 +7,7 @@ import { ProviderExecutor } from "../providers/executor.ts";
 import { toolNames } from "../providers/contracts.ts";
 import { authorizeCaseToken, consumeBudget } from "../providers/security.ts";
 import { executeStateTool, isStateTool } from "./state-tools.ts";
+import { compactToolResultForAgent } from "./agent-tool-result.ts";
 import { fixtureCompletion, writeFixtureCompletion } from "./fixture-model.ts";
 import { decodeJsonToolNames, encodeModelToolNames, SseToolNameDecoder } from "./model-tool-names.ts";
 
@@ -72,9 +73,10 @@ async function handleTool(request: IncomingMessage, response: ServerResponse, ex
     agent: typeof operational.agent === "string" ? operational.agent : "unknown-agent",
     sessionId: typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session",
   };
-  const result = isStateTool(tool)
+  const stateTool = isStateTool(tool);
+  const result = stateTool
     ? await executeStateTool(tool, body.arguments, context)
-    : await executor.execute({ tool, arguments: body.arguments }, context);
+    : compactToolResultForAgent(await executor.execute({ tool, arguments: body.arguments }, context));
   json(response, 200, result);
 }
 

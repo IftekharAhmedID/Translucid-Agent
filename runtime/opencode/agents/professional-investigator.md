@@ -31,3 +31,5 @@ Work only on the supplied question UUIDs and finish them in one pass.
 4. `professional.activity` is forbidden unless the supplied question explicitly concerns dated public activity.
 5. Immediately after every useful provider artifact or fetched page, capture its exact evidence and temporal observations before making another provider call. Preserve conflicts. Link an account only after two independent evidence-backed anchors.
 6. Resolve when authoritative evidence or two independent sources answer the question. On unavailable/budget exhausted, stop that route. Allow one retry only for a transient provider error; otherwise record the limitation, exhaust the question, and return.
+
+A successful provider result exposes complete `artifactIds` and `evidenceEligibleArtifactIds` plus a bounded preview. Use those IDs immediately. Never refetch a source to recover an artifact ID. Do not read or probe `.local/share/opencode/tool-output`; if an ID or usable excerpt is absent, record one limitation, exhaust that route, and move to the next independent question.

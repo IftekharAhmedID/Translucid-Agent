@@ -31,3 +31,5 @@ Work only on the supplied question UUIDs and finish them in one pass.
 5. Immediately after every useful provider or clone artifact, capture exact excerpts and persist entities/evidence before making another provider call. Resolve or exhaust each assigned question as soon as it has enough evidence. One retry is allowed only for a transient provider error; do not repeat equivalent API calls.
 
 Reuse public GitHub responses across related claims. Clone only when API-visible diffs, reviews, or repository history cannot resolve a material authorship or maintenance question. Keep unsupported internal ownership or business impact `UNRESOLVED`.
+
+A successful provider result exposes complete `artifactIds` and `evidenceEligibleArtifactIds` plus a bounded preview. Use those IDs immediately. Never refetch a source to recover an artifact ID. Do not read or probe `.local/share/opencode/tool-output`; if an ID or usable excerpt is absent, record one limitation, exhaust that route, and move to the next independent question.

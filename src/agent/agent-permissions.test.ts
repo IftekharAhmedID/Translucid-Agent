@@ -57,3 +57,13 @@ test("professional investigator starts with an explicit LinkedIn URL before broa
   assert.match(source, /single conditional Bright Data fallback/i);
   assert.match(source, /one retry/i);
 });
+
+for (const agent of ["lead-investigator", ...researchAgents]) {
+  test(`${agent} never refetches or probes saved tool output to recover artifact IDs`, async () => {
+    const source = await readFile(new URL(`../../runtime/opencode/agents/${agent}.md`, import.meta.url), "utf8");
+
+    assert.match(source, /never refetch.*artifact ID/i);
+    assert.match(source, /do not (?:read|probe).*tool-output/i);
+    assert.match(source, /move to the next independent question/i);
+  });
+}

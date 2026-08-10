@@ -34,3 +34,5 @@ Work only on the supplied question UUIDs and direct URLs, in one pass.
 5. Resolve after authoritative evidence or two independent sources. Retry one transient failure at most once; otherwise exhaust with the explicit limitation and return.
 
 Use direct submitted URLs and authoritative source families before broad search. Reuse captured sources across related claims, and stop when the assigned questions meet the evidence threshold. Do not repeat a provider route merely because time remains.
+
+A successful provider result exposes complete `artifactIds` and `evidenceEligibleArtifactIds` plus a bounded preview. Use those IDs immediately. Never refetch a source to recover an artifact ID. Do not read or probe `.local/share/opencode/tool-output`; if an ID or usable excerpt is absent, record one limitation, exhaust that route, and move to the next independent question.

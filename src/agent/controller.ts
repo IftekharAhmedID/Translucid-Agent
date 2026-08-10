@@ -22,6 +22,7 @@ import {
   summaryOutputSchema,
 } from "./finalization.ts";
 import { extractStructuredOutput } from "./structured-output.ts";
+import { researchCompletionAction } from "./research-completion.ts";
 
 const directory = "/workspace/case";
 type ControllerInput = {
@@ -236,36 +237,55 @@ export class OpenCodeInvestigationController {
     }
   }
 
-  private async waitForIdle(client: ReturnType<typeof createOpencodeClient>, sessionId: string, input: ControllerInput, phaseDeadline: Date): Promise<boolean> {
+  private async waitForResearchCompletion(client: ReturnType<typeof createOpencodeClient>, sessionId: string, input: ControllerInput, phaseDeadline: Date): Promise<boolean> {
     let observedBusy = false;
+    let continuationPending = false;
     const startedAt = Date.now();
     while (Date.now() < phaseDeadline.getTime()) {
       if (input.signal.aborted) throw new DOMException("Investigation aborted", "AbortError");
       const statuses = unwrap(await client.session.status({ directory }), "session status");
-      const status = statuses[sessionId];
-      if (status?.type === "busy" || status?.type === "retry") observedBusy = true;
-      if ((observedBusy || Date.now() - startedAt >= 3_000) && (!status || status.type === "idle")) {
-        const messages = unwrap(await client.session.messages({ sessionID: sessionId, directory, limit: 2 }), "session messages");
-        const latest = messages.at(-1);
-        if (latest?.info.role === "assistant") {
-          if (latest.info.error) throw new Error(`OpenCode session failed: ${latest.info.error.name}`);
-          return true;
-        }
+      const status = statuses[sessionId]?.type;
+      if (status === "busy" || status === "retry") {
+        observedBusy = true;
+        continuationPending = false;
       }
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-    return false;
-  }
-
-  private async waitForResearchCompletion(client: ReturnType<typeof createOpencodeClient>, sessionId: string, input: ControllerInput, phaseDeadline: Date): Promise<boolean> {
-    while (Date.now() < phaseDeadline.getTime()) {
-      if (!await this.waitForIdle(client, sessionId, input, phaseDeadline)) return false;
-      const [frontier] = await getSql()<Array<{ activeCount: number }>>`
-        SELECT count(*)::integer AS "activeCount" FROM research_questions
+      const [frontier] = await getSql()<Array<{ totalCount: number; activeCount: number }>>`
+        SELECT count(*)::integer AS "totalCount",
+          count(*) FILTER (WHERE status IN ('OPEN', 'IN_PROGRESS'))::integer AS "activeCount"
+        FROM research_questions
         WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}
-          AND status IN ('OPEN', 'IN_PROGRESS')
       `;
-      if ((frontier?.activeCount ?? 0) === 0) return true;
+      const activeCount = frontier?.activeCount ?? 0;
+      const action = researchCompletionAction({
+        totalQuestionCount: frontier?.totalCount ?? 0,
+        activeQuestionCount: activeCount,
+        sessionStatus: status,
+        readyForContinuation: !continuationPending && (observedBusy || Date.now() - startedAt >= 3_000),
+      });
+      if (action === "FINISH" || action === "ABORT_AND_FINISH") {
+        if (action === "ABORT_AND_FINISH") {
+          await client.session.abort({ sessionID: sessionId, directory });
+          await insertAgentEvent({
+            investigationId: input.investigationId,
+            runId: input.runId,
+            phase: "RESEARCH",
+            agent: "runner",
+            sessionId,
+            eventType: "TERMINAL_FRONTIER_SESSION_ABORTED",
+            status: "COMPLETED",
+            publicRationale: "The durable Research Frontier was terminal, so the still-busy lead session was stopped and finalization began immediately.",
+            payload: {},
+          });
+        }
+        return true;
+      }
+      if (action !== "CONTINUE") {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
+      }
+      const messages = unwrap(await client.session.messages({ sessionID: sessionId, directory, limit: 2 }), "session messages");
+      const latest = messages.at(-1);
+      if (latest?.info.role === "assistant" && latest.info.error) throw new Error(`OpenCode session failed: ${latest.info.error.name}`);
       await insertAgentEvent({
         investigationId: input.investigationId,
         runId: input.runId,
@@ -275,7 +295,7 @@ export class OpenCodeInvestigationController {
         eventType: "RESEARCH_FRONTIER_CONTINUATION",
         status: "IN_PROGRESS",
         publicRationale: "The lead became idle while durable research questions remained active, so the same session was asked to finish or exhaust them before review.",
-        payload: { activeQuestionCount: frontier!.activeCount },
+        payload: { activeQuestionCount: activeCount },
       });
       await client.session.promptAsync({
         sessionID: sessionId,
@@ -283,8 +303,10 @@ export class OpenCodeInvestigationController {
         agent: "lead-investigator",
         model: { providerID: "translucid", modelID: getConfig().researchModel },
         variant: getConfig().reasoningVariant,
-        parts: [{ type: "text", text: `The durable Research Frontier still has ${frontier!.activeCount} active question(s). Continue only the evidence-justified work needed to resolve, exhaust, or skip each one. Do not start a third wave. Return as soon as the frontier is terminal.` }],
+        parts: [{ type: "text", text: `The durable Research Frontier still has ${activeCount} active question(s). Continue only the evidence-justified work needed to resolve, exhaust, or skip each one. Do not start a third wave. Return as soon as the frontier is terminal.` }],
       }, { signal: input.signal });
+      continuationPending = true;
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
     return false;
   }
