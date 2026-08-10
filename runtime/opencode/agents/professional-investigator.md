@@ -2,7 +2,7 @@
 description: Resolves professional identity and employment chronology.
 mode: subagent
 model: translucid/deepseek-v4-flash
-variant: high
+variant: medium
 permission:
   "*": deny
   skill: allow

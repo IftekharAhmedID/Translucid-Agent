@@ -2,7 +2,7 @@
 description: Verifies web, archive, publication, patent, package, and security-record claims.
 mode: subagent
 model: translucid/deepseek-v4-flash
-variant: high
+variant: medium
 permission:
   "*": deny
   skill: allow

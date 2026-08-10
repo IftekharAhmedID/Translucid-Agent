@@ -13,7 +13,7 @@ test("configuration defaults to the safe synthetic fixture runtime", () => {
   assert.equal(config.finalizerOpenCodeProvider, "GO");
   assert.equal(config.researchOpenCodeUpstreamUrl, "https://opencode.ai/zen/go/v1/chat/completions");
   assert.equal(config.finalizerOpenCodeUpstreamUrl, "https://opencode.ai/zen/go/v1/chat/completions");
-  assert.equal(config.reasoningVariant, "high");
+  assert.equal(config.reasoningVariant, "medium");
   assert.equal(config.investigationTimeoutMs, 60 * 60_000);
   assert.equal(config.finalizationReserveMs, 12 * 60_000);
   assert.equal(config.toolCeilings["web.search"], 1_000);

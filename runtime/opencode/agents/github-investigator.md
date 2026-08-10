@@ -2,7 +2,7 @@
 description: Verifies public open-source identity and contribution claims.
 mode: subagent
 model: translucid/deepseek-v4-flash
-variant: high
+variant: medium
 permission:
   "*": deny
   skill: allow

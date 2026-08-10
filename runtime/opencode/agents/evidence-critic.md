@@ -2,7 +2,7 @@
 description: Audits frozen saved evidence without researching.
 mode: primary
 model: translucid/deepseek-v4-flash
-variant: high
+variant: medium
 permission:
   "*": deny
   StructuredOutput: allow

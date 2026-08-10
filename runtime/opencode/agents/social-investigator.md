@@ -2,7 +2,7 @@
 description: Conditionally verifies explicit public social claims or identity cross-links.
 mode: subagent
 model: translucid/deepseek-v4-flash
-variant: high
+variant: medium
 permission:
   "*": deny
   skill: allow

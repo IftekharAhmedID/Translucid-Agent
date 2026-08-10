@@ -23,7 +23,7 @@ const environmentSchema = z
     FINALIZER_OPENCODE_PROVIDER: z.enum(["ZEN", "GO"]).default("GO"),
     RESEARCH_MODEL: z.string().min(1).default("deepseek-v4-flash"),
     FINALIZER_MODEL: z.string().min(1).default("deepseek-v4-flash"),
-    REASONING_VARIANT: z.literal("high").default("high"),
+    REASONING_VARIANT: z.literal("medium").default("medium"),
     PROVIDER_MODE: z.enum(["fixture", "live"]).default("fixture"),
     RUNTIME_DEFAULT: z.enum(["LOCAL", "E2B"]).default("LOCAL"),
     E2B_API_KEY: z.string().optional(),

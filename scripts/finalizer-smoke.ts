@@ -23,14 +23,14 @@ const directory = "/workspace/case";
 const claimId = "00000000-0000-4000-8000-000000000001";
 
 async function focused<T>(agent: "evidence-critic" | "fresh-adjudicator", title: string, prompt: string, schema: z.ZodType<T>): Promise<void> {
-  const created = await client.session.create({ directory, title, agent, model: { id: "deepseek-v4-flash", providerID: "translucid", variant: "high" } });
+  const created = await client.session.create({ directory, title, agent, model: { id: "deepseek-v4-flash", providerID: "translucid", variant: "medium" } });
   if (!created.data || created.error) throw new Error(`${title} session creation failed.`);
   const message = await client.session.prompt({
     sessionID: created.data.id,
     directory,
     agent,
     model: { providerID: "translucid", modelID: "deepseek-v4-flash" },
-    variant: "high",
+    variant: "medium",
     format: { type: "json_schema", schema: z.toJSONSchema(schema), retryCount: 2 },
     parts: [{ type: "text", text: prompt }],
   });
