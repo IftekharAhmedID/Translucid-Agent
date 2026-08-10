@@ -13,15 +13,18 @@ import { reconcileResearchFrontier } from "../db/state.ts";
 import type { RunHandle } from "../runtime/types.ts";
 import { buildAdjudicationBundle, buildFrozenEvidenceBundle } from "./bundle.ts";
 import {
+  buildCriticBatchBundle,
   buildFindingBatchBundle,
   buildSummaryBundle,
   criticJsonExample,
   criticOutputSchema,
   findingBatchOutputSchema,
   mapWithConcurrency,
+  mergeCriticBatches,
   mergeFindingBatches,
   partitionClaims,
   summaryOutputSchema,
+  validateCriticBatch,
 } from "./finalization.ts";
 import { extractStructuredOutput, structuredOutputRecovery } from "./structured-output.ts";
 import { researchCompletionAction } from "./research-completion.ts";
@@ -98,20 +101,29 @@ export class OpenCodeInvestigationController {
 
       await reconcileResearchFrontier(input.investigationId, input.runId);
       const frozen = await buildFrozenEvidenceBundle(input.investigationId, input.runId);
-      const criticOutput = (await this.promptStructured({
-        client,
-        input,
-        knownSessions,
-        title: "Frozen evidence critic",
-        agent: "evidence-critic",
-        phase: "CRITIC",
-        prompt: `Audit this frozen durable bundle. Do not research. Return the required structured audit.\n${JSON.stringify(frozen)}`,
-        schema: criticOutputSchema,
-        jsonExample: criticJsonExample,
-      })).value;
       const frozenEvidence = frozen.evidence as Array<{ id: string; claimIds: string[] }>;
       const allEvidenceIds = new Set(frozenEvidence.map(({ id }) => id));
-      const knownClaimIds = new Set((frozen.claims as Array<{ id: string }>).map(({ id }) => id));
+      const frozenClaims = frozen.claims as Array<{ id: string }>;
+      const knownClaimIds = new Set(frozenClaims.map(({ id }) => id));
+      const criticClaimBatches = partitionClaims(frozenClaims, 20);
+      const criticOutputs = await mapWithConcurrency(criticClaimBatches, 2, async (batch, index) => {
+        const claimIds = batch.map(({ id }) => id);
+        const criticBundle = buildCriticBatchBundle(frozen, claimIds);
+        const eligibleEvidenceIds = new Set((criticBundle.evidence as Array<{ id: string }>).map(({ id }) => id));
+        const result = await this.promptStructured({
+          client,
+          input,
+          knownSessions,
+          title: `Frozen evidence critic ${index + 1} of ${criticClaimBatches.length}`,
+          agent: "evidence-critic",
+          phase: "CRITIC",
+          prompt: `Audit exactly these ${claimIds.length} frozen claim packets. Do not research or cite evidence outside this packet. Return only exceptions in the required structured audit.\n${JSON.stringify(criticBundle)}`,
+          schema: criticOutputSchema,
+          jsonExample: criticJsonExample,
+        });
+        return validateCriticBatch(result.value, new Set(claimIds), eligibleEvidenceIds);
+      });
+      const criticOutput = mergeCriticBatches(criticOutputs);
       for (const id of criticOutput.rejectedEvidence.map(({ evidenceId }) => evidenceId)) {
         if (!allEvidenceIds.has(id)) throw new Error(`Critic referenced unknown evidence ID ${id}.`);
       }

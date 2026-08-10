@@ -32,6 +32,8 @@ export const summaryOutputSchema = z.object({
   summary: investigationSummarySchema,
 }).strict();
 
+export type CriticOutput = z.infer<typeof criticOutputSchema>;
+
 export function partitionClaims<T>(claims: T[], batchSize = 5): T[][] {
   if (!Number.isInteger(batchSize) || batchSize < 1) throw new Error("Batch size must be a positive integer.");
   const batches: T[][] = [];
@@ -50,6 +52,61 @@ export function mergeFindingBatches(batches: FindingOutput[][], expectedClaimIds
   const missing = expectedClaimIds.filter((id) => !byClaim.has(id));
   if (missing.length) throw new Error(`Missing findings for claims: ${missing.join(", ")}.`);
   return expectedClaimIds.map((id) => byClaim.get(id)!);
+}
+
+export function buildCriticBatchBundle(bundle: Record<string, unknown>, claimIds: string[]) {
+  const selectedClaims = new Set(claimIds);
+  const evidence = rows(bundle, "evidence").filter(({ claimIds: ids }) => Array.isArray(ids) && ids.some((id) => typeof id === "string" && selectedClaims.has(id)));
+  const artifactIds = new Set(evidence.map(({ artifactId }) => String(artifactId)));
+  return {
+    claims: rows(bundle, "claims").filter(({ id }) => typeof id === "string" && selectedClaims.has(id)),
+    entities: rows(bundle, "entities"),
+    identifiers: rows(bundle, "identifiers"),
+    links: rows(bundle, "links"),
+    artifacts: rows(bundle, "artifacts").filter(({ id }) => artifactIds.has(String(id))),
+    observations: rows(bundle, "observations").filter(({ artifactId }) => artifactIds.has(String(artifactId))),
+    evidence,
+    researchQuestions: rows(bundle, "researchQuestions").filter(({ claimIds: ids }) => Array.isArray(ids) && ids.some((id) => typeof id === "string" && selectedClaims.has(id))),
+    extractionLimitations: rows(bundle, "extractionLimitations"),
+  };
+}
+
+export function validateCriticBatch(output: CriticOutput, expectedClaimIds: Set<string>, eligibleEvidenceIds: Set<string>): CriticOutput {
+  for (const rejection of output.rejectedEvidence) {
+    if (!eligibleEvidenceIds.has(rejection.evidenceId)) throw new Error(`Critic batch referenced ineligible evidence ID ${rejection.evidenceId}.`);
+  }
+  for (const concern of output.claimConcerns) {
+    if (!expectedClaimIds.has(concern.claimId)) throw new Error(`Critic batch referenced an unassigned claim ID ${concern.claimId}.`);
+  }
+  return output;
+}
+
+function uniqueStrings(values: string[], maximum: number): string[] {
+  return [...new Set(values)].slice(0, maximum);
+}
+
+export function mergeCriticBatches(batches: CriticOutput[]): CriticOutput {
+  const rejectedEvidence = new Map<string, { evidenceId: string; reason: string }>();
+  const claimConcerns = new Map<string, { claimId: string; concerns: string[] }>();
+  for (const batch of batches) {
+    for (const rejection of batch.rejectedEvidence) {
+      if (!rejectedEvidence.has(rejection.evidenceId)) rejectedEvidence.set(rejection.evidenceId, rejection);
+    }
+    for (const concern of batch.claimConcerns) {
+      const existing = claimConcerns.get(concern.claimId);
+      claimConcerns.set(concern.claimId, {
+        claimId: concern.claimId,
+        concerns: uniqueStrings([...(existing?.concerns ?? []), ...concern.concerns], 5),
+      });
+    }
+  }
+  return criticOutputSchema.parse({
+    rejectedEvidence: [...rejectedEvidence.values()],
+    claimConcerns: [...claimConcerns.values()],
+    identityConcerns: uniqueStrings(batches.flatMap(({ identityConcerns }) => identityConcerns), 20),
+    chronologyConcerns: uniqueStrings(batches.flatMap(({ chronologyConcerns }) => chronologyConcerns), 20),
+    limitations: uniqueStrings(batches.flatMap(({ limitations }) => limitations), 20),
+  });
 }
 
 function rows(bundle: Record<string, unknown>, key: string): Row[] {

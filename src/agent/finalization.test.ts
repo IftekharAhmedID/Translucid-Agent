@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildCriticBatchBundle,
   buildFindingBatchBundle,
   criticJsonExample,
   criticOutputSchema,
   findingBatchOutputSchema,
+  mergeCriticBatches,
   mergeFindingBatches,
   partitionClaims,
   summaryOutputSchema,
+  validateCriticBatch,
 } from "./finalization.ts";
 
 const finding = (claimId: string) => ({
@@ -31,6 +34,11 @@ test("fifteen ordered claims partition into three deterministic batches of five"
       ["claim-11", "claim-12", "claim-13", "claim-14", "claim-15"],
     ],
   );
+});
+
+test("sixty claims partition into three bounded critic packets of twenty", () => {
+  const claims = Array.from({ length: 60 }, (_, index) => ({ id: `claim-${index + 1}` }));
+  assert.deepEqual(partitionClaims(claims, 20).map(({ length }) => length), [20, 20, 20]);
 });
 
 test("focused finding schema rejects more than five findings", () => {
@@ -94,4 +102,40 @@ test("summary schema is focused and excludes findings", () => {
 test("critic reports only exceptions instead of echoing every accepted evidence ID", () => {
   assert.deepEqual(criticOutputSchema.parse(criticJsonExample), criticJsonExample);
   assert.throws(() => criticOutputSchema.parse({ ...criticJsonExample, acceptedEvidenceIds: [] }));
+});
+
+test("critic packets isolate claims, evidence, artifacts and questions in deterministic batches", () => {
+  const packet = buildCriticBatchBundle({
+    claims: [{ id: "claim-a" }, { id: "claim-b" }],
+    entities: [{ id: "person" }],
+    identifiers: [],
+    links: [],
+    artifacts: [{ id: "artifact-a" }, { id: "artifact-b" }],
+    observations: [{ id: "observation-a", artifactId: "artifact-a" }, { id: "observation-b", artifactId: "artifact-b" }],
+    evidence: [{ id: "evidence-a", artifactId: "artifact-a", claimIds: ["claim-a"] }, { id: "evidence-b", artifactId: "artifact-b", claimIds: ["claim-b"] }],
+    researchQuestions: [{ id: "question-a", claimIds: ["claim-a"] }, { id: "question-b", claimIds: ["claim-b"] }],
+  }, ["claim-a"]);
+  assert.deepEqual(packet.claims.map(({ id }) => id), ["claim-a"]);
+  assert.deepEqual(packet.evidence.map(({ id }) => id), ["evidence-a"]);
+  assert.deepEqual(packet.artifacts.map(({ id }) => id), ["artifact-a"]);
+  assert.deepEqual(packet.observations.map(({ id }) => id), ["observation-a"]);
+  assert.deepEqual(packet.researchQuestions.map(({ id }) => id), ["question-a"]);
+  assert.deepEqual(packet.entities.map(({ id }) => id), ["person"]);
+});
+
+test("critic batches validate scope and merge duplicate global concerns deterministically", () => {
+  const evidenceId = "00000000-0000-4000-8000-000000000010";
+  const claimId = "00000000-0000-4000-8000-000000000020";
+  const first = criticOutputSchema.parse({
+    rejectedEvidence: [{ evidenceId, reason: "The quote does not establish the assigned claim." }],
+    claimConcerns: [{ claimId, concerns: ["The date is unsupported."] }],
+    identityConcerns: ["One identity concern."],
+    chronologyConcerns: [],
+    limitations: ["One limitation."],
+  });
+  const second = criticOutputSchema.parse({ ...criticJsonExample, identityConcerns: ["One identity concern."], limitations: ["One limitation."] });
+  assert.equal(validateCriticBatch(first, new Set([claimId]), new Set([evidenceId])), first);
+  assert.throws(() => validateCriticBatch(first, new Set(), new Set([evidenceId])), /unassigned claim/i);
+  assert.throws(() => validateCriticBatch(first, new Set([claimId]), new Set()), /ineligible evidence/i);
+  assert.deepEqual(mergeCriticBatches([first, second]), first);
 });
