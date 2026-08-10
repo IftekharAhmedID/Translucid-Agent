@@ -63,12 +63,25 @@ function githubRepositoryGroup(input: TrustInput, url: string | undefined): stri
   if (network && typeof network === "object" && typeof (network as { repository?: unknown }).repository === "string") {
     return `github-repository:${String((network as { repository: string }).repository).toLocaleLowerCase("en-US")}`;
   }
+  if (network && typeof network === "object" && typeof (network as { path?: unknown }).path === "string") {
+    const path = String((network as { path: string }).path);
+    const repository = path.match(/^\/repos\/([^/?#]+)\/([^/?#]+)/i);
+    if (repository) return `github-repository:${decodeURIComponent(repository[1]!).toLocaleLowerCase("en-US")}/${decodeURIComponent(repository[2]!).toLocaleLowerCase("en-US")}`;
+    const account = path.match(/^\/users\/([^/?#]+)/i)?.[1];
+    if (account) return `github-account:${decodeURIComponent(account).toLocaleLowerCase("en-US")}`;
+  }
   if (network && typeof network === "object" && typeof (network as { query?: unknown }).query === "string") {
-    const repository = String((network as { query: string }).query).match(/\brepo:([\w.-]+\/[\w.-]+)/i)?.[1];
+    const query = String((network as { query: string }).query);
+    const repository = query.match(/\brepo:([\w.-]+\/[\w.-]+)/i)?.[1];
     if (repository) return `github-repository:${repository.toLocaleLowerCase("en-US")}`;
+    const repositoryCall = query.match(/\brepository\s*\(\s*owner\s*:\s*["']([\w.-]+)["']\s*,\s*name\s*:\s*["']([\w.-]+)["']/i);
+    if (repositoryCall) return `github-repository:${repositoryCall[1]!.toLocaleLowerCase("en-US")}/${repositoryCall[2]!.toLocaleLowerCase("en-US")}`;
+    const account = query.match(/\buser\s*\(\s*login\s*:\s*["']([\w.-]+)["']/i)?.[1];
+    if (account) return `github-account:${account.toLocaleLowerCase("en-US")}`;
   }
   if (!url) return undefined;
   const parsed = new URL(url);
+  if (parsed.hostname === "api.github.com") return "domain:github.com";
   if (parsed.hostname !== "github.com") return undefined;
   const [owner, repository] = parsed.pathname.split("/").filter(Boolean);
   return owner && repository ? `github-repository:${owner.toLocaleLowerCase("en-US")}/${repository.replace(/\.git$/i, "").toLocaleLowerCase("en-US")}` : "domain:github.com";

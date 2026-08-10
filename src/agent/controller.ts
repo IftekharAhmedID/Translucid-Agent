@@ -23,7 +23,7 @@ import {
   partitionClaims,
   summaryOutputSchema,
 } from "./finalization.ts";
-import { extractStructuredOutput } from "./structured-output.ts";
+import { extractStructuredOutput, structuredOutputRecovery } from "./structured-output.ts";
 import { researchCompletionAction } from "./research-completion.ts";
 
 const directory = "/workspace/case";
@@ -308,6 +308,37 @@ export class OpenCodeInvestigationController {
     } catch (fallbackError) {
       const second = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
       if (transport === "JSON_OBJECT") {
+        const recovery = structuredOutputRecovery(fallbackError);
+        if (recovery === "SAME_SESSION_COMPLETION") {
+          await insertAgentEvent({
+            investigationId: input.investigationId,
+            runId: input.runId,
+            phase,
+            agent,
+            sessionId: fallback.id,
+            eventType: "STRUCTURED_OUTPUT_COMPLETION_CONTINUATION",
+            status: "RETRYING",
+            publicRationale: "The GO model completed its analysis but omitted the final JSON, so the same session received one bounded final-answer continuation without repeating the audit.",
+            payload: { firstError: second.slice(0, 1_000) },
+          });
+          const continuationMessage = unwrap(await client.session.prompt({
+            sessionID: fallback.id,
+            directory,
+            agent,
+            model: { providerID: "translucid", modelID: config.finalizerModel },
+            variant: config.reasoningVariant,
+            parts: [{
+              type: "text",
+              text: `Your preceding turn completed the analysis but omitted the final answer. Do not repeat the audit, revisit sources, or add prose. Using only the analysis already completed in this session, return one complete compact JSON object now. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}\nExample JSON shape (replace example values with case-grounded values):\n${JSON.stringify(jsonExample)}`,
+            }],
+          }, { signal: input.signal }), `${phase.toLowerCase()} same-session JSON completion`);
+          try {
+            return { value: schema.parse(extractStructuredOutput(continuationMessage)), sessionId: fallback.id };
+          } catch (continuationError) {
+            const third = continuationError instanceof Error ? continuationError.message : String(continuationError);
+            throw new Error(`${phase} JSON-object output omitted its answer (${second}) and its one same-session completion also failed (${third}).`);
+          }
+        }
         await insertAgentEvent({
           investigationId: input.investigationId,
           runId: input.runId,
@@ -316,7 +347,7 @@ export class OpenCodeInvestigationController {
           sessionId: fallback.id,
           eventType: "STRUCTURED_OUTPUT_JSON_RETRY",
           status: "RETRYING",
-          publicRationale: "The first GO JSON-object response failed deterministic parsing or schema validation, so one fresh bounded retry was requested. A second failure stops finalization.",
+          publicRationale: "The first GO JSON-object response contained an answer that failed deterministic JSON or schema validation, so one fresh bounded correction was requested. A second failure stops finalization.",
           payload: { firstError: second.slice(0, 1_000) },
         });
         const retry = await this.createSession(client, `${title} JSON retry`, agent, input.signal);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extractStructuredOutput } from "./structured-output.ts";
+import { extractStructuredOutput, structuredOutputRecovery } from "./structured-output.ts";
 
 test("uses native OpenCode structured output when present", () => {
   assert.deepEqual(
@@ -62,4 +62,9 @@ test("surfaces OpenCode message errors before parsing any parts", () => {
     }),
     /StructuredOutputError/,
   );
+});
+
+test("reasoning-only output continues the same session instead of repeating the audit", () => {
+  assert.equal(structuredOutputRecovery(new Error("NO_TEXT_OUTPUT: reasoning only")), "SAME_SESSION_COMPLETION");
+  assert.equal(structuredOutputRecovery(new Error("Session did not produce valid structured output")), "FRESH_SCHEMA_RETRY");
 });

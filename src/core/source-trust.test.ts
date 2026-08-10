@@ -14,6 +14,36 @@ test("source authority is backend-derived from capture lineage", () => {
   assert.equal(deriveArtifactTrust({ kind: "SOURCE_CONTENT", provider: "public-fetch", sourceUrl: "https://www.reuters.com/technology/example", provenance: {}, content: {} }).sourceAuthority, "INDEPENDENT_PROFESSIONAL");
 });
 
+test("GitHub REST and GraphQL artifacts use repository or account lineage instead of the API domain", () => {
+  const restCommit = deriveArtifactTrust({
+    kind: "PROVIDER_RESPONSE",
+    provider: "github",
+    sourceUrl: "https://api.github.com/repos/python/cpython/commits?author=ada",
+    provenance: { providerRoute: "github.rest", networkArguments: { path: "/repos/python/cpython/commits?author=ada" } },
+    content: {},
+  });
+  assert.equal(restCommit.sourceAuthority, "DIRECT_WORK");
+  assert.equal(restCommit.independenceGroup, "github-repository:python/cpython");
+
+  const repositoryQuery = deriveArtifactTrust({
+    kind: "PROVIDER_RESPONSE",
+    provider: "github",
+    sourceUrl: "https://api.github.com/graphql",
+    provenance: { providerRoute: "github.graphql", networkArguments: { query: "query { repository(owner: \"python\", name: \"cpython\") { pullRequests(first: 5) { nodes { number } } } }" } },
+    content: {},
+  });
+  assert.equal(repositoryQuery.independenceGroup, "github-repository:python/cpython");
+
+  const accountQuery = deriveArtifactTrust({
+    kind: "PROVIDER_RESPONSE",
+    provider: "github",
+    sourceUrl: "https://api.github.com/graphql",
+    provenance: { providerRoute: "github.graphql", networkArguments: { query: "query { user(login: \"Ada\") { contributionsCollection { totalCommitContributions } } }" } },
+    content: {},
+  });
+  assert.equal(accountQuery.independenceGroup, "github-account:ada");
+});
+
 test("LinkdAPI and Bright Data views of one LinkedIn profile share an independence group", () => {
   const linkd = deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "linkdapi", sourceUrl: "https://linkedin.com/in/Ada/#about", provenance: { providerRoute: "linkdapi.profile" }, content: {} });
   const bright = deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "brightdata-linkedin-profile", sourceUrl: "https://www.linkedin.com/in/ada", provenance: { providerRoute: "brightdata.linkedin-profile" }, content: {} });

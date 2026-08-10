@@ -3,6 +3,14 @@ type AssistantResult = {
   parts: Array<{ type: string; text?: string }>;
 };
 
+export type StructuredOutputRecovery = "SAME_SESSION_COMPLETION" | "FRESH_SCHEMA_RETRY";
+
+export function structuredOutputRecovery(error: unknown): StructuredOutputRecovery {
+  return error instanceof Error && error.message.startsWith("NO_TEXT_OUTPUT:")
+    ? "SAME_SESSION_COMPLETION"
+    : "FRESH_SCHEMA_RETRY";
+}
+
 function firstBalancedJsonObject(text: string): string | undefined {
   const start = text.indexOf("{");
   if (start < 0) return undefined;
