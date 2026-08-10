@@ -126,6 +126,8 @@ export class OpenCodeInvestigationController {
       const batchSessionIds = new Array<string>(claimBatches.length);
       const findingBatches = await mapWithConcurrency(claimBatches, 2, async (batch, index) => {
         const claimIds = batch.map(({ id }) => id);
+        const batchBundle = buildFindingBatchBundle(adjudicationBundle, claimIds);
+        const batchPrompt = `Adjudicate exactly these ${claimIds.length} claim packets. For each claim, cite only evidence IDs in that same packet's eligibleEvidenceIds. Evidence listed for another claim is ineligible even when its quote appears relevant. If the eligible evidence does not establish the claim, return UNRESOLVED with empty citation arrays. Return only the focused findings object.\n${JSON.stringify(batchBundle)}`;
         try {
           const adjudication = await this.promptStructured({
             client,
@@ -134,11 +136,38 @@ export class OpenCodeInvestigationController {
             title: `Fresh finding adjudication ${index + 1} of ${claimBatches.length}`,
             agent: "fresh-adjudicator",
             phase: "ADJUDICATION",
-            prompt: `Adjudicate exactly these ${claimIds.length} claims from the critic-filtered frozen bundle. Return only the focused findings object.\n${JSON.stringify(buildFindingBatchBundle(adjudicationBundle, claimIds))}`,
+            prompt: batchPrompt,
             schema: findingBatchOutputSchema,
           });
           batchSessionIds[index] = adjudication.sessionId;
-          return validateFindingBatch(adjudication.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds);
+          try {
+            return validateFindingBatch(adjudication.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds);
+          } catch (validationError) {
+            const validationMessage = validationError instanceof Error ? validationError.message : String(validationError);
+            await insertAgentEvent({
+              investigationId: input.investigationId,
+              runId: input.runId,
+              phase: "ADJUDICATION",
+              agent: "fresh-adjudicator",
+              sessionId: adjudication.sessionId,
+              eventType: "ADJUDICATION_BATCH_CORRECTION",
+              status: "RETRYING",
+              publicRationale: "A five-claim batch failed citation validation, so one fresh bounded correction was requested. A second failure will stop finalization.",
+              payload: { batch: index + 1, validationError: validationMessage },
+            });
+            const correction = await this.promptStructured({
+              client,
+              input,
+              knownSessions,
+              title: `Fresh finding adjudication ${index + 1} correction`,
+              agent: "fresh-adjudicator",
+              phase: "ADJUDICATION",
+              prompt: `${batchPrompt}\n\nThe previous independent response was rejected by deterministic validation: ${validationMessage}\nCorrect that exact defect. Do not cite an evidence ID outside the corresponding claim packet. This is the only correction attempt.`,
+              schema: findingBatchOutputSchema,
+            });
+            batchSessionIds[index] = correction.sessionId;
+            return validateFindingBatch(correction.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds);
+          }
         } catch (error) {
           throw new Error(`Adjudication batch ${index + 1}/${claimBatches.length} failed on ${getConfig().finalizerOpenCodeProvider}: ${error instanceof Error ? error.message : String(error)}`);
         }

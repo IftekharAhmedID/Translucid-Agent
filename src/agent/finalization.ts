@@ -53,20 +53,25 @@ function rows(bundle: Record<string, unknown>, key: string): Row[] {
 export function buildFindingBatchBundle(bundle: Record<string, unknown>, claimIds: string[]) {
   const selectedClaims = new Set(claimIds);
   const evidence = rows(bundle, "evidence").filter(({ claimIds: ids }) => Array.isArray(ids) && ids.some((id) => typeof id === "string" && selectedClaims.has(id)));
-  const evidenceIds = new Set(evidence.map(({ id }) => String(id)));
   const artifactIds = new Set(evidence.map(({ artifactId }) => String(artifactId)));
   const critic = bundle.critic && typeof bundle.critic === "object" ? bundle.critic as Row : {};
+  const concerns = Array.isArray(critic.claimConcerns) ? critic.claimConcerns : [];
+  const claims = rows(bundle, "claims").filter(({ id }) => typeof id === "string" && selectedClaims.has(id));
   return {
-    claims: rows(bundle, "claims").filter(({ id }) => typeof id === "string" && selectedClaims.has(id)),
-    evidence,
+    claimPackets: claims.map((claim) => {
+      const claimId = String(claim.id);
+      const eligibleEvidence = evidence.filter(({ claimIds: ids }) => Array.isArray(ids) && ids.includes(claimId));
+      return {
+        claim,
+        eligibleEvidence,
+        eligibleEvidenceIds: eligibleEvidence.map(({ id }) => String(id)),
+        concerns: concerns.filter((concern) => Boolean(concern) && typeof concern === "object" && String((concern as Row).claimId) === claimId),
+      };
+    }),
     artifacts: rows(bundle, "artifacts").filter(({ id }) => artifactIds.has(String(id))),
     observations: rows(bundle, "observations").filter(({ artifactId }) => artifactIds.has(String(artifactId))),
     researchQuestions: rows(bundle, "researchQuestions").filter(({ claimIds: ids }) => Array.isArray(ids) && ids.some((id) => typeof id === "string" && selectedClaims.has(id))),
-    claimConcerns: Array.isArray(critic.claimConcerns)
-      ? critic.claimConcerns.filter((concern) => Boolean(concern) && typeof concern === "object" && selectedClaims.has(String((concern as Row).claimId)))
-      : [],
     limitations: Array.isArray(critic.limitations) ? critic.limitations : [],
-    evidenceIds: [...evidenceIds],
   };
 }
 

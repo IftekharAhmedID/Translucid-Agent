@@ -58,6 +58,14 @@ test("professional investigator starts with an explicit LinkedIn URL before broa
   assert.match(source, /one retry/i);
 });
 
+test("fresh adjudicator is restricted to evidence linked inside each claim packet", async () => {
+  const source = await readFile(new URL("../../runtime/opencode/agents/fresh-adjudicator.md", import.meta.url), "utf8");
+
+  assert.match(source, /eligibleEvidenceIds/);
+  assert.match(source, /same packet/i);
+  assert.match(source, /UNRESOLVED with empty citation arrays/i);
+});
+
 for (const agent of ["lead-investigator", ...researchAgents]) {
   test(`${agent} never refetches or probes saved tool output to recover artifact IDs`, async () => {
     const source = await readFile(new URL(`../../runtime/opencode/agents/${agent}.md`, import.meta.url), "utf8");
