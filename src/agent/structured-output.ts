@@ -44,6 +44,6 @@ export function extractStructuredOutput(message: AssistantResult): unknown {
     return JSON.parse(candidate);
   } catch {
     const partTypes = message.parts.map((part) => part.type).join(",") || "none";
-    throw new Error(`Session did not produce valid structured output (error=none, parts=${partTypes}).`);
+    throw new Error(`Session did not produce valid structured output (error=none, parts=${partTypes}, textCharacters=${text.length}).`);
   }
 }

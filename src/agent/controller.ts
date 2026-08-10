@@ -280,6 +280,38 @@ export class OpenCodeInvestigationController {
       return { value: schema.parse(extractStructuredOutput(fallbackMessage)), sessionId: fallback.id };
     } catch (fallbackError) {
       const second = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      if (transport === "JSON_OBJECT") {
+        await insertAgentEvent({
+          investigationId: input.investigationId,
+          runId: input.runId,
+          phase,
+          agent,
+          sessionId: fallback.id,
+          eventType: "STRUCTURED_OUTPUT_JSON_RETRY",
+          status: "RETRYING",
+          publicRationale: "The first GO JSON-object response failed deterministic parsing or schema validation, so one fresh bounded retry was requested. A second failure stops finalization.",
+          payload: { firstError: second.slice(0, 1_000) },
+        });
+        const retry = await this.createSession(client, `${title} JSON retry`, agent, input.signal);
+        knownSessions.add(retry.id);
+        const retryMessage = unwrap(await client.session.prompt({
+          sessionID: retry.id,
+          directory,
+          agent,
+          model: { providerID: "translucid", modelID: config.finalizerModel },
+          variant: config.reasoningVariant,
+          parts: [{
+            type: "text",
+            text: `${prompt}\n\nThe previous independent response failed deterministic JSON/schema validation: ${second.slice(0, 1_000)}\nReturn one complete, compact JSON object with no prose and do not echo source text. Keep concern, explanation, and limitation strings concise. This is the only JSON retry. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}`,
+          }],
+        }, { signal: input.signal }), `${phase.toLowerCase()} JSON retry prompt`);
+        try {
+          return { value: schema.parse(extractStructuredOutput(retryMessage)), sessionId: retry.id };
+        } catch (retryError) {
+          const third = retryError instanceof Error ? retryError.message : String(retryError);
+          throw new Error(`${phase} JSON-object output failed first (${second}) and through its one bounded retry (${third}).`);
+        }
+      }
       if (nativeError !== undefined) {
         const first = nativeError instanceof Error ? nativeError.message : String(nativeError);
         throw new Error(`${phase} structured output failed natively (${first}) and through its one JSON fallback (${second}).`);

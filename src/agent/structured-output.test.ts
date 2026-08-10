@@ -43,7 +43,7 @@ test("extracts one balanced JSON object when a provider adds a short preface and
 test("rejects missing or malformed structured output", () => {
   assert.throws(
     () => extractStructuredOutput({ info: { role: "assistant" }, parts: [{ type: "text", text: "not json" }] }),
-    /valid structured output/i,
+    /valid structured output.*textCharacters=8/i,
   );
 });
 
