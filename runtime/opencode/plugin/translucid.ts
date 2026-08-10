@@ -50,9 +50,10 @@ function gatewayTool(name: string, description: string, args: Record<string, Ret
 }
 
 const plugin: Plugin = async () => ({
-  "chat.headers": async (_input, output) => {
+  "chat.headers": async (input, output) => {
     output.headers["x-investigation-id"] = investigationId;
     output.headers["x-run-id"] = runId;
+    output.headers["x-opencode-agent"] = input.agent;
   },
   tool: {
     "web.search": gatewayTool("web.search", "Discover public web sources. Results are hints only; fetch a page before citing it.", { ...common, query: z.string().min(2).max(1000), mode: z.enum(["fast", "auto"]).default("fast") }),

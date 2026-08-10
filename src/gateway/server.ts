@@ -7,7 +7,7 @@ import { toolNames } from "../providers/contracts.ts";
 import { authorizeCaseToken, consumeBudget } from "../providers/security.ts";
 import { executeStateTool, isStateTool } from "./state-tools.ts";
 import { fixtureCompletion, writeFixtureCompletion } from "./fixture-model.ts";
-import { encodeModelToolNames, SseToolNameDecoder } from "./model-tool-names.ts";
+import { decodeJsonToolNames, encodeModelToolNames, SseToolNameDecoder } from "./model-tool-names.ts";
 
 const MAX_TOOL_BODY = 1024 * 1024;
 const MAX_MODEL_BODY = 16 * 1024 * 1024;
@@ -100,6 +100,7 @@ async function handleCompaction(request: IncomingMessage, response: ServerRespon
 async function handleModel(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const investigationId = header(request, "x-investigation-id");
   const declaredRunId = header(request, "x-run-id");
+  const agent = header(request, "x-opencode-agent");
   const body = await readJson(request, MAX_MODEL_BODY);
   const rawModel = typeof body.model === "string" ? body.model : "";
   const model = rawModel.split("/").at(-1) ?? "";
@@ -129,7 +130,11 @@ async function handleModel(request: IncomingMessage, response: ServerResponse): 
   response.once("close", () => upstreamAbort.abort(new DOMException("Runtime response disconnected.", "AbortError")));
   let upstream: Response;
   try {
-    upstream = await fetch(getConfig().openCodeUpstreamUrl, {
+    const finalizerAgents = new Set(["evidence-critic", "fresh-adjudicator"]);
+    const upstreamUrl = finalizerAgents.has(agent)
+      ? getConfig().finalizerOpenCodeUpstreamUrl
+      : getConfig().researchOpenCodeUpstreamUrl;
+    upstream = await fetch(upstreamUrl, {
       method: "POST",
       headers: { authorization: `Bearer ${upstreamKey}`, "content-type": "application/json" },
       body: JSON.stringify({ ...encoded.body, model }),
@@ -145,6 +150,16 @@ async function handleModel(request: IncomingMessage, response: ServerResponse): 
     "x-content-type-options": "nosniff",
   });
   if (!upstream.body) { clearTimeout(timeout); return void response.end(); }
+  const contentType = upstream.headers.get("content-type") ?? "application/json";
+  if (!contentType.includes("text/event-stream")) {
+    try {
+      const payload = await upstream.text();
+      response.end(contentType.includes("json") ? decodeJsonToolNames(payload, encoded.wireToSemantic) : payload);
+    } finally {
+      clearTimeout(timeout);
+    }
+    return;
+  }
   const reader = upstream.body.getReader();
   const toolNames = new SseToolNameDecoder(encoded.wireToSemantic);
   try {

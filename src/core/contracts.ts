@@ -92,6 +92,7 @@ export type EntityType = z.infer<typeof entityTypeSchema>;
 export type ResearchQuestionStatus = z.infer<typeof researchQuestionStatusSchema>;
 export type ClaimVerdict = z.infer<typeof claimVerdictSchema>;
 export type InvestigationSummary = z.infer<typeof investigationSummarySchema>;
+export type FindingOutput = z.infer<typeof findingOutputSchema>;
 export type AdjudicationOutput = z.infer<typeof adjudicationOutputSchema>;
 
 export type ApiError = {

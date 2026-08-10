@@ -46,3 +46,20 @@ test("rejects missing or malformed structured output", () => {
     /valid structured output/i,
   );
 });
+
+test("classifies reasoning-only responses without pretending JSON parsing failed", () => {
+  assert.throws(
+    () => extractStructuredOutput({ info: { role: "assistant" }, parts: [{ type: "reasoning" }] }),
+    /NO_TEXT_OUTPUT/,
+  );
+});
+
+test("surfaces OpenCode message errors before parsing any parts", () => {
+  assert.throws(
+    () => extractStructuredOutput({
+      info: { role: "assistant", error: { name: "StructuredOutputError" } },
+      parts: [{ type: "text", text: "{\"ok\":true}" }],
+    }),
+    /StructuredOutputError/,
+  );
+});

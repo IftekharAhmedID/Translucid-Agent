@@ -13,6 +13,7 @@
     "runner": "node --env-file-if-exists=.env --import tsx src/runner/index.ts",
     "gateway": "node --env-file-if-exists=.env --import tsx src/gateway/server.ts",
     "attach": "node --env-file-if-exists=.env --import tsx scripts/attach-local.ts",
+    "smoke:finalizer": "node --env-file-if-exists=.env --import tsx scripts/finalizer-smoke.ts",
     "db:migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",
     "runtime:manifest": "node --env-file-if-exists=.env --import tsx scripts/runtime-manifest.ts",
     "e2b:build-template": "node --env-file-if-exists=.env --import tsx scripts/build-e2b-template.ts",

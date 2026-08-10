@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { encodeModelToolNames, SseToolNameDecoder } from "./model-tool-names.ts";
+import { decodeJsonToolNames, encodeModelToolNames, SseToolNameDecoder } from "./model-tool-names.ts";
 
 test("invalid semantic tool names are encoded only on the model wire", () => {
   const body = {
@@ -32,4 +32,28 @@ test("streamed tool calls are decoded across arbitrary chunk boundaries", () => 
   assert.equal(first, "");
   assert.match(second + final, /"name":"claim\.create"/);
   assert.match(second + final, /data: \[DONE\]/);
+});
+
+test("non-streaming GO tool aliases round-trip all affected semantic tool-name fields", () => {
+  const aliases = new Map([
+    ["wire_entity", "entity.link"],
+    ["wire_observation", "observation.record"],
+    ["wire_research", "research.resolve"],
+    ["wire_evidence", "evidence.capture"],
+  ]);
+  const payload = JSON.stringify({
+    choices: [{ message: {
+      tool_calls: [
+        { function: { name: "wire_entity" } },
+        { function: { name: "wire_observation" } },
+        { function: { name: "wire_research" } },
+        { function: { name: "wire_evidence" } },
+      ],
+      provider_metadata: { tool_name: "wire_entity", toolName: "wire_evidence" },
+    } }],
+  });
+
+  const decoded = decodeJsonToolNames(payload, aliases);
+  for (const semantic of aliases.values()) assert.match(decoded, new RegExp(semantic.replace(".", "\\.")));
+  assert.doesNotMatch(decoded, /wire_/);
 });

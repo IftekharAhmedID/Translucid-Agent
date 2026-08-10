@@ -26,9 +26,9 @@ export async function fixtureCompletion(body: Record<string, unknown>, investiga
   const userText = latestUserText(body);
   const sql = getSql();
   const isStructured = body.tool_choice === "required" || names.has("StructuredOutput");
-  const [phase] = isStructured
-    ? await sql<Array<{ adjudicatorStarted: boolean }>>`SELECT opencode_adjudicator_session_id IS NOT NULL AS "adjudicatorStarted" FROM runs WHERE id = ${runId}`
-    : [];
+  const isCriticRequest = userText.includes("Audit this frozen durable bundle");
+  const isFindingRequest = userText.includes("Adjudicate exactly these");
+  const isSummaryRequest = userText.includes("Summarize only the validated findings");
   const isProfessionalFixture = userText.includes("Investigate the synthetic Acme chronology question");
   if (names.has("claim.create") && !isStructured && !isProfessionalFixture) {
     const [claims, entities, questions, providerCalls, evidence, observations, artifacts] = await Promise.all([
@@ -78,28 +78,28 @@ export async function fixtureCompletion(body: Record<string, unknown>, investiga
     if (question.status !== "RESOLVED") return { toolCall: { name: "research.resolve", arguments: { questionId: question.id, status: "RESOLVED", resolutionSummary: "The deterministic synthetic artifact corroborates the fixture chronology claim." } } };
     return { content: "The synthetic chronology route is complete with captured evidence and a temporal observation." };
   }
-  if (isStructured && !phase?.adjudicatorStarted) {
-    return {
-      toolCall: {
-        name: "StructuredOutput",
-        arguments: {
-          acceptedEvidenceIds: evidence.map(({ id }) => id),
-          rejectedEvidence: [],
-          claimConcerns: [],
-          identityConcerns: entities.length < 2 ? ["The synthetic fixture establishes a root person but no independently linked external account."] : [],
-          chronologyConcerns: [],
-          limitations: ["Synthetic fixture evidence is suitable only for development validation."],
-        },
-      },
+  if (isCriticRequest) {
+    const audit = {
+      acceptedEvidenceIds: evidence.map(({ id }) => id),
+      rejectedEvidence: [],
+      claimConcerns: [],
+      identityConcerns: entities.length < 2 ? ["The synthetic fixture establishes a root person but no independently linked external account."] : [],
+      chronologyConcerns: [],
+      limitations: ["Synthetic fixture evidence is suitable only for development validation."],
     };
+    return isStructured
+      ? { toolCall: { name: "StructuredOutput", arguments: audit } }
+      : { content: JSON.stringify(audit) };
   }
-  const findings = claims.map((claim) => {
+  const requestedClaims = isFindingRequest ? claims.filter(({ id }) => userText.includes(id)) : claims;
+  const findings = requestedClaims.map((claim) => {
     const supporting = evidence.filter((item) => item.relation === "SUPPORTS" && item.claimIds.includes(claim.id)).map(({ id }) => id);
     return { claimId: claim.id, verdict: supporting.length ? "CORROBORATED" : "UNRESOLVED", strength: supporting.length ? "MODERATE" : "WEAK", explanation: supporting.length ? "The deterministic synthetic source directly supports this fixture claim." : "No saved synthetic evidence resolves this claim.", supportingEvidenceIds: supporting, contradictingEvidenceIds: [], limitations: ["This is a synthetic development result, not a real-world verification."] };
   });
-  const adjudication = { summary: { professionalIdentity: { status: "AMBIGUOUS", summary: "The synthetic root person comes from intake; no external account was linked because the two-anchor threshold was not met.", evidenceIds: [] }, professionalTimelineSummary: observations.length ? "One synthetic employment observation records the Principal Engineer title at Acme Synthetic Labs for 2021–2025." : "No professional timeline observations were saved.", strongestEvidenceIds: evidence.map(({ id }) => id).slice(0, 3), materialInconsistencies: [], unresolvedMaterialClaimIds: findings.filter((finding) => finding.verdict === "UNRESOLVED").map((finding) => finding.claimId), investigationLimitations: ["All sources and identities in this run are deterministic synthetic fixtures."] }, findings };
-  if (isStructured) return { toolCall: { name: "StructuredOutput", arguments: adjudication } };
-  return { content: JSON.stringify(adjudication) };
+  const summary = { professionalIdentity: { status: "AMBIGUOUS", summary: "The synthetic root person comes from intake; no external account was linked because the two-anchor threshold was not met.", evidenceIds: [] }, professionalTimelineSummary: observations.length ? "One synthetic employment observation records the Principal Engineer title at Acme Synthetic Labs for 2021–2025." : "No professional timeline observations were saved.", strongestEvidenceIds: evidence.map(({ id }) => id).slice(0, 3), materialInconsistencies: [], unresolvedMaterialClaimIds: claims.filter((claim) => !evidence.some((item) => item.claimIds.includes(claim.id))).map(({ id }) => id), investigationLimitations: ["All sources and identities in this run are deterministic synthetic fixtures."] };
+  const focused = isFindingRequest ? { findings } : isSummaryRequest ? { summary } : { summary, findings };
+  if (isStructured) return { toolCall: { name: "StructuredOutput", arguments: focused } };
+  return { content: JSON.stringify(focused) };
 }
 
 export function writeFixtureCompletion(response: import("node:http").ServerResponse, body: Record<string, unknown>, model: string, completion: Completion): void {

@@ -13,10 +13,16 @@ function replaceNamedFields(value: unknown, names: Map<string, string>): void {
   }
   if (!value || typeof value !== "object") return;
   const record = value as Record<string, unknown>;
-  if (typeof record.name === "string" && names.has(record.name)) {
-    record.name = names.get(record.name)!;
+  for (const field of ["name", "tool_name", "toolName"] as const) {
+    if (typeof record[field] === "string" && names.has(record[field])) record[field] = names.get(record[field])!;
   }
   for (const nested of Object.values(record)) replaceNamedFields(nested, names);
+}
+
+export function decodeJsonToolNames(payload: string, wireToSemantic: Map<string, string>): string {
+  const parsed: unknown = JSON.parse(payload);
+  replaceNamedFields(parsed, wireToSemantic);
+  return JSON.stringify(parsed);
 }
 
 export function encodeModelToolNames<T>(body: T): {

@@ -66,7 +66,15 @@ Switching `PROVIDER_MODE=live` activates only adapters whose exact credentials a
 
 E2B also requires `E2B_API_KEY`, `E2B_TEMPLATE_ID`, and an HTTPS `E2B_GATEWAY_PUBLIC_URL` exposing only the runner gateway. Build the E2B template directly from this repository's `Dockerfile` with `npm run e2b:build-template -- translucid-investigator`, then copy the returned template ID into `.env`. A run is rejected unless its generated manifest equals the pinned local manifest. The sandbox allows outbound traffic only to the gateway host.
 
-`PDL_API_KEY` is optional and `PDL_LIVE_ENABLED=false` is mandatory. The application never depends on PDL.
+PDL has no environment contract in this development build. Its capability remains visibly `DISABLED_POLICY`, and the application never depends on it.
+
+While an active local live-provider run is attached, the focused finalizer compatibility gate can be executed without printing its short-lived credentials:
+
+```bash
+npm run smoke:finalizer -- <active-run-id>
+```
+
+It requires three consecutive critic, five-claim finding, and summary structured-output cycles before a real résumé acceptance run proceeds.
 
 ## Verification
 

@@ -2,27 +2,28 @@ import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import type { GlobalEvent, Session } from "@opencode-ai/sdk/v2/client";
 import { z } from "zod";
 
-import { validateAdjudication } from "../core/adjudication.ts";
+import { validateAdjudication, validateFindingBatch, validateInvestigationSummary } from "../core/adjudication.ts";
 import { getConfig } from "../core/config.ts";
-import { adjudicationOutputSchema, type AdjudicationOutput } from "../core/contracts.ts";
+import type { AdjudicationOutput } from "../core/contracts.ts";
 import { forcedFinalizationAt } from "../core/deadlines.ts";
 import { getSql } from "../db/client.ts";
 import { insertAgentEvent } from "../db/investigations.ts";
 import { reconcileResearchFrontier } from "../db/state.ts";
 import type { RunHandle } from "../runtime/types.ts";
 import { buildAdjudicationBundle, buildFrozenEvidenceBundle } from "./bundle.ts";
+import {
+  buildFindingBatchBundle,
+  buildSummaryBundle,
+  criticOutputSchema,
+  findingBatchOutputSchema,
+  mapWithConcurrency,
+  mergeFindingBatches,
+  partitionClaims,
+  summaryOutputSchema,
+} from "./finalization.ts";
 import { extractStructuredOutput } from "./structured-output.ts";
 
 const directory = "/workspace/case";
-const criticSchema = z.object({
-  acceptedEvidenceIds: z.array(z.uuid()),
-  rejectedEvidence: z.array(z.object({ evidenceId: z.uuid(), reason: z.string().min(1).max(2_000) })),
-  claimConcerns: z.array(z.object({ claimId: z.uuid(), concerns: z.array(z.string().min(1).max(2_000)) })),
-  identityConcerns: z.array(z.string().min(1).max(2_000)),
-  chronologyConcerns: z.array(z.string().min(1).max(2_000)),
-  limitations: z.array(z.string().min(1).max(2_000)),
-}).strict();
-
 type ControllerInput = {
   investigationId: string;
   runId: string;
@@ -102,7 +103,7 @@ export class OpenCodeInvestigationController {
         agent: "evidence-critic",
         phase: "CRITIC",
         prompt: `Audit this frozen durable bundle. Do not research. Return the required structured audit.\n${JSON.stringify(frozen)}`,
-        schema: criticSchema,
+        schema: criticOutputSchema,
       })).value;
       const frozenEvidence = frozen.evidence as Array<{ id: string; claimIds: string[] }>;
       const allEvidenceIds = new Set(frozenEvidence.map(({ id }) => id));
@@ -117,19 +118,43 @@ export class OpenCodeInvestigationController {
       const acceptedEvidenceIds = new Set(criticOutput.acceptedEvidenceIds.filter((id) => !rejectedEvidenceIds.has(id)));
       const adjudicationBundle = buildAdjudicationBundle(frozen, acceptedEvidenceIds, criticOutput);
 
-      const adjudication = await this.promptStructured({
+      const evidenceClaimIds = new Map(frozenEvidence.map(({ id, claimIds }) => [id, new Set(claimIds)]));
+      const claims = (adjudicationBundle.claims as Array<{ id: string }>);
+      const claimBatches = partitionClaims(claims);
+      const batchSessionIds = new Array<string>(claimBatches.length);
+      const findingBatches = await mapWithConcurrency(claimBatches, 2, async (batch, index) => {
+        const claimIds = batch.map(({ id }) => id);
+        try {
+          const adjudication = await this.promptStructured({
+            client,
+            input,
+            knownSessions,
+            title: `Fresh finding adjudication ${index + 1} of ${claimBatches.length}`,
+            agent: "fresh-adjudicator",
+            phase: "ADJUDICATION",
+            prompt: `Adjudicate exactly these ${claimIds.length} claims from the critic-filtered frozen bundle. Return only the focused findings object.\n${JSON.stringify(buildFindingBatchBundle(adjudicationBundle, claimIds))}`,
+            schema: findingBatchOutputSchema,
+          });
+          batchSessionIds[index] = adjudication.sessionId;
+          return validateFindingBatch(adjudication.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds);
+        } catch (error) {
+          throw new Error(`Adjudication batch ${index + 1}/${claimBatches.length} failed on ${getConfig().finalizerOpenCodeProvider}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      });
+      const findings = mergeFindingBatches(findingBatches, claims.map(({ id }) => id));
+      const summaryResult = await this.promptStructured({
         client,
         input,
         knownSessions,
-        title: "Fresh final adjudication",
+        title: "Fresh investigation summary",
         agent: "fresh-adjudicator",
         phase: "ADJUDICATION",
-        prompt: `Adjudicate only this critic-filtered frozen bundle. Return the required non-ranking JSON.\n${JSON.stringify(adjudicationBundle)}`,
-        schema: adjudicationOutputSchema,
+        prompt: `Summarize only the validated findings, accepted evidence, entity resolution, observations and stated capability limitations. Return the focused non-ranking summary object.\n${JSON.stringify(buildSummaryBundle(adjudicationBundle, findings))}`,
+        schema: summaryOutputSchema,
       });
-      await getSql()`UPDATE runs SET opencode_adjudicator_session_id = ${adjudication.sessionId}, updated_at = now() WHERE id = ${input.runId}`;
-      const evidenceClaimIds = new Map(frozenEvidence.map(({ id, claimIds }) => [id, new Set(claimIds)]));
-      const output = validateAdjudication(adjudication.value, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds);
+      const summary = validateInvestigationSummary(summaryResult.value.summary, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds);
+      await getSql()`UPDATE runs SET opencode_adjudicator_session_id = ${summaryResult.sessionId}, runtime_handle = COALESCE(runtime_handle, '{}'::jsonb) || ${getSql().json({ finalization: { provider: getConfig().finalizerOpenCodeProvider, batchSessionIds, summarySessionId: summaryResult.sessionId } })}::jsonb, updated_at = now() WHERE id = ${input.runId}`;
+      const output = validateAdjudication({ summary, findings }, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds);
       await this.persistAdjudication(input.investigationId, input.runId, output);
       return output;
     } finally {
@@ -140,7 +165,8 @@ export class OpenCodeInvestigationController {
   }
 
   private async createSession(client: ReturnType<typeof createOpencodeClient>, title: string, agent: string, signal: AbortSignal): Promise<Session> {
-    return unwrap(await client.session.create({ directory, title, agent, model: { id: "deepseek-v4-flash", providerID: "translucid", variant: "high" } }, { signal }), "session creation");
+    const modelId = agent === "lead-investigator" ? getConfig().researchModel : getConfig().finalizerModel;
+    return unwrap(await client.session.create({ directory, title, agent, model: { id: modelId, providerID: "translucid", variant: getConfig().reasoningVariant } }, { signal }), "session creation");
   }
 
   private async promptStructured<T>({
@@ -169,8 +195,8 @@ export class OpenCodeInvestigationController {
         sessionID: native.id,
         directory,
         agent,
-        model: { providerID: "translucid", modelID: "deepseek-v4-flash" },
-        variant: "high",
+        model: { providerID: "translucid", modelID: getConfig().finalizerModel },
+        variant: getConfig().reasoningVariant,
         format: { type: "json_schema", schema: z.toJSONSchema(schema), retryCount: 2 },
         parts: [{ type: "text", text: prompt }],
       }, { signal: input.signal }), `${phase.toLowerCase()} prompt`);
@@ -193,8 +219,8 @@ export class OpenCodeInvestigationController {
         sessionID: fallback.id,
         directory,
         agent,
-        model: { providerID: "translucid", modelID: "deepseek-v4-flash" },
-        variant: "high",
+        model: { providerID: "translucid", modelID: getConfig().finalizerModel },
+        variant: getConfig().reasoningVariant,
         parts: [{
           type: "text",
           text: `${prompt}\n\nReturn only one JSON object with no prose. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}`,

@@ -2,7 +2,7 @@
 description: Coordinates a claim-focused investigation and delegates bounded parallel research.
 mode: primary
 model: translucid/deepseek-v4-flash
-variant: max
+variant: high
 permission:
   "*": deny
   read: allow

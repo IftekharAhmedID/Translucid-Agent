@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
 const researchAgents = [
@@ -30,6 +30,17 @@ test("lead investigator is explicitly bounded and receives structured text rathe
   assert.match(source, /under 1,200 characters/i);
   assert.match(source, /retry that same role once/i);
   assert.match(source, /exact semantic tool ID/i);
+});
+
+test("every DeepSeek investigation role uses high reasoning and none uses max", async () => {
+  const directory = new URL("../../runtime/opencode/agents/", import.meta.url);
+  const agentFiles = (await readdir(directory)).filter((name) => name.endsWith(".md"));
+  for (const file of agentFiles) {
+    const source = await readFile(new URL(file, directory), "utf8");
+    if (!source.includes("model: translucid/deepseek-v4-flash")) continue;
+    assert.match(source, /variant:\s*high/);
+    assert.doesNotMatch(source, /variant:\s*max/);
+  }
 });
 
 test("professional investigator starts with an explicit LinkedIn URL before broad discovery", async () => {
