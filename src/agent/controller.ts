@@ -27,7 +27,7 @@ import {
   validateCriticBatch,
 } from "./finalization.ts";
 import { extractStructuredOutput, structuredOutputRecovery } from "./structured-output.ts";
-import { researchCompletionAction } from "./research-completion.ts";
+import { researchCompletionAction, researchContinuationAllowed } from "./research-completion.ts";
 
 const directory = "/workspace/case";
 type ControllerInput = {
@@ -213,6 +213,7 @@ export class OpenCodeInvestigationController {
           summary: {
             professionalIdentity: { status: "AMBIGUOUS", summary: "Example JSON shape only.", evidenceIds: [] },
             professionalTimelineSummary: "Example JSON shape only.",
+            professionalTimelineEvidenceIds: [],
             strongestEvidenceIds: [],
             materialInconsistencies: [],
             unresolvedMaterialClaimIds: [],
@@ -394,6 +395,7 @@ export class OpenCodeInvestigationController {
     let observedBusy = false;
     let continuationPending = false;
     let emptyFrontierContinuationUsed = false;
+    let continuationCount = 0;
     const startedAt = Date.now();
     while (Date.now() < phaseDeadline.getTime()) {
       if (input.signal.aborted) throw new DOMException("Investigation aborted", "AbortError");
@@ -410,6 +412,21 @@ export class OpenCodeInvestigationController {
         WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}
       `;
       const activeCount = frontier?.activeCount ?? 0;
+      if (!researchContinuationAllowed({ continuationCount, activeQuestionCount: activeCount, durableProgress: true }) && activeCount > 0) {
+        await client.session.abort({ sessionID: sessionId, directory }).catch(() => undefined);
+        await insertAgentEvent({
+          investigationId: input.investigationId,
+          runId: input.runId,
+          phase: "RESEARCH",
+          agent: "runner",
+          sessionId,
+          eventType: "RESEARCH_CONTINUATION_EXHAUSTED",
+          status: "COMPLETED",
+          publicRationale: "The lead remained active after one bounded continuation; its session was stopped and the durable frontier will be reconciled before critic review.",
+          payload: { activeQuestionCount: activeCount, continuationCount },
+        });
+        return true;
+      }
       const action = researchCompletionAction({
         totalQuestionCount: frontier?.totalCount ?? 0,
         activeQuestionCount: activeCount,
@@ -458,6 +475,7 @@ export class OpenCodeInvestigationController {
         payload: { activeQuestionCount: activeCount, emptyFrontier },
       });
       if (emptyFrontier) emptyFrontierContinuationUsed = true;
+      else continuationCount += 1;
       await client.session.promptAsync({
         sessionID: sessionId,
         directory,

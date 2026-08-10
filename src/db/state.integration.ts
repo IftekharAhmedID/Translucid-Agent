@@ -319,6 +319,17 @@ test("one targeted second research wave is allowed while duplicate roles and a t
   await assert.rejects(() => beginResearchWave({ ...ids, kind: "TARGETED", questionIds: [question.id], escalationReason: "MATERIAL_UNCERTAINTY", publicRationale: "Attempting an impermissible third research wave.", agent: "lead-investigator" }), /third research wave/i);
 });
 
+test("the initial research wave rejects uncovered material claims", async () => {
+  const ids = await createInvestigation({ submission: "Synthetic uncovered material claim.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
+  const covered = await createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Ada worked at Acme.", materiality: "HIGH" });
+  await createClaim({ ...ids, category: "EDUCATION", normalizedClaim: "Synthetic Ada studied computer science.", materiality: "HIGH" });
+  const question = await openResearchQuestion({ ...ids, claimIds: [covered.id], question: "What was Ada's Acme title?", priority: "HIGH", possibleRoutes: ["web.search"], createdByAgent: "lead-investigator" });
+  await assert.rejects(
+    () => beginResearchWave({ ...ids, kind: "INITIAL", questionIds: [question.id], publicRationale: "Attempting to begin before material claim coverage is complete.", agent: "lead-investigator" }),
+    /every material claim/i,
+  );
+});
+
 test("claim 61 is rejected and preserves a visible truncation limitation", async () => {
   const ids = await createInvestigation({ submission: "Synthetic high-density intake.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
   for (let index = 1; index <= 60; index += 1) {

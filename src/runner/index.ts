@@ -15,6 +15,8 @@ import { issueCaseToken } from "../providers/security.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
 import { E2BRuntime } from "../runtime/e2b.ts";
 import { getPinnedLocalManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
+import { runProcess } from "../runtime/process.ts";
+import { orphanedLocalRuntimeNames } from "../runtime/reaper.ts";
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
 import { prepareCaseWorkspace } from "./workspace.ts";
 
@@ -135,6 +137,7 @@ async function main(): Promise<void> {
   const config = getConfig();
   const origin = new URL(config.runnerGatewayOrigin);
   const providerExecutor = new ProviderExecutor(process.env);
+  await reapOrphanedLocalRuntimes();
   const gateway = createGatewayServer(providerExecutor);
   await new Promise<void>((resolve, reject) => {
     gateway.once("error", reject);
@@ -163,3 +166,18 @@ async function main(): Promise<void> {
 }
 
 await main();
+
+async function reapOrphanedLocalRuntimes(): Promise<void> {
+  const containers = await runProcess("docker", ["ps", "--all", "--format", "{{.Names}}", "--filter", "name=^translucid-case-"]).catch(() => undefined);
+  if (!containers) return;
+  const names = containers.stdout.split("\n").map((name) => name.trim()).filter(Boolean);
+  if (!names.length) return;
+  const activeRows = await getSql()<Array<{ runId: string }>>`
+    SELECT id AS "runId"
+    FROM runs
+    WHERE status = 'RUNNING' AND lease_expires_at > now()
+  `;
+  for (const name of orphanedLocalRuntimeNames(names, new Set(activeRows.map(({ runId }) => runId)))) {
+    await runProcess("docker", ["rm", "--force", name], { timeoutMs: 30_000 }).catch(() => undefined);
+  }
+}

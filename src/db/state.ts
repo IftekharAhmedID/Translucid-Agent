@@ -5,6 +5,7 @@ import type { EntityType, EscalationReason, ResearchQuestionStatus, ResearchWave
 import { assessEntityLink, type IdentityAnchor } from "../core/identity.ts";
 import { sha256 } from "../core/input.ts";
 import { deriveArtifactTrust } from "../core/source-trust.ts";
+import { evidenceQuoteHasClaimAnchor } from "../core/evidence-fit.ts";
 import { getSql } from "./client.ts";
 
 const MAX_CAPTURE_BYTES = 5 * 1024 * 1024;
@@ -204,6 +205,20 @@ export async function captureEvidence(
     const capturedText = Buffer.from(artifact.contentBytes).toString("utf8");
     if (!capturedText.includes(quote)) {
       throw new Error("Evidence quote is not present in the captured artifact.");
+    }
+  }
+
+  if (input.claimIds.length) {
+    const claims = await getSql()<Array<{ id: string; normalizedClaim: string }>>`
+      SELECT id, normalized_claim AS "normalizedClaim"
+      FROM claims
+      WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}
+        AND id = ANY(${input.claimIds}::uuid[])
+    `;
+    for (const claim of claims) {
+      if (!evidenceQuoteHasClaimAnchor(quote, claim.normalizedClaim)) {
+        throw new Error(`Evidence quote does not contain a recognizable anchor for claim ${claim.id}.`);
+      }
     }
   }
 
@@ -500,6 +515,20 @@ export async function beginResearchWave(input: CaseIds & {
       const roles = current && typeof current === "object" && Array.isArray((current as { roles?: unknown }).roles) ? (current as { roles: unknown[] }).roles.map(String) : [];
       const completedRoles = current && typeof current === "object" && Array.isArray((current as { completedRoles?: unknown }).completedRoles) ? (current as { completedRoles: unknown[] }).completedRoles.map(String) : [];
       if (roles.some((role) => !completedRoles.includes(role))) throw new Error("The initial research tasks must finish before a targeted second wave begins.");
+    }
+    if (input.kind === "INITIAL") {
+      const [coverage] = await transaction<Array<{ missingCount: number }>>`
+        SELECT count(*)::integer AS "missingCount"
+        FROM claims AS claim
+        WHERE claim.investigation_id = ${input.investigationId} AND claim.run_id = ${input.runId}
+          AND claim.materiality IN ('HIGH', 'MEDIUM')
+          AND NOT EXISTS (
+            SELECT 1 FROM research_questions AS question
+            WHERE question.investigation_id = ${input.investigationId} AND question.run_id = ${input.runId}
+              AND claim.id = ANY(question.claim_ids)
+          )
+      `;
+      if ((coverage?.missingCount ?? 0) > 0) throw new Error("Every material claim must belong to a durable research question before the initial wave begins.");
     }
     const active = await transaction<Array<{ id: string }>>`
       SELECT id FROM research_questions WHERE investigation_id = ${input.investigationId}

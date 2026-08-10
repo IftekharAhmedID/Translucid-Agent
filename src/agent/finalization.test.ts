@@ -89,6 +89,7 @@ test("summary schema is focused and excludes findings", () => {
     summary: {
       professionalIdentity: { status: "AMBIGUOUS", summary: "Identity remains ambiguous.", evidenceIds: [] },
       professionalTimelineSummary: "The saved observations do not resolve a complete chronology.",
+      professionalTimelineEvidenceIds: [],
       strongestEvidenceIds: [],
       materialInconsistencies: [],
       unresolvedMaterialClaimIds: ["claim-1"],

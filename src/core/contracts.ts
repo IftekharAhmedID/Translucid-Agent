@@ -49,6 +49,7 @@ export const investigationSummarySchema = z
       })
       .strict(),
     professionalTimelineSummary: z.string().min(1).max(8_000),
+    professionalTimelineEvidenceIds: z.array(z.string().min(1)).max(100),
     strongestEvidenceIds: z.array(z.string().min(1)).max(100),
     materialInconsistencies: z
       .array(

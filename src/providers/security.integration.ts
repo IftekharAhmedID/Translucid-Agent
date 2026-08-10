@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
 import { closeDatabase, getSql } from "../db/client.ts";
-import { createInvestigation } from "../db/investigations.ts";
+import { claimRuns, createInvestigation } from "../db/investigations.ts";
 import { authorizeCaseToken, consumeBudget, issueCaseToken } from "./security.ts";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -29,6 +29,8 @@ test("case tokens store only a digest and enforce run, tool, model, and expiry s
     runtimeKind: "LOCAL",
     dataClassification: "SYNTHETIC",
   });
+  const [claimed] = await claimRuns({ leaseOwner: "security-test", limit: 1, leaseMs: 60_000, timeoutMs: 60 * 60_000 });
+  assert.equal(claimed?.id, created.runId);
   const issued = await issueCaseToken({
     investigationId: created.investigationId,
     runId: created.runId,
@@ -57,6 +59,8 @@ test("case tokens store only a digest and enforce run, tool, model, and expiry s
       investigationId: created.investigationId,
     }),
   );
+  await getSql()`UPDATE runs SET status = 'COMPLETED' WHERE id = ${created.runId}`;
+  await assert.rejects(() => authorizeCaseToken(issued.token, { kind: "tool", name: "web.search", investigationId: created.investigationId }), /unauthorized|expired/i);
 });
 
 test("budget consumption is atomic and rejects the first over-limit call", { skip: !databaseUrl }, async () => {
@@ -65,7 +69,6 @@ test("budget consumption is atomic and rejects the first over-limit call", { ski
     runtimeKind: "LOCAL",
     dataClassification: "SYNTHETIC",
   });
-
   const results = await Promise.all(
     Array.from({ length: 16 }, () =>
       consumeBudget({
@@ -78,6 +81,7 @@ test("budget consumption is atomic and rejects the first over-limit call", { ski
   );
   assert.equal(results.filter(Boolean).length, 15);
   assert.equal(results.filter((value) => !value).length, 1);
+  await getSql()`UPDATE runs SET status = 'COMPLETED' WHERE id = ${created.runId}`;
 });
 
 test("case tokens support the full one-hour case envelope but never exceed it", { skip: !databaseUrl }, async () => {
@@ -86,6 +90,8 @@ test("case tokens support the full one-hour case envelope but never exceed it", 
     runtimeKind: "LOCAL",
     dataClassification: "SYNTHETIC",
   });
+  const [claimed] = await claimRuns({ leaseOwner: "security-one-hour", limit: 1, leaseMs: 60_000, timeoutMs: 60 * 60_000 });
+  assert.equal(claimed?.id, created.runId);
   const issued = await issueCaseToken({
     investigationId: created.investigationId,
     runId: created.runId,

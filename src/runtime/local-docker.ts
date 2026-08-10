@@ -27,7 +27,7 @@ export class LocalDockerRuntime implements InvestigatorRuntime {
     const name = `translucid-case-${input.runId}`;
     const gatewayUrl = input.gatewayUrl.replace("127.0.0.1", "host.docker.internal").replace("localhost", "host.docker.internal");
     await runProcess("docker", [
-      "run", "--detach", "--rm", "--name", name,
+      "run", "--detach", "--rm", "--name", name, "--label", `com.translucid.run-id=${input.runId}`,
       "--add-host", "host.docker.internal:host-gateway",
       "--publish", "127.0.0.1::4096",
       "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",

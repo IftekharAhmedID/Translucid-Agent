@@ -12,6 +12,7 @@ const baseOutput: AdjudicationOutput = {
       evidenceIds: ["ev-1", "ev-2"],
     },
     professionalTimelineSummary: "Acme association is supported for 2023.",
+    professionalTimelineEvidenceIds: ["ev-1"],
     strongestEvidenceIds: ["ev-1"],
     materialInconsistencies: [],
     unresolvedMaterialClaimIds: ["claim-2"],

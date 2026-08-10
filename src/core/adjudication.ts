@@ -85,6 +85,7 @@ export function validateInvestigationSummary(
   const summary = investigationSummarySchema.parse(value);
   assertSafeLanguage(summary);
   assertEvidenceExists(summary.professionalIdentity.evidenceIds, knownEvidenceIds);
+  assertEvidenceExists(summary.professionalTimelineEvidenceIds, knownEvidenceIds);
   assertEvidenceExists(summary.strongestEvidenceIds, knownEvidenceIds);
   assertClaimExists(summary.unresolvedMaterialClaimIds, knownClaimIds);
   assertClaimExists(summary.materialInconsistencies.map(({ claimId }) => claimId), knownClaimIds);
@@ -98,6 +99,10 @@ export function validateInvestigationSummary(
   }
   if (summary.professionalIdentity.status !== "AMBIGUOUS" && summary.professionalIdentity.evidenceIds.length === 0) {
     throw new Error("A resolved or partial professional identity requires evidence.");
+  }
+  const timelineIsExplicitlyUnresolved = /^(?:no|the saved observations? do not|observations? do not)/i.test(summary.professionalTimelineSummary.trim());
+  if (!timelineIsExplicitlyUnresolved && summary.professionalTimelineEvidenceIds.length === 0) {
+    throw new Error("A professional timeline summary requires evidence.");
   }
   return summary;
 }

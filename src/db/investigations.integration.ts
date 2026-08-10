@@ -162,6 +162,15 @@ test("capability state is pending while queued and becomes runner-authoritative 
   const registry = buildCapabilityRegistry({ PROVIDER_MODE: "fixture" });
   await persistRunCapabilitySnapshot(claimed.id, "runner-capabilities", registry);
 
+  await sql`UPDATE runs SET lease_expires_at = now() - interval '1 second' WHERE id = ${claimed.id}`;
+  const [reclaimed] = await claimRuns({
+    leaseOwner: "runner-capabilities-reclaimed",
+    limit: 1,
+    leaseMs: 60_000,
+    timeoutMs: 60 * 60_000,
+  });
+  await persistRunCapabilitySnapshot(reclaimed!.id, "runner-capabilities-reclaimed", registry);
+
   const [running] = await sql<Array<{ capabilitySnapshot: unknown }>>`
     SELECT capability_snapshot AS "capabilitySnapshot" FROM runs WHERE id = ${created.runId}
   `;

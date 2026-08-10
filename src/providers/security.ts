@@ -40,7 +40,7 @@ export async function issueCaseToken(input: {
     SET runtime_handle = COALESCE(runtime_handle, '{}'::jsonb) ||
       ${getSql().json(asJson({ gatewayScope: scope }))}::jsonb,
       updated_at = now()
-    WHERE id = ${input.runId} AND investigation_id = ${input.investigationId}
+    WHERE id = ${input.runId} AND investigation_id = ${input.investigationId} AND status = 'RUNNING'
     RETURNING id
   `;
   if (!updated) throw new Error("Run not found while issuing case token.");
@@ -53,14 +53,14 @@ export async function authorizeCaseToken(
 ): Promise<string> {
   if (!token || token.length > 256) throw new Error("Unauthorized case token.");
   const digest = digestToken(token);
-  const [run] = await getSql()<Array<{ id: string; scope: CaseTokenScope }>>`
-    SELECT id, runtime_handle->'gatewayScope' AS scope
+  const [run] = await getSql()<Array<{ id: string; status: string; scope: CaseTokenScope }>>`
+    SELECT id, status, runtime_handle->'gatewayScope' AS scope
     FROM runs
     WHERE investigation_id = ${request.investigationId}
       AND runtime_handle->'gatewayScope'->>'digest' = ${digest}
     LIMIT 1
   `;
-  if (!run?.scope || new Date(run.scope.expiresAt).getTime() <= Date.now()) {
+  if (!run || run.status !== "RUNNING" || !run.scope || new Date(run.scope.expiresAt).getTime() <= Date.now()) {
     throw new Error("Unauthorized or expired case token.");
   }
   const allowed = request.kind === "tool" ? run.scope.allowedTools : run.scope.allowedModels;

@@ -37,6 +37,8 @@ export async function generateInvestigationReport(investigationId: string): Prom
     const identity = summary.professionalIdentity as Row;
     paragraph(`${text(identity.status)} — ${text(identity.summary)}`);
     paragraph(summary.professionalTimelineSummary);
+    const timelineEvidenceIds = summary.professionalTimelineEvidenceIds as string[];
+    if (timelineEvidenceIds?.length) paragraph(`Timeline evidence: ${timelineEvidenceIds.join(", ")}`);
     const inconsistencies = summary.materialInconsistencies as Row[];
     if (inconsistencies?.length) { document.font("Helvetica-Bold").fontSize(10).text("Material inconsistencies"); inconsistencies.forEach((item) => bullet(item.summary)); }
     const unresolved = summary.unresolvedMaterialClaimIds as string[];

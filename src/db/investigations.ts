@@ -55,6 +55,14 @@ function toJson(value: unknown): postgres.JSONValue {
   return JSON.parse(JSON.stringify(value)) as postgres.JSONValue;
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 export async function createInvestigation(input: CreateInvestigationInput): Promise<{
   investigationId: string;
   runId: string;
@@ -121,13 +129,26 @@ export async function persistRunCapabilitySnapshot(
   leaseOwner: string,
   registry: CapabilityRegistry,
 ): Promise<void> {
-  const [row] = await getSql()<Array<{ id: string }>>`
-    UPDATE runs SET capability_snapshot = ${getSql().json(toJson(registry))}, updated_at = now()
+  const snapshot = getSql().json(toJson(registry));
+  const [row] = await getSql()<Array<{ id: string; capabilitySnapshot: CapabilityRegistry | null }>>`
+    SELECT id, capability_snapshot AS "capabilitySnapshot"
+    FROM runs
+    WHERE id = ${runId} AND status = 'RUNNING' AND lease_owner = ${leaseOwner}
+  `;
+  if (!row) throw new Error("Runner could not establish the authoritative capability snapshot.");
+  if (row.capabilitySnapshot) {
+    if (canonicalJson(row.capabilitySnapshot) !== canonicalJson(registry)) {
+      throw new Error("Runner capability registry differs from the authoritative run snapshot.");
+    }
+    return;
+  }
+  const [persisted] = await getSql()<Array<{ id: string }>>`
+    UPDATE runs SET capability_snapshot = ${snapshot}, updated_at = now()
     WHERE id = ${runId} AND status = 'RUNNING' AND lease_owner = ${leaseOwner}
       AND capability_snapshot IS NULL
     RETURNING id
   `;
-  if (!row) throw new Error("Runner could not establish the authoritative capability snapshot.");
+  if (!persisted) throw new Error("Runner could not establish the authoritative capability snapshot.");
 }
 
 export async function claimRuns(input: {

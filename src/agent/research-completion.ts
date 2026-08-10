@@ -1,5 +1,13 @@
 export type ResearchCompletionAction = "WAIT" | "CONTINUE" | "FINISH" | "ABORT_AND_FINISH";
 
+export function researchContinuationAllowed(input: {
+  continuationCount: number;
+  activeQuestionCount: number;
+  durableProgress: boolean;
+}): boolean {
+  return input.activeQuestionCount > 0 && input.continuationCount < 1 && (input.durableProgress || input.continuationCount === 0);
+}
+
 export function researchCompletionAction(input: {
   totalQuestionCount: number;
   activeQuestionCount: number;
