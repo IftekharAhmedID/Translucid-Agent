@@ -37,6 +37,9 @@ test("lead investigator is explicitly bounded and receives structured text rathe
   assert.match(source, /split audit/i);
   assert.match(source, /do not begin.*research wave.*coverage/i);
   assert.match(source, /CLAIM_COVERAGE_COMPLETE/);
+  assert.match(source, /exactly one final `claim\.create` attempt/i);
+  assert.match(source, /never attempt to resume or re-delegate/i);
+  assert.match(source, /Social owns X\/Twitter, Instagram and TikTok/i);
 });
 
 test("every DeepSeek investigation role uses medium reasoning and none uses max", async () => {
@@ -58,6 +61,16 @@ test("professional investigator starts with an explicit LinkedIn URL before broa
   assert.match(source, /exact material field/i);
   assert.match(source, /single conditional Bright Data fallback/i);
   assert.match(source, /one retry/i);
+  assert.match(source, /Never fetch or search X\/Twitter, Instagram, or TikTok/i);
+  assert.match(source, /every assigned question terminal/i);
+});
+
+test("every research child must return a terminal public handoff", async () => {
+  for (const agent of researchAgents) {
+    const source = await readFile(new URL(`../../runtime/opencode/agents/${agent}.md`, import.meta.url), "utf8");
+    assert.match(source, /public handoff/i);
+    assert.match(source, /terminal status/i);
+  }
 });
 
 test("fresh adjudicator is restricted to evidence linked inside each claim packet", async () => {

@@ -1,6 +1,8 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 
+import { childTaskEnvelope, needsChildHandoffContinuation, publicAssistantText } from "./child-handoff.ts";
+
 const z = tool.schema;
 const gatewayUrl = process.env.CASE_GATEWAY_URL;
 const token = process.env.CASE_TOKEN;
@@ -49,7 +51,7 @@ function gatewayTool(name: string, description: string, args: Record<string, Ret
   return tool({ description, args, async execute(values, context) { return execute(name, values, context); } });
 }
 
-const plugin: Plugin = async () => ({
+const plugin: Plugin = async ({ client }) => ({
   "chat.headers": async (input, output) => {
     output.headers["x-investigation-id"] = investigationId;
     output.headers["x-run-id"] = runId;
@@ -93,10 +95,33 @@ const plugin: Plugin = async () => ({
     if (!["professional-investigator", "github-investigator", "web-records-investigator", "social-investigator"].includes(role)) return;
     await execute("research.authorize_task", { role }, { sessionID: input.sessionID, agent: "lead-investigator", abort: AbortSignal.timeout(10_000) });
   },
-  "tool.execute.after": async (input) => {
+  "tool.execute.after": async (input, output) => {
     if (input.tool !== "task") return;
     const role = input.args?.subagent_type;
     if (!["professional-investigator", "github-investigator", "web-records-investigator", "social-investigator"].includes(role)) return;
+    const childSessionId = typeof output.metadata?.sessionId === "string" ? output.metadata.sessionId : undefined;
+    if (childSessionId && needsChildHandoffContinuation(output.output)) {
+      await execute("case_note", {
+        phase: "subagent-handoff",
+        status: "RETRYING",
+        publicRationale: `${role} ended without a public handoff, so the same child session received its single bounded completion prompt.`,
+      }, { sessionID: childSessionId, agent: role, abort: AbortSignal.timeout(10_000) }).catch(() => undefined);
+      try {
+        const continuation = await client.session.prompt({
+          path: { id: childSessionId },
+          query: { directory: "/workspace/case" },
+          body: {
+            agent: role,
+            parts: [{ type: "text", text: "Your previous turn ended without a usable handoff. Do not perform broad new research and do not repeat a successful provider call. Persist or link any already-found evidence that directly bears on the assigned claims, resolve or exhaust every assigned question, then return a concise public handoff listing each question ID and terminal status. This is your only completion continuation; if blocked, record the limitation, exhaust the question, and stop." }],
+          },
+          signal: AbortSignal.timeout(5 * 60_000),
+        });
+        const text = continuation.data ? publicAssistantText(continuation.data.parts) : "";
+        output.output = childTaskEnvelope(childSessionId, text || "The bounded child continuation produced no public text. Do not resume or re-delegate this role; inspect durable state, then resolve or exhaust its remaining questions.");
+      } catch {
+        output.output = childTaskEnvelope(childSessionId, "The bounded child continuation failed. Do not resume or re-delegate this role; preserve durable evidence and resolve or exhaust its remaining questions.");
+      }
+    }
     await execute("research.complete_task", { role }, { sessionID: input.sessionID, agent: "lead-investigator", abort: AbortSignal.timeout(10_000) });
   },
   "experimental.session.compacting": async (_input, output) => {

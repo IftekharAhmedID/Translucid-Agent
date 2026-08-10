@@ -7,6 +7,9 @@ test("source authority is backend-derived from capture lineage", () => {
   assert.equal(deriveArtifactTrust({ kind: "SEARCH_DISCOVERY", provider: "exa", sourceUrl: "https://api.exa.ai/search", provenance: {}, content: {} }).sourceAuthority, "DISCOVERY_ONLY");
   assert.equal(deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "linkdapi", sourceUrl: "https://www.linkedin.com/in/Ada", provenance: { providerRoute: "linkdapi.profile" }, content: {} }).sourceAuthority, "SELF_REPRESENTATION");
   assert.equal(deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "github", sourceUrl: "https://github.com/acme/tool", provenance: { providerRoute: "github.clone" }, content: {} }).sourceAuthority, "DIRECT_WORK");
+  const githubGraphql = deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "github", sourceUrl: "https://api.github.com/graphql", provenance: { providerRoute: "github.graphql", networkArguments: { query: "search(query: \"repo:python/cpython is:pr\") { edges { node { ... on PullRequest { number } } } }" } }, content: {} });
+  assert.equal(githubGraphql.sourceAuthority, "DIRECT_WORK");
+  assert.equal(githubGraphql.independenceGroup, "github-repository:python/cpython");
   assert.equal(deriveArtifactTrust({ kind: "SOURCE_CONTENT", provider: "public-fetch", sourceUrl: "https://engineering.example.com/team/ada", provenance: {}, content: {} }).sourceAuthority, "CONTEXT");
   assert.equal(deriveArtifactTrust({ kind: "SOURCE_CONTENT", provider: "public-fetch", sourceUrl: "https://www.reuters.com/technology/example", provenance: {}, content: {} }).sourceAuthority, "INDEPENDENT_PROFESSIONAL");
 });

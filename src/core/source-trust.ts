@@ -63,6 +63,10 @@ function githubRepositoryGroup(input: TrustInput, url: string | undefined): stri
   if (network && typeof network === "object" && typeof (network as { repository?: unknown }).repository === "string") {
     return `github-repository:${String((network as { repository: string }).repository).toLocaleLowerCase("en-US")}`;
   }
+  if (network && typeof network === "object" && typeof (network as { query?: unknown }).query === "string") {
+    const repository = String((network as { query: string }).query).match(/\brepo:([\w.-]+\/[\w.-]+)/i)?.[1];
+    if (repository) return `github-repository:${repository.toLocaleLowerCase("en-US")}`;
+  }
   if (!url) return undefined;
   const parsed = new URL(url);
   if (parsed.hostname !== "github.com") return undefined;
@@ -75,7 +79,7 @@ function authority(input: TrustInput, canonicalUrl: string | undefined): SourceA
   const network = input.provenance.networkArguments && typeof input.provenance.networkArguments === "object" ? input.provenance.networkArguments as Record<string, unknown> : {};
   const githubDirect = route === "github.clone"
     || route === "github.rest" && typeof network.path === "string" && /^\/repos\/[^/]+\/[^/]+\/(commits|issues|pulls)\b/.test(network.path)
-    || route === "github.graphql" && typeof network.query === "string" && /\b(pullRequests?|commits?|reviews?|repository)\b/.test(network.query);
+    || route === "github.graphql" && typeof network.query === "string" && /\b(pullRequests?|commits?|reviews?|repository)\b/i.test(network.query);
   if (input.kind === "SEARCH_DISCOVERY") return "DISCOVERY_ONLY";
   if (input.kind.startsWith("INPUT_") || input.provider === "submission") return "SELF_REPRESENTATION";
   if (route.startsWith("linkdapi.") || route.startsWith("brightdata.") || canonicalUrl && /(^|\.)(linkedin|x|instagram|tiktok)\.com$/.test(new URL(canonicalUrl).hostname)) return "SELF_REPRESENTATION";
