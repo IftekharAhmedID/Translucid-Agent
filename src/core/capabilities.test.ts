@@ -49,3 +49,11 @@ test("authenticated GitHub is ready without coupling it to public API contact co
   assert.equal(registry.PATENTS.state, "DISABLED_MISSING_CONFIG");
   assert.equal(registry.PACKAGES.state, "DISABLED_MISSING_CONFIG");
 });
+
+test("live direct-page capture remains available when Exa search is not configured", () => {
+  const registry = buildCapabilityRegistry({ PROVIDER_MODE: "live" });
+
+  assert.equal(registry.WEB_SEARCH.state, "DEGRADED");
+  assert.deepEqual(registry.WEB_SEARCH.routes, ["public-fetch"]);
+  assert.match(registry.WEB_SEARCH.reason, /search.*unavailable.*direct.*fetch/i);
+});

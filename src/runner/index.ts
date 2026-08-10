@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 
 import { OpenCodeInvestigationController } from "../agent/controller.ts";
 import { getConfig } from "../core/config.ts";
+import { assertProviderModeAllowsClassification } from "../core/provider-boundary.ts";
 import { getSql } from "../db/client.ts";
 import { claimRuns, heartbeatRun, insertAgentEvent, persistRunCapabilitySnapshot, type ClaimedRun } from "../db/investigations.ts";
 import { createGatewayServer } from "../gateway/server.ts";
@@ -75,6 +76,7 @@ async function runOne(run: ClaimedRun, runnerId: string, expectedManifestHash: s
     if (row?.cancelRequestedAt || Date.now() >= run.deadlineAt.getTime()) abort.abort();
   }, 1_000);
   try {
+    assertProviderModeAllowsClassification(run.dataClassification, config.providerMode);
     await persistRunCapabilitySnapshot(run.id, runnerId, providerExecutor.capabilityRegistry);
     workspace = await prepareCaseWorkspace(run.investigationId, run.id);
     const issued = await issueCaseToken({

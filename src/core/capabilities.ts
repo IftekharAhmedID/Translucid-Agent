@@ -76,7 +76,12 @@ export function buildCapabilityRegistry(environment: Environment): CapabilityReg
   return {
     WEB_SEARCH: environment.EXA_API_KEY
       ? entry("WEB_SEARCH", "READY", ["exa"], "Exa API configuration is present.")
-      : entry("WEB_SEARCH", "DISABLED_MISSING_CONFIG", [], "EXA_API_KEY is missing."),
+      : entry(
+          "WEB_SEARCH",
+          "DEGRADED",
+          ["public-fetch"],
+          "Exa search is unavailable because EXA_API_KEY is missing; direct submitted-URL fetch remains ready.",
+        ),
     LINKEDIN_PROFILE: linkedInRoutes.length
       ? entry("LINKEDIN_PROFILE", "READY", linkedInRoutes, "At least one profile route is configured.")
       : entry(

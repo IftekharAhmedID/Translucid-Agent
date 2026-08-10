@@ -31,6 +31,10 @@ test("lead investigator is explicitly bounded and receives structured text rathe
   assert.match(source, /research\.begin_wave/);
   assert.match(source, /No third wave/i);
   assert.match(source, /exact semantic tool ID/i);
+  assert.match(source, /claim coverage audit/i);
+  assert.match(source, /every page and section/i);
+  assert.match(source, /do not begin.*research wave.*coverage/i);
+  assert.match(source, /CLAIM_COVERAGE_COMPLETE/);
 });
 
 test("every DeepSeek investigation role uses medium reasoning and none uses max", async () => {

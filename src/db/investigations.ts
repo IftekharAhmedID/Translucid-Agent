@@ -25,6 +25,7 @@ export type ClaimedRun = {
   investigationId: string;
   status: "RUNNING";
   runtimeKind: RuntimeKind;
+  dataClassification: DataClassification;
   attemptCount: number;
   leaseExpiresAt: Date;
   deadlineAt: Date;
@@ -170,7 +171,8 @@ export async function claimRuns(input: {
         run.attempt_count AS "attemptCount",
         run.lease_expires_at AS "leaseExpiresAt",
         run.deadline_at AS "deadlineAt",
-        (SELECT runtime_kind FROM investigations WHERE id = run.investigation_id) AS "runtimeKind"
+        (SELECT runtime_kind FROM investigations WHERE id = run.investigation_id) AS "runtimeKind",
+        (SELECT data_classification FROM investigations WHERE id = run.investigation_id) AS "dataClassification"
     `;
 
     if (claimed.length) {
