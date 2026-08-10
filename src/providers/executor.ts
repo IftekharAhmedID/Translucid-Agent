@@ -143,6 +143,10 @@ export class ProviderExecutor {
     this.brightDataPool = new Semaphore(Math.max(1, Number(environment.BRIGHTDATA_CONCURRENCY ?? 2)));
   }
 
+  get capabilityRegistry() {
+    return this.registry;
+  }
+
   async execute(raw: unknown, context: ExecuteContext): Promise<ToolResult> {
     const request = parseToolRequest(raw);
     const capability = capabilityForRequest(request);

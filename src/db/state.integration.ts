@@ -15,7 +15,9 @@ import {
   listTimeline,
   openResearchQuestion,
   recordObservation,
+  reconcileResearchFrontier,
   resolveResearchQuestion,
+  selectResearchRoute,
   updateResearchQuestion,
   upsertEntity,
 } from "./state.ts";
@@ -236,4 +238,48 @@ test("research questions persist route selection and resolution", async () => {
   assert.equal(resolved.status, "RESOLVED");
   assert.equal(resolved.selectedRoute, "archives");
   assert.ok(resolved.resolvedAt instanceof Date);
+});
+
+test("frontier reconciliation makes every active question terminal before critic review", async () => {
+  const ids = await createInvestigation({
+    submission: "Synthetic unfinished frontier.",
+    runtimeKind: "LOCAL",
+    dataClassification: "SYNTHETIC",
+  });
+  const open = await openResearchQuestion({
+    ...ids,
+    claimIds: [],
+    question: "Open question",
+    priority: "HIGH",
+    possibleRoutes: ["web"],
+    createdByAgent: "lead-investigator",
+  });
+  const active = await openResearchQuestion({
+    ...ids,
+    claimIds: [],
+    question: "In-progress question",
+    priority: "MEDIUM",
+    possibleRoutes: ["archives"],
+    createdByAgent: "lead-investigator",
+  });
+  await selectResearchRoute({ ...ids, questionId: active.id, route: "archives" });
+
+  const result = await reconcileResearchFrontier(ids.investigationId, ids.runId);
+  assert.equal(result.reconciledCount, 2);
+  assert.equal(result.activeCount, 0);
+
+  const rows = await sql<Array<{ id: string; status: string; selectedRoute: string | null; resolutionSummary: string; resolvedAt: Date | null }>>`
+    SELECT id, status, selected_route AS "selectedRoute",
+      resolution_summary AS "resolutionSummary", resolved_at AS "resolvedAt"
+    FROM research_questions WHERE id IN (${open.id}, ${active.id}) ORDER BY question
+  `;
+  assert.ok(rows.every((row) => row.status === "EXHAUSTED" && row.resolvedAt instanceof Date));
+  assert.equal(rows.find((row) => row.id === active.id)?.selectedRoute, "archives");
+  assert.ok(rows.every((row) => row.resolutionSummary.includes("Research ended before")));
+
+  const [event] = await sql<Array<{ eventType: string }>>`
+    SELECT event_type AS "eventType" FROM agent_events
+    WHERE run_id = ${ids.runId} ORDER BY id DESC LIMIT 1
+  `;
+  assert.equal(event?.eventType, "RESEARCH_FRONTIER_RECONCILED");
 });

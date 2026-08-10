@@ -10,8 +10,10 @@ import {
   heartbeatRun,
   insertAgentEvent,
   listAgentEvents,
+  persistRunCapabilitySnapshot,
   requestCancellation,
 } from "./investigations.ts";
+import { buildCapabilityRegistry } from "../core/capabilities.ts";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required for integration tests.");
@@ -132,4 +134,31 @@ test("public-professional intake is persisted without widening the data boundary
     FROM investigations WHERE id = ${created.investigationId}
   `;
   assert.equal(investigation?.dataClassification, "PUBLIC_PROFESSIONAL");
+});
+
+test("capability state is pending while queued and becomes runner-authoritative after claim", async () => {
+  const created = await createInvestigation({
+    submission: "Synthetic capability snapshot case",
+    runtimeKind: "LOCAL",
+    dataClassification: "SYNTHETIC",
+  });
+  const [queued] = await sql<Array<{ capabilitySnapshot: unknown }>>`
+    SELECT capability_snapshot AS "capabilitySnapshot" FROM runs WHERE id = ${created.runId}
+  `;
+  assert.equal(queued?.capabilitySnapshot, null);
+
+  const [claimed] = await claimRuns({
+    leaseOwner: "runner-capabilities",
+    limit: 1,
+    leaseMs: 60_000,
+    timeoutMs: 60 * 60_000,
+  });
+  assert.ok(claimed);
+  const registry = buildCapabilityRegistry({ PROVIDER_MODE: "fixture" });
+  await persistRunCapabilitySnapshot(claimed.id, "runner-capabilities", registry);
+
+  const [running] = await sql<Array<{ capabilitySnapshot: unknown }>>`
+    SELECT capability_snapshot AS "capabilitySnapshot" FROM runs WHERE id = ${created.runId}
+  `;
+  assert.deepEqual(running?.capabilitySnapshot, registry);
 });

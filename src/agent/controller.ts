@@ -3,10 +3,12 @@ import type { GlobalEvent, Session } from "@opencode-ai/sdk/v2/client";
 import { z } from "zod";
 
 import { validateAdjudication } from "../core/adjudication.ts";
+import { getConfig } from "../core/config.ts";
 import { adjudicationOutputSchema, type AdjudicationOutput } from "../core/contracts.ts";
-import { researchPhaseDeadline } from "../core/deadlines.ts";
+import { forcedFinalizationAt } from "../core/deadlines.ts";
 import { getSql } from "../db/client.ts";
 import { insertAgentEvent } from "../db/investigations.ts";
+import { reconcileResearchFrontier } from "../db/state.ts";
 import type { RunHandle } from "../runtime/types.ts";
 import { buildAdjudicationBundle, buildFrozenEvidenceBundle } from "./bundle.ts";
 import { extractStructuredOutput } from "./structured-output.ts";
@@ -82,14 +84,15 @@ export class OpenCodeInvestigationController {
       knownSessions.add(lead.id);
       input.signal.throwIfAborted();
       await getSql()`UPDATE runs SET opencode_primary_session_id = ${lead.id}, updated_at = now() WHERE id = ${input.runId}`;
-      const researchDeadline = researchPhaseDeadline(new Date(), input.deadlineAt);
-      await client.session.promptAsync({ sessionID: lead.id, directory, agent: "lead-investigator", model: { providerID: "translucid", modelID: "deepseek-v4-flash" }, variant: "max", parts: [{ type: "text", text: `Begin the authorized investigation from /workspace/case/input/manifest.json. The raw PDF has already been parsed and removed; use only the manifest's structured text/JSON paths and sparse-page images. Obey the declared classification and your ordered workflow. Persist durable state through semantic tools. Finish research by ${researchDeadline.toISOString()} so frozen critic and adjudication can run before the hard deadline ${input.deadlineAt.toISOString()}. Do not write a final adjudication.` }] }, { signal: input.signal });
+      const researchDeadline = forcedFinalizationAt(input.deadlineAt, getConfig().finalizationReserveMs);
+      await client.session.promptAsync({ sessionID: lead.id, directory, agent: "lead-investigator", model: { providerID: "translucid", modelID: getConfig().researchModel }, variant: getConfig().reasoningVariant, parts: [{ type: "text", text: `Begin the authorized investigation from /workspace/case/input/manifest.json. The raw PDF has already been parsed and removed; use only the manifest's structured text/JSON paths and sparse-page images. Obey the declared classification and your ordered workflow. Persist durable state through semantic tools. Return as soon as every durable research question is terminal; never continue merely because time remains. Emergency finalization begins at ${researchDeadline.toISOString()} and the hard case deadline is ${input.deadlineAt.toISOString()}. Do not write a final adjudication.` }] }, { signal: input.signal });
       const researchFinished = await this.waitForIdle(client, lead.id, input, researchDeadline);
       if (!researchFinished) {
         await abortAll();
-        await insertAgentEvent({ investigationId: input.investigationId, runId: input.runId, phase: "RESEARCH", agent: "runner", eventType: "PHASE_DEADLINE", status: "EXHAUSTED", publicRationale: "Research stopped at its phase deadline so saved evidence could proceed to frozen review and adjudication.", payload: { researchDeadline: researchDeadline.toISOString() } });
+        await insertAgentEvent({ investigationId: input.investigationId, runId: input.runId, phase: "RESEARCH", agent: "runner", eventType: "FORCED_FINALIZATION", status: "EXHAUSTED", publicRationale: "The emergency finalization reserve began, so unfinished research stopped and durable state was preserved for review.", payload: { forcedFinalizationAt: researchDeadline.toISOString() } });
       }
 
+      await reconcileResearchFrontier(input.investigationId, input.runId);
       const frozen = await buildFrozenEvidenceBundle(input.investigationId, input.runId);
       const criticOutput = (await this.promptStructured({
         client,

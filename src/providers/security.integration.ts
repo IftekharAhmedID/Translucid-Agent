@@ -72,3 +72,27 @@ test("budget consumption is atomic and rejects the first over-limit call", { ski
   assert.equal(results.filter(Boolean).length, 15);
   assert.equal(results.filter((value) => !value).length, 1);
 });
+
+test("case tokens support the full one-hour case envelope but never exceed it", { skip: !databaseUrl }, async () => {
+  const created = await createInvestigation({
+    submission: "Synthetic one-hour token case",
+    runtimeKind: "LOCAL",
+    dataClassification: "SYNTHETIC",
+  });
+  const issued = await issueCaseToken({
+    investigationId: created.investigationId,
+    runId: created.runId,
+    allowedTools: ["web.search"],
+    allowedModels: ["opencode/deepseek-v4-flash"],
+    ttlMs: 60 * 60_000,
+  });
+
+  assert.ok(issued.expiresAt.getTime() > Date.now() + 59 * 60_000);
+  await assert.rejects(() => issueCaseToken({
+    investigationId: created.investigationId,
+    runId: created.runId,
+    allowedTools: [],
+    allowedModels: [],
+    ttlMs: 60 * 60_000 + 1,
+  }), /one hour/i);
+});

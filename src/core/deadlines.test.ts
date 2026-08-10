@@ -1,19 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { MAX_RESEARCH_PHASE_MS, researchPhaseDeadline } from "./deadlines.ts";
+import { forcedFinalizationAt } from "./deadlines.ts";
 
-test("research phase never consumes more than seven and a half minutes of a long case deadline", () => {
-  const now = new Date("2026-08-09T12:00:00.000Z");
-  const hardDeadline = new Date(now.getTime() + 30 * 60_000);
+test("research may use the case envelope until the twelve-minute finalization reserve", () => {
+  const hardDeadline = new Date("2026-08-09T13:00:00.000Z");
 
-  assert.equal(MAX_RESEARCH_PHASE_MS, 7.5 * 60_000);
-  assert.equal(researchPhaseDeadline(now, hardDeadline).getTime(), now.getTime() + MAX_RESEARCH_PHASE_MS);
+  assert.equal(
+    forcedFinalizationAt(hardDeadline, 12 * 60_000).toISOString(),
+    "2026-08-09T12:48:00.000Z",
+  );
 });
 
-test("shorter cases preserve one third of available time for critic and adjudicator", () => {
-  const now = new Date("2026-08-09T12:00:00.000Z");
-  const hardDeadline = new Date(now.getTime() + 6 * 60_000);
+test("the reserve must be positive and smaller than the case envelope", () => {
+  const hardDeadline = new Date("2026-08-09T13:00:00.000Z");
 
-  assert.equal(researchPhaseDeadline(now, hardDeadline).getTime(), now.getTime() + 4 * 60_000);
+  assert.throws(() => forcedFinalizationAt(hardDeadline, 0), /reserve/i);
+  assert.throws(() => forcedFinalizationAt(hardDeadline, 61 * 60_000, new Date("2026-08-09T12:00:00.000Z")), /reserve/i);
 });

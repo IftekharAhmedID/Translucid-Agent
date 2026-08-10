@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type postgres from "postgres";
 
-import { buildCapabilityRegistry } from "../core/capabilities.ts";
+import type { CapabilityRegistry } from "../core/capabilities.ts";
 import { dataClassificationSchema, type DataClassification, type InvestigationStatus, type RuntimeKind } from "../core/contracts.ts";
 import {
   normalizeSubmission,
@@ -66,7 +66,6 @@ export async function createInvestigation(input: CreateInvestigationInput): Prom
   return sql.begin(async (transaction) => {
     const investigationId = randomUUID();
     const runId = randomUUID();
-    const capabilitySnapshot = buildCapabilityRegistry(process.env);
 
     await transaction`
       INSERT INTO investigations (
@@ -84,7 +83,7 @@ export async function createInvestigation(input: CreateInvestigationInput): Prom
         id, investigation_id, status, capability_snapshot, budget_counters
       ) VALUES (
         ${runId}, ${investigationId}, 'QUEUED',
-        ${transaction.json(capabilitySnapshot)},
+        NULL,
         ${transaction.json({ modelUsd: 0, providerUsd: 0 })}
       )
     `;
@@ -111,6 +110,20 @@ export async function createInvestigation(input: CreateInvestigationInput): Prom
 
     return { investigationId, runId };
   });
+}
+
+export async function persistRunCapabilitySnapshot(
+  runId: string,
+  leaseOwner: string,
+  registry: CapabilityRegistry,
+): Promise<void> {
+  const [row] = await getSql()<Array<{ id: string }>>`
+    UPDATE runs SET capability_snapshot = ${getSql().json(toJson(registry))}, updated_at = now()
+    WHERE id = ${runId} AND status = 'RUNNING' AND lease_owner = ${leaseOwner}
+      AND capability_snapshot IS NULL
+    RETURNING id
+  `;
+  if (!row) throw new Error("Runner could not establish the authoritative capability snapshot.");
 }
 
 export async function claimRuns(input: {

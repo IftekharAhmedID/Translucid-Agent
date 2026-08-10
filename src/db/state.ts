@@ -478,3 +478,40 @@ export async function listResearchQuestions(investigationId: string, runId: stri
   `;
   return [...rows];
 }
+
+const RESEARCH_RECONCILIATION_LIMITATION =
+  "Research ended before this question could be resolved. Existing evidence and the unresolved limitation were preserved.";
+
+export async function reconcileResearchFrontier(
+  investigationId: string,
+  runId: string,
+): Promise<{ reconciledCount: number; activeCount: 0 }> {
+  return getSql().begin(async (transaction) => {
+    const reconciled = await transaction<Array<{ id: string }>>`
+      UPDATE research_questions
+      SET status = 'EXHAUSTED', resolution_summary = ${RESEARCH_RECONCILIATION_LIMITATION},
+        resolved_at = now(), updated_at = now()
+      WHERE investigation_id = ${investigationId} AND run_id = ${runId}
+        AND status IN ('OPEN', 'IN_PROGRESS')
+      RETURNING id
+    `;
+    const [active] = await transaction<Array<{ count: number }>>`
+      SELECT count(*)::integer AS count FROM research_questions
+      WHERE investigation_id = ${investigationId} AND run_id = ${runId}
+        AND status IN ('OPEN', 'IN_PROGRESS')
+    `;
+    if ((active?.count ?? 0) !== 0) throw new Error("Research frontier reconciliation left active questions.");
+    await transaction`
+      INSERT INTO agent_events (
+        investigation_id, run_id, phase, agent, event_type, status,
+        budget_delta, public_rationale, payload
+      ) VALUES (
+        ${investigationId}, ${runId}, 'RESEARCH', 'runner',
+        'RESEARCH_FRONTIER_RECONCILED', 'COMPLETED', '{}'::jsonb,
+        ${RESEARCH_RECONCILIATION_LIMITATION},
+        ${transaction.json(toJson({ reconciledQuestionIds: reconciled.map(({ id }) => id) }))}
+      )
+    `;
+    return { reconciledCount: reconciled.length, activeCount: 0 as const };
+  });
+}

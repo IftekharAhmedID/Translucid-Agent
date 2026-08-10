@@ -163,8 +163,7 @@ async function handleModel(request: IncomingMessage, response: ServerResponse): 
   }
 }
 
-export function createGatewayServer() {
-  const executor = new ProviderExecutor(process.env);
+export function createGatewayServer(executor = new ProviderExecutor(process.env)) {
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://gateway.invalid");

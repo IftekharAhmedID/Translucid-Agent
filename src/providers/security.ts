@@ -25,7 +25,7 @@ export async function issueCaseToken(input: {
   allowedModels: string[];
   ttlMs: number;
 }): Promise<{ token: string; expiresAt: Date }> {
-  if (input.ttlMs <= 0 || input.ttlMs > 30 * 60_000) throw new Error("Case token TTL must be within 30 minutes.");
+  if (input.ttlMs <= 0 || input.ttlMs > 60 * 60_000) throw new Error("Case token TTL must be within one hour.");
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + input.ttlMs);
   const scope: CaseTokenScope = {

@@ -9,8 +9,15 @@ test("configuration defaults to the safe synthetic fixture runtime", () => {
   });
 
   assert.equal(config.dataClassification, "SYNTHETIC");
-  assert.equal(config.openCodeProvider, "ZEN");
-  assert.equal(config.openCodeUpstreamUrl, "https://opencode.ai/zen/v1/chat/completions");
+  assert.equal(config.researchOpenCodeProvider, "GO");
+  assert.equal(config.finalizerOpenCodeProvider, "GO");
+  assert.equal(config.researchOpenCodeUpstreamUrl, "https://opencode.ai/zen/go/v1/chat/completions");
+  assert.equal(config.finalizerOpenCodeUpstreamUrl, "https://opencode.ai/zen/go/v1/chat/completions");
+  assert.equal(config.reasoningVariant, "high");
+  assert.equal(config.investigationTimeoutMs, 60 * 60_000);
+  assert.equal(config.finalizationReserveMs, 12 * 60_000);
+  assert.equal(config.toolCeilings["web.search"], 1_000);
+  assert.equal(config.toolCeilings["web.fetch"], 2_000);
   assert.equal(config.providerMode, "fixture");
   assert.equal(config.runtimeDefault, "LOCAL");
   assert.equal(config.pdlLiveEnabled, false);
@@ -21,12 +28,33 @@ test("configuration accepts the explicit public-professional boundary", () => {
   const config = loadConfig({
     DATABASE_URL: "postgres://example.test/translucid",
     DATA_CLASSIFICATION: "PUBLIC_PROFESSIONAL",
-    OPENCODE_PROVIDER: "GO",
+    RESEARCH_OPENCODE_PROVIDER: "ZEN",
+    FINALIZER_OPENCODE_PROVIDER: "GO",
   });
 
   assert.equal(config.dataClassification, "PUBLIC_PROFESSIONAL");
-  assert.equal(config.openCodeProvider, "GO");
-  assert.equal(config.openCodeUpstreamUrl, "https://opencode.ai/zen/go/v1/chat/completions");
+  assert.equal(config.researchOpenCodeProvider, "ZEN");
+  assert.equal(config.finalizerOpenCodeProvider, "GO");
+  assert.equal(config.researchOpenCodeUpstreamUrl, "https://opencode.ai/zen/v1/chat/completions");
+  assert.equal(config.finalizerOpenCodeUpstreamUrl, "https://opencode.ai/zen/go/v1/chat/completions");
+});
+
+test("legacy OPENCODE_PROVIDER remains a research-provider alias only", () => {
+  const config = loadConfig({
+    DATABASE_URL: "postgres://example.test/translucid",
+    OPENCODE_PROVIDER: "ZEN",
+  });
+
+  assert.equal(config.researchOpenCodeProvider, "ZEN");
+  assert.equal(config.finalizerOpenCodeProvider, "GO");
+});
+
+test("the finalization reserve must fit inside the investigation deadline", () => {
+  assert.throws(() => loadConfig({
+    DATABASE_URL: "postgres://example.test/translucid",
+    INVESTIGATION_TIMEOUT_MS: "600000",
+    FINALIZATION_RESERVE_MS: "720000",
+  }), /finalization reserve/i);
 });
 
 test("configuration rejects unapproved data classifications", () => {

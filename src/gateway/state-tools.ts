@@ -103,6 +103,7 @@ export async function executeStateTool(name: StateToolName, raw: unknown, contex
     case "capabilities.list": {
       const [run] = await getSql()<Array<{ capabilitySnapshot: unknown }>>`SELECT capability_snapshot AS "capabilitySnapshot" FROM runs WHERE id = ${context.runId} AND investigation_id = ${context.investigationId}`;
       if (!run) throw new Error("Run not found.");
+      if (run.capabilitySnapshot === null) throw new Error("Runner capability snapshot is pending.");
       return run.capabilitySnapshot;
     }
   }

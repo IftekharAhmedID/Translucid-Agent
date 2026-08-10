@@ -1,8 +1,11 @@
-export const MAX_RESEARCH_PHASE_MS = 7.5 * 60_000;
-
-export function researchPhaseDeadline(now: Date, hardDeadline: Date): Date {
-  const availableMs = Math.max(1_000, hardDeadline.getTime() - now.getTime());
-  const reviewReserveMs = Math.floor(availableMs / 3);
-  const researchMs = Math.min(MAX_RESEARCH_PHASE_MS, availableMs - reviewReserveMs);
-  return new Date(now.getTime() + Math.max(1_000, researchMs));
+export function forcedFinalizationAt(
+  hardDeadline: Date,
+  finalizationReserveMs: number,
+  caseStartedAt = new Date(hardDeadline.getTime() - 60 * 60_000),
+): Date {
+  const caseEnvelopeMs = hardDeadline.getTime() - caseStartedAt.getTime();
+  if (!Number.isFinite(finalizationReserveMs) || finalizationReserveMs <= 0 || finalizationReserveMs >= caseEnvelopeMs) {
+    throw new Error("Finalization reserve must be positive and smaller than the case deadline envelope.");
+  }
+  return new Date(hardDeadline.getTime() - finalizationReserveMs);
 }

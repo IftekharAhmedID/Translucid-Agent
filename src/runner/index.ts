@@ -6,11 +6,12 @@ import { resolve } from "node:path";
 import { OpenCodeInvestigationController } from "../agent/controller.ts";
 import { getConfig } from "../core/config.ts";
 import { getSql } from "../db/client.ts";
-import { claimRuns, heartbeatRun, insertAgentEvent, type ClaimedRun } from "../db/investigations.ts";
+import { claimRuns, heartbeatRun, insertAgentEvent, persistRunCapabilitySnapshot, type ClaimedRun } from "../db/investigations.ts";
 import { createGatewayServer } from "../gateway/server.ts";
 import { stateToolNames } from "../gateway/state-tools.ts";
 import { toolNames } from "../providers/contracts.ts";
 import { issueCaseToken } from "../providers/security.ts";
+import { ProviderExecutor } from "../providers/executor.ts";
 import { E2BRuntime } from "../runtime/e2b.ts";
 import { getPinnedLocalManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
@@ -59,7 +60,7 @@ async function updateTerminalState(run: ClaimedRun, runnerId: string, status: "C
   });
 }
 
-async function runOne(run: ClaimedRun, runnerId: string, expectedManifestHash: string): Promise<void> {
+async function runOne(run: ClaimedRun, runnerId: string, expectedManifestHash: string, providerExecutor: ProviderExecutor): Promise<void> {
   const config = getConfig();
   const controller = new OpenCodeInvestigationController();
   const abort = new AbortController();
@@ -74,13 +75,14 @@ async function runOne(run: ClaimedRun, runnerId: string, expectedManifestHash: s
     if (row?.cancelRequestedAt || Date.now() >= run.deadlineAt.getTime()) abort.abort();
   }, 1_000);
   try {
+    await persistRunCapabilitySnapshot(run.id, runnerId, providerExecutor.capabilityRegistry);
     workspace = await prepareCaseWorkspace(run.investigationId, run.id);
     const issued = await issueCaseToken({
       investigationId: run.investigationId,
       runId: run.id,
       allowedTools: [...toolNames, ...stateToolNames, "state.compaction"],
       allowedModels: ["opencode/deepseek-v4-flash", "opencode/mimo-v2.5-free"],
-      ttlMs: Math.min(config.investigationTimeoutMs, 30 * 60_000),
+      ttlMs: Math.max(1_000, Math.min(config.investigationTimeoutMs, run.deadlineAt.getTime() - Date.now())),
     });
     const openCodePassword = randomBytes(24).toString("base64url");
     if (run.runtimeKind === "E2B") {
@@ -130,7 +132,8 @@ async function runOne(run: ClaimedRun, runnerId: string, expectedManifestHash: s
 async function main(): Promise<void> {
   const config = getConfig();
   const origin = new URL(config.runnerGatewayOrigin);
-  const gateway = createGatewayServer();
+  const providerExecutor = new ProviderExecutor(process.env);
+  const gateway = createGatewayServer(providerExecutor);
   await new Promise<void>((resolve, reject) => {
     gateway.once("error", reject);
     gateway.listen(Number(origin.port || 3001), origin.hostname, resolve);
@@ -148,7 +151,7 @@ async function main(): Promise<void> {
     if (capacity > 0) {
       const claimed = await claimRuns({ leaseOwner: runnerId, limit: capacity, leaseMs: LEASE_MS, timeoutMs: config.investigationTimeoutMs });
       for (const run of claimed) {
-        const task = runtimePools[run.runtimeKind].use(() => runOne(run, runnerId, expectedManifestHash)).finally(() => active.delete(task));
+        const task = runtimePools[run.runtimeKind].use(() => runOne(run, runnerId, expectedManifestHash, providerExecutor)).finally(() => active.delete(task));
         active.add(task);
       }
     }
