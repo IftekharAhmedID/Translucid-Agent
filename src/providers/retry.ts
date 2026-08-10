@@ -38,9 +38,11 @@ export async function fetchWithRetry(
   url: string | URL,
   init: RequestInit,
   attempts = 3,
+  onAttempt?: (attempt: number) => void,
 ): Promise<Response> {
   const maximumAttempts = Math.max(1, attempts);
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+    onAttempt?.(attempt + 1);
     try {
       const response = await fetch(url, init);
       if (!retryableStatuses.has(response.status) || attempt === maximumAttempts - 1) return response;

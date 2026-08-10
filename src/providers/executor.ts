@@ -1,52 +1,67 @@
-import { randomUUID } from "node:crypto";
-import type postgres from "postgres";
-
 import { buildCapabilityRegistry, type Capability } from "../core/capabilities.ts";
 import { getSql } from "../db/client.ts";
-import { captureArtifact } from "../db/state.ts";
 import {
-  parseToolRequest,
   capabilityForRequest,
+  parseToolRequest,
   shouldAllowSocialResearch,
   type ParsedToolRequest,
+  type ProfessionalMaterialField,
+  type ProviderCostSource,
   type ToolName,
   type ToolResult,
   unavailableResult,
 } from "./contracts.ts";
-import { redactSecrets, safePublicFetch } from "./http.ts";
 import { inspectGitHubRepository } from "./github-repository.ts";
+import { safePublicFetch } from "./http.ts";
+import {
+  executeConcreteProviderCall,
+  type ConcreteProviderResult,
+  type ProviderArtifactInput,
+  type ProviderNetworkResult,
+} from "./provider-call.ts";
 import { fetchWithRetry } from "./retry.ts";
-import { consumeBudget } from "./security.ts";
 
 type Environment = Record<string, string | undefined>;
 type ExecuteContext = { investigationId: string; runId: string; agent: string; sessionId: string };
-type ProviderResponse = { provider: string; data: unknown; sourceUrl: string; costUsd?: number; status?: number };
+type ProfileRequest = Extract<ParsedToolRequest, { tool: "professional.profile" }>;
+type ActivityRequest = Extract<ParsedToolRequest, { tool: "professional.activity" }>;
 
-const toolCeilings: Record<ToolName, number> = {
-  "web.search": 15,
-  "web.fetch": 30,
-  "professional.profile": 3,
-  "professional.activity": 3,
-  "social.profile": 2,
-  "github.graphql": 20,
-  "github.rest": 30,
+const defaultToolCeilings: Record<ToolName, number> = {
+  "web.search": 1_000,
+  "web.fetch": 2_000,
+  "professional.profile": 20,
+  "professional.activity": 10,
+  "social.profile": 10,
+  "github.graphql": 200,
+  "github.rest": 400,
   "github.clone": 3,
-  "archives.search": 8,
-  "public_records.search": 8,
-  "scholarly.search": 8,
-  "packages.inspect": 8,
-  "security_records.search": 8,
+  "archives.search": 100,
+  "public_records.search": 100,
+  "scholarly.search": 100,
+  "packages.inspect": 100,
+  "security_records.search": 100,
 };
 
-const researchAgentToolCeilings: Record<string, Partial<Record<ToolName, number>>> = {
-  "professional-investigator": { "professional.profile": 2, "professional.activity": 1, "web.search": 3, "web.fetch": 4, "archives.search": 2 },
-  "github-investigator": { "github.graphql": 2, "github.rest": 4, "github.clone": 1, "web.fetch": 1 },
-  "web-records-investigator": { "web.search": 4, "web.fetch": 6, "archives.search": 2, "public_records.search": 1, "scholarly.search": 1, "packages.inspect": 1, "security_records.search": 1 },
-  "social-investigator": { "social.profile": 2 },
+const ceilingEnvironmentKeys: Record<ToolName, string> = {
+  "web.search": "WEB_SEARCH_CEILING",
+  "web.fetch": "WEB_FETCH_CEILING",
+  "professional.profile": "PROFESSIONAL_PROFILE_CEILING",
+  "professional.activity": "PROFESSIONAL_ACTIVITY_CEILING",
+  "social.profile": "SOCIAL_PROFILE_CEILING",
+  "github.graphql": "GITHUB_GRAPHQL_CEILING",
+  "github.rest": "GITHUB_REST_CEILING",
+  "github.clone": "GITHUB_CLONE_CEILING",
+  "archives.search": "ARCHIVES_CEILING",
+  "public_records.search": "PUBLIC_RECORDS_CEILING",
+  "scholarly.search": "SCHOLARLY_CEILING",
+  "packages.inspect": "PACKAGES_CEILING",
+  "security_records.search": "SECURITY_RECORDS_CEILING",
 };
 
-export function agentToolCeiling(agent: string, tool: ToolName): number | undefined {
-  return researchAgentToolCeilings[agent]?.[tool];
+export function agentToolCeiling(agent: string, tool: ToolName): undefined {
+  void agent;
+  void tool;
+  return undefined;
 }
 
 class Semaphore {
@@ -64,10 +79,6 @@ class Semaphore {
   }
 }
 
-function asJson(value: unknown): postgres.JSONValue {
-  return JSON.parse(JSON.stringify(value)) as postgres.JSONValue;
-}
-
 function concurrencyFor(tool: ToolName, environment: Environment): number {
   const key = tool.startsWith("web.") ? "EXA_CONCURRENCY"
     : tool.startsWith("professional.") ? "LINKDAPI_CONCURRENCY"
@@ -82,6 +93,11 @@ function concurrencyFor(tool: ToolName, environment: Environment): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
 }
 
+function positiveNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 async function readResponse(response: Response): Promise<unknown> {
   const text = await response.text();
   if (Buffer.byteLength(text) > 5 * 1024 * 1024) throw new Error("Provider response exceeds capture limit.");
@@ -93,16 +109,13 @@ async function readResponse(response: Response): Promise<unknown> {
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("json")) {
     try { return JSON.parse(text) as unknown; }
-    catch {
-      const records = text.split("\n").filter(Boolean).map((line) => JSON.parse(line) as unknown);
-      return records;
-    }
+    catch { return text.split("\n").filter(Boolean).map((line) => JSON.parse(line) as unknown); }
   }
   return { text };
 }
 
-async function apiFetch(url: string, init: RequestInit): Promise<unknown> {
-  return readResponse(await fetchWithRetry(url, { ...init, signal: init.signal ?? AbortSignal.timeout(20_000) }));
+async function apiFetch(url: string, init: RequestInit, onAttempt?: (attempt: number) => void): Promise<unknown> {
+  return readResponse(await fetchWithRetry(url, init, 3, onAttempt));
 }
 
 function authHeaders(value: string | undefined, scheme = "Bearer"): Record<string, string> {
@@ -132,6 +145,19 @@ export function unwrapLinkdProfileResponse(value: unknown): Record<string, unkno
   return Object.keys(candidate).length > 0 ? candidate : undefined;
 }
 
+function nonEmpty(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return Boolean(value && typeof value === "object" && Object.keys(value as Record<string, unknown>).length > 0);
+}
+
+export function profileHasMaterialField(profile: Record<string, unknown>, field: ProfessionalMaterialField): boolean {
+  if (field === "IDENTITY") return [profile.fullName, profile.name, profile.username, profile.publicIdentifier].some(nonEmpty);
+  if (field === "CURRENT_POSITION") return [profile.currentPositions, profile.currentPosition, profile.position, profile.headline].some(nonEmpty);
+  if (field === "EMPLOYMENT_HISTORY") return [profile.fullPositions, profile.positions, profile.experience].some(nonEmpty);
+  return [profile.educations, profile.education].some(nonEmpty);
+}
+
 export class ProviderExecutor {
   private readonly registry;
   private readonly pools: Map<ToolName, Semaphore>;
@@ -139,7 +165,7 @@ export class ProviderExecutor {
 
   constructor(private readonly environment: Environment = process.env) {
     this.registry = buildCapabilityRegistry(environment);
-    this.pools = new Map(toolCeilings ? Object.keys(toolCeilings).map((tool) => [tool as ToolName, new Semaphore(concurrencyFor(tool as ToolName, environment))]) : []);
+    this.pools = new Map(Object.keys(defaultToolCeilings).map((tool) => [tool as ToolName, new Semaphore(concurrencyFor(tool as ToolName, environment))]));
     this.brightDataPool = new Semaphore(Math.max(1, Number(environment.BRIGHTDATA_CONCURRENCY ?? 2)));
   }
 
@@ -152,261 +178,349 @@ export class ProviderExecutor {
     const capability = capabilityForRequest(request);
     const entry = this.registry[capability];
     if (!["READY", "READY_FIXTURE", "DEGRADED"].includes(entry.state)) return unavailableResult(capability);
-    if (request.tool === "social.profile" && !shouldAllowSocialResearch((request.arguments as { reason: string }).reason)) return unavailableResult(capability);
-
-    try {
-      await this.assertQuestionScope(request, context);
-      await consumeBudget({ runId: context.runId, counter: request.tool, increment: 1, ceiling: toolCeilings[request.tool] });
-      const agentCeiling = agentToolCeiling(context.agent, request.tool);
-      if (agentCeiling !== undefined) {
-        await consumeBudget({ runId: context.runId, counter: `agent:${context.agent}:${request.tool}`, increment: 1, ceiling: agentCeiling });
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith("Budget exhausted")) {
-        return { ...unavailableResult(capability), status: "BUDGET_EXHAUSTED" };
-      }
-      throw error;
-    }
-
-    const started = performance.now();
+    if (request.tool === "social.profile" && !shouldAllowSocialResearch(request.arguments.reason)) return unavailableResult(capability);
+    await this.assertQuestionScope(request, context);
     const pool = this.pools.get(request.tool);
     if (!pool) throw new Error("Provider semaphore is missing.");
     try {
-      const deadlineSignal = await this.deadlineSignal(context.runId);
-      const work = () => this.environment.PROVIDER_MODE === "live" ? this.executeLive(request, context, deadlineSignal) : this.executeFixture(request);
-      const response = request.tool === "social.profile" ? await work() : await pool.use(work);
-      if ((response.costUsd ?? 0) > 0) {
-        await consumeBudget({ runId: context.runId, counter: "providerUsd", increment: response.costUsd!, ceiling: Number(this.environment.PROVIDER_BUDGET_USD ?? 10) });
-      }
-      const artifact = await captureArtifact({
-        ...context,
-        kind: request.tool === "web.search" ? "SEARCH_DISCOVERY" : "PROVIDER_RESPONSE",
+      const response = await pool.use(() => this.environment.PROVIDER_MODE === "live"
+        ? this.executeLive(request, context, capability)
+        : this.executeFixture(request, context, capability));
+      return {
+        status: "OK",
+        capability,
         provider: response.provider,
-        sourceUrl: response.sourceUrl,
-        mimeType: "application/json",
-        content: JSON.stringify(response.data),
-        provenance: {
-          tool: request.tool,
-          questionId: (request.arguments as { questionId: string }).questionId,
-          isSearchSnippet: request.tool === "web.search",
-          immutable: true,
-        },
-        httpMetadata: { status: response.status ?? 200 },
-      });
-      await this.recordCall(context, request, capability, response.provider, "OK", performance.now() - started, response.costUsd ?? 0, [artifact.id]);
-      return { status: "OK", capability, provider: response.provider, data: response.data, artifactIds: [artifact.id], observedAt: new Date().toISOString(), costUsd: response.costUsd ?? 0 };
+        data: response.data,
+        artifactIds: response.artifactIds,
+        evidenceEligibleArtifactIds: response.evidenceEligibleArtifactIds,
+        observedAt: new Date().toISOString(),
+        costUsd: response.costUsd,
+        costSource: response.costSource,
+      };
     } catch (error) {
-      const status = typeof (error as { status?: unknown }).status === "number" ? Number((error as { status: number }).status) : undefined;
-      const resultStatus = error instanceof Error && error.message.startsWith("Budget exhausted") ? "BUDGET_EXHAUSTED" : status === 429 ? "RATE_LIMITED" : "ERROR";
-      await this.recordCall(context, request, capability, "gateway", resultStatus, performance.now() - started, 0, []);
-      return { status: resultStatus, capability, provider: "gateway", data: { message: error instanceof Error ? error.message : "Provider request failed." }, artifactIds: [], observedAt: new Date().toISOString(), costUsd: 0 };
+      const responseStatus = typeof (error as { status?: unknown })?.status === "number" ? Number((error as { status: number }).status) : undefined;
+      const status = error instanceof Error && error.message.startsWith("Budget exhausted") ? "BUDGET_EXHAUSTED"
+        : responseStatus === 429 ? "RATE_LIMITED" : "ERROR";
+      return {
+        status,
+        capability,
+        provider: "gateway",
+        data: { message: error instanceof Error ? error.message : "Provider request failed." },
+        artifactIds: [],
+        evidenceEligibleArtifactIds: [],
+        observedAt: new Date().toISOString(),
+        costUsd: 0,
+        costSource: "UNKNOWN",
+      };
     }
   }
 
   private async assertQuestionScope(request: ParsedToolRequest, context: ExecuteContext): Promise<void> {
-    const args = request.arguments as { questionId: string };
     const [question] = await getSql()<Array<{ status: string }>>`
       SELECT status FROM research_questions
-      WHERE id = ${args.questionId} AND investigation_id = ${context.investigationId} AND run_id = ${context.runId}
+      WHERE id = ${request.arguments.questionId} AND investigation_id = ${context.investigationId} AND run_id = ${context.runId}
     `;
     if (!question || !["OPEN", "IN_PROGRESS"].includes(question.status)) throw new Error("Tool request must reference an active research question in this run.");
   }
 
-  private async executeFixture(request: ParsedToolRequest): Promise<ProviderResponse> {
-    return { provider: "fixture", data: fixtureData(request), sourceUrl: `https://example.test/fixtures/${request.tool}` };
+  private executeFixture(request: ParsedToolRequest, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+    return this.call(request, context, capability, "fixture", `fixture.${request.tool}`, request.arguments, async () => ({
+      data: fixtureData(request),
+      sourceUrl: `https://example.test/fixtures/${request.tool}`,
+      costUsd: 0,
+      costSource: "FREE_PUBLIC",
+    }));
   }
 
-  private async executeLive(request: ParsedToolRequest, context: ExecuteContext, signal: AbortSignal): Promise<ProviderResponse> {
-    const args = request.arguments as Record<string, unknown>;
+  private async executeLive(request: ParsedToolRequest, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
     switch (request.tool) {
-      case "web.search": {
-        const data = await apiFetch("https://api.exa.ai/search", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.required("EXA_API_KEY") }, body: JSON.stringify({ query: args.query, type: args.mode, numResults: 10 }), signal });
-        return { provider: "exa", data, sourceUrl: "https://api.exa.ai/search" };
-      }
-      case "web.fetch": {
-        const url = String(args.url);
-        if (this.environment.EXA_API_KEY) {
-          const data = await apiFetch("https://api.exa.ai/contents", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.environment.EXA_API_KEY }, body: JSON.stringify({ urls: [url], text: true }), signal });
-          return { provider: "exa", data, sourceUrl: url };
-        }
-        const response = await safePublicFetch(url, { headers: { "user-agent": this.publicUserAgent() }, signal });
-        return { provider: "public-fetch", data: await readResponse(response), sourceUrl: url, status: response.status };
-      }
-      case "professional.profile":
-        return this.professionalProfile(args, context, signal);
-      case "professional.activity": {
-        const username = encodeURIComponent(String(args.username));
-        if (this.environment.LINKDAPI_API_KEY) {
-          try {
-            await consumeBudget({ runId: context.runId, counter: "linkdapi", increment: 1, ceiling: 3 });
-            const url = `https://linkdapi.com/api/v1/profile/posts?username=${username}`;
-            const data = await apiFetch(url, { headers: { "X-linkdapi-apikey": this.environment.LINKDAPI_API_KEY }, signal });
-            return { provider: "linkdapi", data, sourceUrl: url };
-          } catch (error) {
-            if (!this.environment.BRIGHTDATA_LINKEDIN_POSTS_DATASET_ID) throw error;
-          }
-        }
-        return this.brightData(
-          this.required("BRIGHTDATA_LINKEDIN_POSTS_DATASET_ID"),
-          { url: `https://www.linkedin.com/in/${username}/recent-activity/all/` },
-          "brightdata-linkedin-posts",
-          context,
-          signal,
-        );
-      }
+      case "web.search": return this.webSearch(request, context, capability);
+      case "web.fetch": return this.webFetch(request, context, capability);
+      case "professional.profile": return this.professionalProfile(request, context, capability);
+      case "professional.activity": return this.professionalActivity(request, context, capability);
       case "social.profile": {
-        const platform = String(args.platform);
-        const datasetKey = `BRIGHTDATA_${platform}_PROFILE_DATASET_ID`;
-        return this.brightData(this.required(datasetKey), { url: String(args.handle) }, `brightdata-${platform.toLowerCase()}`, context, signal);
+        const datasetKey = `BRIGHTDATA_${request.arguments.platform}_PROFILE_DATASET_ID`;
+        return this.brightData(request, context, capability, this.required(datasetKey), { url: request.arguments.handle }, `brightdata.${request.arguments.platform.toLowerCase()}-profile`, `brightdata-${request.arguments.platform.toLowerCase()}`);
       }
-      case "github.graphql": {
-        const data = await apiFetch("https://api.github.com/graphql", { method: "POST", headers: { ...authHeaders(this.required("GITHUB_TOKEN")), "content-type": "application/json", "user-agent": this.publicUserAgent() }, body: JSON.stringify({ query: args.query, variables: args.variables }), signal });
-        return { provider: "github", data, sourceUrl: "https://api.github.com/graphql" };
-      }
+      case "github.graphql": return this.call(request, context, capability, "github", "github.graphql", { query: request.arguments.query, variables: request.arguments.variables }, async (signal, onAttempt) => ({
+        data: await apiFetch("https://api.github.com/graphql", { method: "POST", headers: { ...authHeaders(this.required("GITHUB_TOKEN")), "content-type": "application/json", "user-agent": this.publicUserAgent() }, body: JSON.stringify({ query: request.arguments.query, variables: request.arguments.variables }), signal }, onAttempt),
+        sourceUrl: "https://api.github.com/graphql", costUsd: 0, costSource: "FREE_PUBLIC",
+      }));
       case "github.rest": {
-        const url = `https://api.github.com${String(args.path)}`;
-        const data = await apiFetch(url, { headers: { ...authHeaders(this.required("GITHUB_TOKEN")), accept: "application/vnd.github+json", "user-agent": this.publicUserAgent() }, signal });
-        return { provider: "github", data, sourceUrl: url };
+        const url = `https://api.github.com${request.arguments.path}`;
+        return this.call(request, context, capability, "github", "github.rest", { path: request.arguments.path }, async (signal, onAttempt) => ({
+          data: await apiFetch(url, { headers: { ...authHeaders(this.required("GITHUB_TOKEN")), accept: "application/vnd.github+json", "user-agent": this.publicUserAgent() }, signal }, onAttempt),
+          sourceUrl: url, costUsd: 0, costSource: "FREE_PUBLIC",
+        }));
       }
-      case "github.clone": {
-        const repository = String(args.repository);
-        const data = await inspectGitHubRepository({
-          repository,
-          ref: typeof args.ref === "string" ? args.ref : undefined,
-          authorHint: typeof args.authorHint === "string" ? args.authorHint : undefined,
-          signal,
-        });
-        return { provider: "github-public-clone", data, sourceUrl: `https://github.com/${repository}` };
-      }
-      case "archives.search": {
-        return this.archives(args, signal);
-      }
-      case "public_records.search":
-        return this.publicRecords(args, signal);
-      case "scholarly.search":
-        return this.scholarly(args, signal);
-      case "packages.inspect":
-        return this.packages(args, signal);
-      case "security_records.search":
-        return this.securityRecords(args, signal);
+      case "github.clone": return this.call(request, context, capability, "github-public-clone", "github.clone", { repository: request.arguments.repository, ref: request.arguments.ref, authorHint: request.arguments.authorHint }, async (signal) => ({
+        data: await inspectGitHubRepository({ repository: request.arguments.repository, ref: request.arguments.ref, authorHint: request.arguments.authorHint, signal }),
+        sourceUrl: `https://github.com/${request.arguments.repository}`, costUsd: 0, costSource: "FREE_PUBLIC",
+      }));
+      case "archives.search": return this.archives(request, context, capability);
+      case "public_records.search": return this.publicRecords(request, context, capability);
+      case "scholarly.search": return this.scholarly(request, context, capability);
+      case "packages.inspect": return this.packages(request, context, capability);
+      case "security_records.search": return this.securityRecords(request, context, capability);
     }
   }
 
-  private async professionalProfile(args: Record<string, unknown>, context: ExecuteContext, signal: AbortSignal): Promise<ProviderResponse> {
-    const username = encodeURIComponent(String(args.username));
+  private webSearch(request: Extract<ParsedToolRequest, { tool: "web.search" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+    const body = {
+      query: request.arguments.query,
+      type: request.arguments.mode,
+      numResults: request.arguments.resultLimit,
+      contents: {
+        text: { maxCharacters: 12_000 },
+        highlights: { query: request.arguments.highlightQuery, maxCharacters: 4_000 },
+      },
+    };
+    return this.call(request, context, capability, "exa", "exa.search", body, async (signal, onAttempt) => {
+      const data = await apiFetch("https://api.exa.ai/search", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.required("EXA_API_KEY") }, body: JSON.stringify(body), signal }, onAttempt);
+      const envelope = data && typeof data === "object" ? data as Record<string, unknown> : {};
+      const results = Array.isArray(envelope.results) ? envelope.results : [];
+      const artifacts: ProviderArtifactInput[] = [{ kind: "SEARCH_DISCOVERY", sourceUrl: "https://api.exa.ai/search", content: data }];
+      for (const candidate of results) {
+        if (!candidate || typeof candidate !== "object") continue;
+        const result = candidate as Record<string, unknown>;
+        if (typeof result.url !== "string" || (!nonEmpty(result.text) && !nonEmpty(result.highlights))) continue;
+        artifacts.push({
+          kind: "SOURCE_CONTENT",
+          sourceUrl: result.url,
+          content: { title: result.title, url: result.url, text: result.text, highlights: result.highlights, publishedDate: result.publishedDate, author: result.author },
+          provenance: { captureMethod: "EXA_INLINE_CONTENTS" },
+        });
+      }
+      const costUsd = this.exaCost(data);
+      return { data, sourceUrl: "https://api.exa.ai/search", costUsd, costSource: costUsd > 0 ? "REPORTED" : "UNKNOWN", artifacts };
+    });
+  }
+
+  private webFetch(request: Extract<ParsedToolRequest, { tool: "web.fetch" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+    const url = request.arguments.url;
+    if (this.environment.EXA_API_KEY) {
+      return this.call(request, context, capability, "exa", "exa.contents", { urls: [url], text: true }, async (signal, onAttempt) => {
+        const data = await apiFetch("https://api.exa.ai/contents", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.environment.EXA_API_KEY! }, body: JSON.stringify({ urls: [url], text: true }), signal }, onAttempt);
+        const costUsd = this.exaCost(data);
+        return { data, sourceUrl: url, costUsd, costSource: costUsd > 0 ? "REPORTED" : "UNKNOWN", artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: data, provenance: { captureMethod: "EXA_CONTENTS" } }] };
+      });
+    }
+    return this.call(request, context, capability, "public-fetch", "public-fetch", { url }, async (signal) => {
+      const response = await safePublicFetch(url, { headers: { "user-agent": this.publicUserAgent() }, signal });
+      const data = await readResponse(response);
+      return { data, sourceUrl: url, status: response.status, costUsd: 0, costSource: "FREE_PUBLIC", artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: data, status: response.status }] };
+    });
+  }
+
+  private async professionalProfile(request: ProfileRequest, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+    const username = request.arguments.username.trim().toLocaleLowerCase("en-US");
+    let linkd: ConcreteProviderResult | undefined;
+    let linkdError: string | undefined;
     if (this.environment.LINKDAPI_API_KEY) {
       try {
-        await consumeBudget({ runId: context.runId, counter: "linkdapi", increment: 1, ceiling: 3 });
-        const url = `https://linkdapi.com/api/v1/profile/full?username=${username}`;
-        const data = await apiFetch(url, { headers: { "X-linkdapi-apikey": this.environment.LINKDAPI_API_KEY }, signal });
-        const profile = unwrapLinkdProfileResponse(data);
-        if (profile) return { provider: "linkdapi", data: profile, sourceUrl: url };
-      } catch { /* one configured Bright Data fallback is allowed below */ }
+        const url = `https://linkdapi.com/api/v1/profile/full?username=${encodeURIComponent(username)}`;
+        linkd = await this.call(request, context, capability, "linkdapi", "linkdapi.profile", { username }, async (signal, onAttempt) => ({
+          data: await apiFetch(url, { headers: { "X-linkdapi-apikey": this.environment.LINKDAPI_API_KEY! }, signal }, onAttempt),
+          sourceUrl: `https://www.linkedin.com/in/${encodeURIComponent(username)}`,
+          ...this.configuredCost("LINKDAPI_COST_USD_PER_CALL"),
+        }));
+        const profile = unwrapLinkdProfileResponse(linkd.data);
+        if (profile && profileHasMaterialField(profile, request.arguments.requiredMaterialField)) return { ...linkd, data: profile };
+      } catch (error) {
+        linkdError = error instanceof Error ? error.message : "LinkdAPI request failed.";
+      }
     }
+    const limitation = `The ${request.arguments.requiredMaterialField.toLowerCase().replaceAll("_", " ")} field was not available from the configured professional-profile routes.`;
     const dataset = this.environment.BRIGHTDATA_LINKEDIN_PROFILE_DATASET_ID;
-    if (!dataset) throw new Error("LinkdAPI failed or lacked the required field and Bright Data profile fallback is unavailable.");
-    await consumeBudget({ runId: context.runId, counter: "brightdata.linkedinProfile", increment: 1, ceiling: 1 });
-    return this.brightData(dataset, { url: `https://www.linkedin.com/in/${username}` }, "brightdata-linkedin-profile", context, signal);
+    if (!dataset) {
+      if (!linkd) throw new Error(linkdError ?? `${limitation} Bright Data is not configured.`);
+      return { ...linkd, data: { profile: unwrapLinkdProfileResponse(linkd.data), requiredMaterialField: request.arguments.requiredMaterialField, materialFieldPresent: false, limitation } };
+    }
+    try {
+      const bright = await this.brightData(request, context, capability, dataset, { url: `https://www.linkedin.com/in/${username}` }, "brightdata.linkedin-profile", "brightdata-linkedin-profile");
+      const brightProfile = this.firstRecord(bright.data);
+      const present = brightProfile ? profileHasMaterialField(brightProfile, request.arguments.requiredMaterialField) : false;
+      return this.combine([...(linkd ? [linkd] : []), bright], {
+        linkdapi: linkd ? unwrapLinkdProfileResponse(linkd.data) : null,
+        brightData: bright.data,
+        requiredMaterialField: request.arguments.requiredMaterialField,
+        materialFieldPresent: present,
+        ...(present ? {} : { limitation }),
+        ...(linkdError ? { linkdapiLimitation: linkdError } : {}),
+      });
+    } catch (error) {
+      if (!linkd) throw error;
+      return { ...linkd, data: { profile: unwrapLinkdProfileResponse(linkd.data), requiredMaterialField: request.arguments.requiredMaterialField, materialFieldPresent: false, limitation: `${limitation} Bright Data failed: ${error instanceof Error ? error.message : "unknown error"}` } };
+    }
   }
 
-  private async archives(args: Record<string, unknown>, signal: AbortSignal): Promise<ProviderResponse> {
-    const target = encodeURIComponent(String(args.url));
-    const from = args.fromYear ? `&from=${args.fromYear}` : "";
-    const to = args.toYear ? `&to=${args.toYear}` : "";
-    const waybackUrl = `https://web.archive.org/cdx/search/cdx?url=${target}&output=json&filter=statuscode:200&filter=mimetype:text/html&collapse=digest&fl=timestamp,original,statuscode,mimetype,digest&limit=50${from}${to}`;
+  private async professionalActivity(request: ActivityRequest, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+    const username = request.arguments.username.trim().toLocaleLowerCase("en-US");
+    if (this.environment.LINKDAPI_API_KEY) {
+      try {
+        const url = `https://linkdapi.com/api/v1/profile/posts?username=${encodeURIComponent(username)}`;
+        return await this.call(request, context, capability, "linkdapi", "linkdapi.activity", { username }, async (signal, onAttempt) => ({
+          data: await apiFetch(url, { headers: { "X-linkdapi-apikey": this.environment.LINKDAPI_API_KEY! }, signal }, onAttempt),
+          sourceUrl: `https://www.linkedin.com/in/${encodeURIComponent(username)}/recent-activity/all/`,
+          ...this.configuredCost("LINKDAPI_COST_USD_PER_CALL"),
+        }));
+      } catch { /* the single configured fallback is handled below */ }
+    }
+    return this.brightData(request, context, capability, this.required("BRIGHTDATA_LINKEDIN_POSTS_DATASET_ID"), { url: `https://www.linkedin.com/in/${username}/recent-activity/all/` }, "brightdata.linkedin-posts", "brightdata-linkedin-posts");
+  }
+
+  private async brightData(request: ParsedToolRequest, context: ExecuteContext, capability: Capability, datasetId: string, payload: Record<string, unknown>, providerRoute: string, provider: string): Promise<ConcreteProviderResult> {
+    return this.brightDataPool.use(() => this.call(request, context, capability, provider, providerRoute, { datasetId, ...payload }, async (signal, onAttempt) => {
+      const url = `https://api.brightdata.com/datasets/v3/scrape?dataset_id=${encodeURIComponent(datasetId)}&format=json`;
+      const data = await apiFetch(url, { method: "POST", headers: { ...authHeaders(this.required("BRIGHTDATA_API_KEY")), "content-type": "application/json" }, body: JSON.stringify([payload]), signal }, onAttempt);
+      return { data, sourceUrl: String(payload.url ?? "https://api.brightdata.com/datasets/v3/scrape"), ...this.configuredCost("BRIGHTDATA_COST_USD_PER_RECORD", Array.isArray(data) ? Math.max(1, data.length) : 1) };
+    }));
+  }
+
+  private async archives(request: Extract<ParsedToolRequest, { tool: "archives.search" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+    const { url, fromYear, toYear } = request.arguments;
+    const target = encodeURIComponent(url);
+    const waybackUrl = `https://web.archive.org/cdx/search/cdx?url=${target}&output=json&filter=statuscode:200&filter=mimetype:text/html&collapse=digest&fl=timestamp,original,statuscode,mimetype,digest&limit=50${fromYear ? `&from=${fromYear}` : ""}${toYear ? `&to=${toYear}` : ""}`;
     try {
-      const data = await apiFetch(waybackUrl, { headers: { "user-agent": this.publicUserAgent() }, signal });
-      if (!Array.isArray(data)) return { provider: "wayback", data, sourceUrl: waybackUrl };
-      if (data.length > 1) {
-        const capture = data.at(-1);
+      const wayback = await this.publicApiCall(request, context, capability, "wayback", "wayback.cdx", { url, fromYear, toYear }, waybackUrl);
+      if (!Array.isArray(wayback.data)) return wayback;
+      if (wayback.data.length > 1) {
+        const capture = wayback.data.at(-1);
         const timestamp = Array.isArray(capture) ? String(capture[0] ?? "") : "";
         const original = Array.isArray(capture) ? String(capture[1] ?? "") : "";
         if (/^\d{14}$/.test(timestamp) && /^https?:\/\//.test(original)) {
           const snapshotUrl = `https://web.archive.org/web/${timestamp}id_/${original}`;
           try {
-            const historicalContent = await apiFetch(snapshotUrl, { headers: { "user-agent": this.publicUserAgent() }, signal });
-            const boundedContent = historicalContent && typeof historicalContent === "object" && typeof (historicalContent as { text?: unknown }).text === "string"
-              ? { ...(historicalContent as { text: string }), text: (historicalContent as { text: string }).text.slice(0, 4_000_000) }
-              : historicalContent;
-            return { provider: "wayback", data: { captures: data, retrievedCapture: { timestamp, original, snapshotUrl, content: boundedContent } }, sourceUrl: waybackUrl };
-          } catch {
-            if (signal.aborted) throw signal.reason;
-          }
+            const snapshot = await this.publicApiCall(request, context, capability, "wayback", "wayback.capture", { timestamp, url: original }, snapshotUrl);
+            return this.combine([wayback, snapshot], { captures: wayback.data, retrievedCapture: { timestamp, original, snapshotUrl, content: snapshot.data } });
+          } catch { return { ...wayback, data: { captures: wayback.data, retrievedCapture: null } }; }
         }
-        return { provider: "wayback", data: { captures: data, retrievedCapture: null }, sourceUrl: waybackUrl };
+        return { ...wayback, data: { captures: wayback.data, retrievedCapture: null } };
       }
-    } catch {
-      if (signal.aborted) throw signal.reason;
-    }
+    } catch { /* Common Crawl is the explicit fallback */ }
 
     const indexListUrl = "https://index.commoncrawl.org/collinfo.json";
-    const indexes = await apiFetch(indexListUrl, { headers: { "user-agent": this.publicUserAgent() }, signal });
-    const currentIndex = Array.isArray(indexes) && indexes[0] && typeof indexes[0] === "object"
-      ? String((indexes[0] as { id?: unknown }).id ?? "")
-      : "";
+    const indexList = await this.publicApiCall(request, context, capability, "common-crawl", "common-crawl.index-list", {}, indexListUrl);
+    const currentIndex = Array.isArray(indexList.data) && indexList.data[0] && typeof indexList.data[0] === "object" ? String((indexList.data[0] as { id?: unknown }).id ?? "") : "";
     if (!/^CC-MAIN-\d{4}-\d{2}$/.test(currentIndex)) throw new Error("Common Crawl did not publish a valid current index.");
-    const commonCrawlUrl = `https://index.commoncrawl.org/${currentIndex}-index?url=${target}&output=json&filter=status:200&filter=mime:text/html`;
-    return { provider: "common-crawl", data: await apiFetch(commonCrawlUrl, { headers: { "user-agent": this.publicUserAgent() }, signal }), sourceUrl: commonCrawlUrl };
+    const searchUrl = `https://index.commoncrawl.org/${currentIndex}-index?url=${target}&output=json&filter=status:200&filter=mime:text/html`;
+    const search = await this.publicApiCall(request, context, capability, "common-crawl", "common-crawl.search", { index: currentIndex, url }, searchUrl);
+    return this.combine([indexList, search], { index: currentIndex, captures: search.data });
   }
 
-  private async brightData(datasetId: string, payload: Record<string, unknown>, provider: string, context: ExecuteContext, signal: AbortSignal): Promise<ProviderResponse> {
-    return this.brightDataPool.use(async () => {
-      await consumeBudget({ runId: context.runId, counter: "brightdata", increment: 1, ceiling: 2 });
-      const url = `https://api.brightdata.com/datasets/v3/scrape?dataset_id=${encodeURIComponent(datasetId)}&format=json`;
-      const data = await apiFetch(url, { method: "POST", headers: { ...authHeaders(this.required("BRIGHTDATA_API_KEY")), "content-type": "application/json" }, body: JSON.stringify([payload]), signal });
-      return { provider, data, sourceUrl: "https://api.brightdata.com/datasets/v3/scrape" };
+  private publicRecords(request: Extract<ParsedToolRequest, { tool: "public_records.search" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+    const query = encodeURIComponent(request.arguments.query);
+    if (request.arguments.recordType === "PATENT") {
+      const url = `https://api.uspto.gov/api/v1/patent/applications/search?q=${query}`;
+      return this.publicApiCall(request, context, capability, "uspto-odp", "public-records.uspto", { query: request.arguments.query }, url, { "x-api-key": this.required("USPTO_API_KEY") });
+    }
+    if (request.arguments.recordType === "SEC") {
+      const url = `https://efts.sec.gov/LATEST/search-index?q=${query}&from=0&size=20`;
+      return this.publicApiCall(request, context, capability, "sec-edgar", "public-records.sec", { query: request.arguments.query }, url);
+    }
+    const url = `https://datatracker.ietf.org/api/v1/doc/document/?name__icontains=${query}&limit=20&format=json`;
+    return this.publicApiCall(request, context, capability, "ietf-datatracker", "public-records.ietf", { query: request.arguments.query }, url);
+  }
+
+  private scholarly(request: Extract<ParsedToolRequest, { tool: "scholarly.search" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+    const query = encodeURIComponent(request.arguments.query);
+    if (this.environment.OPENALEX_API_KEY) {
+      const privateUrl = `https://api.openalex.org/works?search=${query}&per-page=20&api_key=${encodeURIComponent(this.environment.OPENALEX_API_KEY)}`;
+      const publicUrl = `https://api.openalex.org/works?search=${query}&per-page=20`;
+      return this.call(request, context, capability, "openalex", "scholarly.openalex", { query: request.arguments.query }, async (signal, onAttempt) => ({ data: await apiFetch(privateUrl, { headers: { "user-agent": this.publicUserAgent() }, signal }, onAttempt), sourceUrl: publicUrl, costUsd: 0, costSource: "FREE_PUBLIC" }));
+    }
+    const url = `https://api.crossref.org/works?query=${query}&rows=20&mailto=${encodeURIComponent(this.required("PUBLIC_API_CONTACT_EMAIL"))}`;
+    return this.publicApiCall(request, context, capability, "crossref", "scholarly.crossref", { query: request.arguments.query }, url);
+  }
+
+  private packages(request: Extract<ParsedToolRequest, { tool: "packages.inspect" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+    const name = encodeURIComponent(request.arguments.package);
+    const [provider, url] = request.arguments.registry === "NPM" ? ["npm", `https://registry.npmjs.org/${name}`]
+      : request.arguments.registry === "PYPI" ? ["pypi", `https://pypi.org/pypi/${name}/json`]
+      : ["hugging-face", `https://huggingface.co/api/models/${name}`];
+    return this.publicApiCall(request, context, capability, provider, `packages.${request.arguments.registry.toLowerCase()}`, { registry: request.arguments.registry, package: request.arguments.package }, url);
+  }
+
+  private async securityRecords(request: Extract<ParsedToolRequest, { tool: "security_records.search" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+    if (request.arguments.cve) {
+      if (this.environment.GITHUB_TOKEN) {
+        try {
+          const githubUrl = `https://api.github.com/advisories?cve_id=${encodeURIComponent(request.arguments.cve)}`;
+          const github = await this.call(request, context, capability, "github-advisories", "security.github-advisories", { cve: request.arguments.cve }, async (signal, onAttempt) => ({ data: await apiFetch(githubUrl, { headers: { ...authHeaders(this.environment.GITHUB_TOKEN), accept: "application/vnd.github+json", "user-agent": this.publicUserAgent() }, signal }, onAttempt), sourceUrl: githubUrl, costUsd: 0, costSource: "FREE_PUBLIC" }));
+          if (Array.isArray(github.data) && github.data.length > 0) return github;
+        } catch { /* NVD is the explicit fallback */ }
+      }
+      const url = `https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=${encodeURIComponent(request.arguments.cve)}`;
+      return this.publicApiCall(request, context, capability, "nvd", "security.nvd", { cve: request.arguments.cve }, url, this.environment.NVD_API_KEY ? { apiKey: this.environment.NVD_API_KEY } : {});
+    }
+    const url = "https://api.osv.dev/v1/query";
+    const body = { package: { name: request.arguments.package, ecosystem: request.arguments.ecosystem } };
+    return this.call(request, context, capability, "osv", "security.osv", body, async (signal, onAttempt) => ({ data: await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "user-agent": this.publicUserAgent() }, body: JSON.stringify(body), signal }, onAttempt), sourceUrl: url, costUsd: 0, costSource: "FREE_PUBLIC" }));
+  }
+
+  private publicApiCall(request: ParsedToolRequest, context: ExecuteContext, capability: Capability, provider: string, route: string, networkArguments: Record<string, unknown>, url: string, headers: Record<string, string> = {}): Promise<ConcreteProviderResult> {
+    return this.call(request, context, capability, provider, route, networkArguments, async (signal, onAttempt) => ({
+      data: await apiFetch(url, { headers: { "user-agent": this.publicUserAgent(), ...headers }, signal }, onAttempt),
+      sourceUrl: url,
+      costUsd: 0,
+      costSource: "FREE_PUBLIC",
+    }));
+  }
+
+  private call(request: ParsedToolRequest, context: ExecuteContext, capability: Capability, provider: string, providerRoute: string, networkArguments: Record<string, unknown>, run: (signal: AbortSignal, onAttempt: (attempt: number) => void) => Promise<ProviderNetworkResult>): Promise<ConcreteProviderResult> {
+    return executeConcreteProviderCall({
+      context,
+      capability,
+      semanticTool: request.tool,
+      provider,
+      providerRoute,
+      networkArguments,
+      publicRationale: request.arguments.publicRationale,
+      countCeiling: this.toolCeiling(request.tool),
+      providerBudgetUsd: positiveNumber(this.environment.PROVIDER_BUDGET_USD, 10),
+      run,
     });
   }
 
-  private async publicRecords(args: Record<string, unknown>, signal: AbortSignal): Promise<ProviderResponse> {
-    const query = encodeURIComponent(String(args.query));
-    if (args.recordType === "PATENT") {
-      const url = `https://api.uspto.gov/api/v1/patent/applications/search?q=${query}`;
-      return { provider: "uspto-odp", data: await apiFetch(url, { headers: { "x-api-key": this.required("USPTO_API_KEY") }, signal }), sourceUrl: url };
-    }
-    if (args.recordType === "SEC") {
-      const url = `https://efts.sec.gov/LATEST/search-index?q=${query}&from=0&size=20`;
-      return { provider: "sec-edgar", data: await apiFetch(url, { headers: { "user-agent": this.publicUserAgent() }, signal }), sourceUrl: url };
-    }
-    const url = `https://datatracker.ietf.org/api/v1/doc/document/?name__icontains=${query}&limit=20&format=json`;
-    return { provider: "ietf-datatracker", data: await apiFetch(url, { headers: { "user-agent": this.publicUserAgent() }, signal }), sourceUrl: url };
+  private combine(results: ConcreteProviderResult[], data: unknown): ConcreteProviderResult {
+    if (results.length === 0) throw new Error("Cannot combine an empty provider response list.");
+    const sources = results.map(({ costSource }) => costSource);
+    const costSource: ProviderCostSource = sources.includes("UNKNOWN") ? "UNKNOWN"
+      : sources.includes("REPORTED") ? "REPORTED"
+      : sources.includes("CONFIGURED") ? "CONFIGURED" : "FREE_PUBLIC";
+    return {
+      provider: [...new Set(results.map(({ provider }) => provider))].join("+"),
+      providerRoute: results.map(({ providerRoute }) => providerRoute).join("+"),
+      data,
+      sourceUrl: results[0]!.sourceUrl,
+      costUsd: results.reduce((sum, result) => sum + result.costUsd, 0),
+      costSource,
+      artifactIds: results.flatMap(({ artifactIds }) => artifactIds),
+      evidenceEligibleArtifactIds: results.flatMap(({ evidenceEligibleArtifactIds }) => evidenceEligibleArtifactIds),
+      reused: results.every(({ reused }) => reused),
+    };
   }
 
-  private async scholarly(args: Record<string, unknown>, signal: AbortSignal): Promise<ProviderResponse> {
-    const query = encodeURIComponent(String(args.query));
-    if (this.environment.OPENALEX_API_KEY) {
-      const url = `https://api.openalex.org/works?search=${query}&per-page=20&api_key=${encodeURIComponent(this.environment.OPENALEX_API_KEY)}`;
-      return { provider: "openalex", data: await apiFetch(url, { headers: { "user-agent": this.publicUserAgent() }, signal }), sourceUrl: `https://api.openalex.org/works?search=${query}&per-page=20` };
-    }
-    const url = `https://api.crossref.org/works?query=${query}&rows=20&mailto=${encodeURIComponent(this.required("PUBLIC_API_CONTACT_EMAIL"))}`;
-    return { provider: "crossref", data: await apiFetch(url, { headers: { "user-agent": this.publicUserAgent() }, signal }), sourceUrl: url };
+  private configuredCost(name: string, units = 1): Pick<ProviderNetworkResult, "costUsd" | "costSource"> {
+    const configured = Number(this.environment[name]);
+    return Number.isFinite(configured) && configured >= 0
+      ? { costUsd: configured * units, costSource: "CONFIGURED" }
+      : { costUsd: 0, costSource: "UNKNOWN" };
   }
 
-  private async packages(args: Record<string, unknown>, signal: AbortSignal): Promise<ProviderResponse> {
-    const name = encodeURIComponent(String(args.package));
-    const [provider, url] = args.registry === "NPM" ? ["npm", `https://registry.npmjs.org/${name}`]
-      : args.registry === "PYPI" ? ["pypi", `https://pypi.org/pypi/${name}/json`]
-      : ["hugging-face", `https://huggingface.co/api/models/${name}`];
-    return { provider, data: await apiFetch(url, { headers: { "user-agent": this.publicUserAgent() }, signal }), sourceUrl: url };
+  private exaCost(value: unknown): number {
+    if (!value || typeof value !== "object") return 0;
+    const cost = (value as { costDollars?: { total?: unknown } }).costDollars?.total;
+    return typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : 0;
   }
 
-  private async securityRecords(args: Record<string, unknown>, signal: AbortSignal): Promise<ProviderResponse> {
-    if (args.cve) {
-      if (this.environment.GITHUB_TOKEN) {
-        const githubUrl = `https://api.github.com/advisories?cve_id=${encodeURIComponent(String(args.cve))}`;
-        try {
-          const data = await apiFetch(githubUrl, { headers: { ...authHeaders(this.environment.GITHUB_TOKEN), accept: "application/vnd.github+json", "user-agent": this.publicUserAgent() }, signal });
-          if (Array.isArray(data) && data.length > 0) return { provider: "github-advisories", data, sourceUrl: githubUrl };
-        } catch {
-          if (signal.aborted) throw signal.reason;
-        }
-      }
-      const url = `https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=${encodeURIComponent(String(args.cve))}`;
-      return { provider: "nvd", data: await apiFetch(url, { headers: { ...(this.environment.NVD_API_KEY ? { apiKey: this.environment.NVD_API_KEY } : {}), "user-agent": this.publicUserAgent() }, signal }), sourceUrl: url };
-    }
-    const url = "https://api.osv.dev/v1/query";
-    const data = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "user-agent": this.publicUserAgent() }, body: JSON.stringify({ package: { name: args.package, ecosystem: args.ecosystem } }), signal });
-    return { provider: "osv", data, sourceUrl: url };
+  private firstRecord(value: unknown): Record<string, unknown> | undefined {
+    const candidate = Array.isArray(value) ? value[0] : value;
+    return candidate && typeof candidate === "object" ? candidate as Record<string, unknown> : undefined;
+  }
+
+  private toolCeiling(tool: ToolName): number {
+    return positiveNumber(this.environment[ceilingEnvironmentKeys[tool]], defaultToolCeilings[tool]);
   }
 
   private required(name: string): string {
@@ -418,28 +532,5 @@ export class ProviderExecutor {
   private publicUserAgent(): string {
     const contact = this.environment.PUBLIC_API_CONTACT_EMAIL;
     return contact ? `TranslucidInvestigator/0.1 (${contact})` : "TranslucidInvestigator/0.1";
-  }
-
-  private async deadlineSignal(runId: string): Promise<AbortSignal> {
-    const [run] = await getSql()<Array<{ deadline_at: Date | string | null }>>`
-      SELECT deadline_at FROM runs WHERE id = ${runId}
-    `;
-    const deadline = run?.deadline_at ? new Date(run.deadline_at).getTime() : Date.now() + 20_000;
-    const remaining = Math.max(1, Math.min(20_000, deadline - Date.now()));
-    return AbortSignal.timeout(remaining);
-  }
-
-  private async recordCall(context: ExecuteContext, request: ParsedToolRequest, capability: Capability, provider: string, status: string, latencyMs: number, costUsd: number, artifactIds: string[]): Promise<void> {
-    const metadata = redactSecrets({ tool: request.tool, arguments: request.arguments }) as Record<string, unknown>;
-    await getSql()`
-      INSERT INTO provider_calls (
-        id, investigation_id, run_id, capability, provider, request_metadata,
-        latency_ms, result_status, cost_usd, artifact_ids
-      ) VALUES (
-        ${randomUUID()}, ${context.investigationId}, ${context.runId}, ${capability},
-        ${provider}, ${getSql().json(asJson(metadata))}, ${Math.max(0, Math.round(latencyMs))},
-        ${status}, ${Math.max(0, costUsd)}, ${artifactIds}::uuid[]
-      )
-    `;
   }
 }

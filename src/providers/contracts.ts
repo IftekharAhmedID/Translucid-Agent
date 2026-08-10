@@ -19,6 +19,9 @@ export const toolNames = [
 ] as const;
 
 export type ToolName = (typeof toolNames)[number];
+export const professionalMaterialFieldSchema = z.enum(["IDENTITY", "CURRENT_POSITION", "EMPLOYMENT_HISTORY", "EDUCATION"]);
+export type ProfessionalMaterialField = z.infer<typeof professionalMaterialFieldSchema>;
+export type ProviderCostSource = "REPORTED" | "CONFIGURED" | "FREE_PUBLIC" | "UNKNOWN";
 
 const contextSchema = z.object({
   questionId: z.uuid(),
@@ -28,11 +31,17 @@ const contextSchema = z.object({
 
 const searchText = z.string().trim().min(2).max(1_000);
 const httpUrl = z.url().refine((value) => ["http:", "https:"].includes(new URL(value).protocol));
+const webSearchSchema = contextSchema.extend({
+  query: searchText,
+  mode: z.enum(["fast", "auto"]).default("fast"),
+  highlightQuery: searchText.optional(),
+  resultLimit: z.number().int().min(1).max(10).default(5),
+}).transform((value) => ({ ...value, highlightQuery: value.highlightQuery ?? value.query }));
 
 const schemas = {
-  "web.search": contextSchema.extend({ query: searchText, mode: z.enum(["fast", "auto"]).default("fast") }),
+  "web.search": webSearchSchema,
   "web.fetch": contextSchema.extend({ url: httpUrl }),
-  "professional.profile": contextSchema.extend({ username: z.string().trim().min(2).max(200), requiredMaterialField: z.string().trim().max(100).optional() }),
+  "professional.profile": contextSchema.extend({ username: z.string().trim().min(2).max(200), requiredMaterialField: professionalMaterialFieldSchema.default("IDENTITY") }),
   "professional.activity": contextSchema.extend({ username: z.string().trim().min(2).max(200) }),
   "social.profile": contextSchema.extend({
     platform: z.enum(["X", "INSTAGRAM", "TIKTOK"]),
@@ -100,13 +109,15 @@ export type ToolResult<T = unknown> = {
   provider?: string;
   data?: T;
   artifactIds: string[];
+  evidenceEligibleArtifactIds: string[];
   observedAt: string;
   costUsd: number;
+  costSource: ProviderCostSource;
 };
 
 export function unavailableResult(capability: Capability): ToolResult {
   if (!capabilityNames.includes(capability)) throw new Error("Unknown capability.");
-  return { status: "CAPABILITY_UNAVAILABLE", capability, artifactIds: [], observedAt: new Date().toISOString(), costUsd: 0 };
+  return { status: "CAPABILITY_UNAVAILABLE", capability, artifactIds: [], evidenceEligibleArtifactIds: [], observedAt: new Date().toISOString(), costUsd: 0, costSource: "UNKNOWN" };
 }
 
 export function decideProfessionalProfileRoute(input: {

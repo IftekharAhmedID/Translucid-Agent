@@ -27,6 +27,34 @@ test("tool requests require a durable question and public rationale", () => {
     },
   });
   assert.equal(parsed.tool, "web.search");
+  assert.equal(parsed.arguments.resultLimit, 5);
+  assert.equal(parsed.arguments.highlightQuery, "Ada Lovelace analytical engine");
+});
+
+test("professional profile requests require one normalized material-field enum", () => {
+  const parsed = parseToolRequest({
+    tool: "professional.profile",
+    arguments: {
+      questionId: "00000000-0000-4000-8000-000000000001",
+      claimIds: [],
+      publicRationale: "Resolving the submitted current position claim.",
+      username: "Example-Person",
+      requiredMaterialField: "CURRENT_POSITION",
+    },
+  });
+  assert.equal(parsed.tool, "professional.profile");
+  if (parsed.tool !== "professional.profile") throw new Error("Unexpected parsed tool.");
+  assert.equal(parsed.arguments.requiredMaterialField, "CURRENT_POSITION");
+  assert.throws(() => parseToolRequest({
+    tool: "professional.profile",
+    arguments: {
+      questionId: "00000000-0000-4000-8000-000000000001",
+      claimIds: [],
+      publicRationale: "Using an invalid free-form material field.",
+      username: "Example-Person",
+      requiredMaterialField: "principal title at Acme",
+    },
+  }));
 });
 
 test("a satisfactory LinkdAPI profile blocks Bright Data and PDL escalation", () => {
