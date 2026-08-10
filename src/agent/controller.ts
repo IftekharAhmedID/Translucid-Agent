@@ -104,8 +104,8 @@ export class OpenCodeInvestigationController {
       await reconcileResearchFrontier(input.investigationId, input.runId);
       const rawFrozen = await buildFrozenEvidenceBundle(input.investigationId, input.runId);
       const edgeAudit = auditEvidenceEdges(
-        (rawFrozen.allEvidence ?? rawFrozen.evidence) as Array<{ id: string; relation: "SUPPORTS" | "CONTRADICTS" | "CONTEXT"; claimIds: string[]; exactQuote: string }>,
-        rawFrozen.claims as Array<{ id: string; normalizedClaim: string }>,
+        (rawFrozen.allEvidence ?? rawFrozen.evidence) as Array<{ id: string; relation: "SUPPORTS" | "CONTRADICTS" | "CONTEXT"; claimIds: string[]; facetKeys?: string[]; exactQuote: string }>,
+        rawFrozen.claims as Array<{ id: string; normalizedClaim: string; facets: Array<{ key: string; label: string; materiality: "HIGH" | "MEDIUM" | "LOW" }> }>,
       );
       for (const rejected of edgeAudit.rejected) {
         await insertAgentEvent({
@@ -122,7 +122,7 @@ export class OpenCodeInvestigationController {
       const acceptedEdgeIds = new Set(edgeAudit.accepted.map(({ id }) => id));
       const frozenBundle = rawFrozen as Record<string, unknown>;
       const frozen: Record<string, unknown> = { ...frozenBundle, evidence: (frozenBundle.evidence as Array<{ id: string }>).filter(({ id }) => acceptedEdgeIds.has(id)) };
-      const frozenEvidence = frozen.evidence as Array<{ id: string; relation: "SUPPORTS" | "CONTRADICTS" | "CONTEXT"; claimIds: string[] }>;
+      const frozenEvidence = frozen.evidence as Array<{ id: string; relation: "SUPPORTS" | "CONTRADICTS" | "CONTEXT"; claimIds: string[]; facetKeys?: string[] }>;
       const allEvidenceIds = new Set(frozenEvidence.map(({ id }) => id));
       const frozenClaims = frozen.claims as Array<{ id: string; facets: Array<{ key: string; label: string; materiality: "HIGH" | "MEDIUM" | "LOW" }> }>;
       const claimFacets = new Map(frozenClaims.map(({ id, facets }) => [id, facets]));
@@ -158,6 +158,7 @@ export class OpenCodeInvestigationController {
 
       const evidenceClaimIds = new Map(frozenEvidence.map(({ id, claimIds }) => [id, new Set(claimIds)]));
       const evidenceRelations = new Map(frozenEvidence.map(({ id, relation }) => [id, relation]));
+      const evidenceFacetKeys = new Map(frozenEvidence.map(({ id, facetKeys }) => [id, new Set(facetKeys ?? [])]));
       const claims = (adjudicationBundle.claims as Array<{ id: string }>);
       const claimBatches = partitionClaims(claims);
       const [auditCountRows, authorityRows] = await Promise.all([
@@ -210,7 +211,7 @@ export class OpenCodeInvestigationController {
             limitations: ["Only evidence in this claim packet may be cited."],
           })),
         };
-        const batchPrompt = `Adjudicate exactly these ${claimIds.length} claim packets. Each claim already declares its facets; do not invent, merge, or omit facets. Return exactly one facetNote for every declared facet. Cite only evidence IDs in that same packet's eligibleEvidenceIds. Evidence listed for another claim is ineligible even when its quote appears relevant. A SUPPORTED facet must cite supporting evidence, a CONTRADICTED facet must cite contradicting evidence, and an UNRESOLVED facet must cite nothing. Apply the deterministic overall verdict implied by the facet statuses, with HIGH/MEDIUM contradiction taking precedence over partial support. If the eligible evidence does not establish a facet, return UNRESOLVED. Return only the focused findings object.\n${JSON.stringify(batchBundle)}`;
+        const batchPrompt = `Adjudicate exactly these ${claimIds.length} claim packets. Each claim already declares its facets; do not invent, merge, or omit facets. Return exactly one facetNote for every declared facet. A facet may cite only evidence IDs listed in that facet's eligibleEvidenceIds. Evidence listed for another claim or another facet is ineligible even when its quote appears relevant. A SUPPORTED facet must cite supporting evidence, a CONTRADICTED facet must cite contradicting evidence, and an UNRESOLVED facet must cite nothing. Apply the deterministic overall verdict implied by the facet statuses, with HIGH/MEDIUM contradiction taking precedence over partial support. If the eligible evidence does not establish a facet, return UNRESOLVED. Return only the focused findings object.\n${JSON.stringify(batchBundle)}`;
         try {
           const adjudication = await this.promptStructured({
             client,
@@ -225,7 +226,7 @@ export class OpenCodeInvestigationController {
           });
           batchSessionIds[index] = adjudication.sessionId;
           try {
-            return validateFindingBatch(adjudication.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations);
+            return validateFindingBatch(adjudication.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations, evidenceFacetKeys);
           } catch (validationError) {
             const validationMessage = validationError instanceof Error ? validationError.message : String(validationError);
             await insertAgentEvent({
@@ -251,7 +252,7 @@ export class OpenCodeInvestigationController {
               jsonExample: batchJsonExample,
             });
             batchSessionIds[index] = correction.sessionId;
-            return validateFindingBatch(correction.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations);
+            return validateFindingBatch(correction.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations, evidenceFacetKeys);
           }
         } catch (error) {
           throw new Error(`Adjudication batch ${index + 1}/${claimBatches.length} failed on ${getConfig().finalizerOpenCodeProvider}: ${error instanceof Error ? error.message : String(error)}`);
@@ -284,7 +285,7 @@ export class OpenCodeInvestigationController {
         summary = { ...summary, investigationLimitations: [...summary.investigationLimitations.slice(0, 99), "Some captured sources remain conservatively classified as CONTEXT because the backend does not deterministically recognize their authority."] };
       }
       await getSql()`UPDATE runs SET opencode_adjudicator_session_id = ${summaryResult.sessionId}, runtime_handle = COALESCE(runtime_handle, '{}'::jsonb) || ${getSql().json({ finalization: { provider: getConfig().finalizerOpenCodeProvider, batchSessionIds, summarySessionId: summaryResult.sessionId, auditStats } })}::jsonb, updated_at = now() WHERE id = ${input.runId}`;
-      const output = validateAdjudication({ summary, findings }, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds, claimFacets, evidenceRelations, auditStats.sourceAuthorityCounts);
+      const output = validateAdjudication({ summary, findings }, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds, claimFacets, evidenceRelations, auditStats.sourceAuthorityCounts, evidenceFacetKeys);
       await this.persistAdjudication(input.investigationId, input.runId, output);
       return output;
     } finally {

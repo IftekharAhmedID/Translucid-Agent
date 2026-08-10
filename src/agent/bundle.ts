@@ -21,29 +21,41 @@ function evidenceTierScore(evidence: Row): number {
   return 2;
 }
 
-export function selectEvidenceForCritic(evidence: Row[]): Row[] {
+export function selectEvidenceForCritic(evidence: Row[], claims: Row[] = []): Row[] {
   const selected = new Map<string, Row>();
-  const claimIds = new Set(evidence.flatMap(({ claimIds }) => Array.isArray(claimIds) ? claimIds.filter((id): id is string => typeof id === "string") : []));
-  const caps: Record<string, number> = { SUPPORTS: 4, CONTRADICTS: 2, CONTEXT: 1 };
-  for (const claimId of claimIds) {
-    for (const [relation, cap] of Object.entries(caps)) {
-      const candidates = evidence
-        .filter((row) => row.relation === relation && Array.isArray(row.claimIds) && row.claimIds.includes(claimId))
-        .sort((left, right) => evidenceTierScore(right) - evidenceTierScore(left) || String(left.id).localeCompare(String(right.id)));
-      const diverse: Row[] = [];
-      const seenGroups = new Set<string>();
-      for (const candidate of candidates) {
-        const artifactId = String(candidate.artifactId ?? "");
-        const group = String(candidate.independenceGroup ?? `LEGACY_ARTIFACT:${artifactId}`);
-        if (!artifactId || seenGroups.has(group)) continue;
-        seenGroups.add(group);
-        diverse.push(candidate);
-      }
-      for (const candidate of diverse) {
-        if (selected.has(String(candidate.id)) || [...selected.values()].filter((row) => row.relation === relation && Array.isArray(row.claimIds) && row.claimIds.includes(claimId)).length >= cap) continue;
-        selected.set(String(candidate.id), candidate);
+  const claimRows = claims.length > 0
+    ? claims
+    : [...new Set(evidence.flatMap(({ claimIds }) => Array.isArray(claimIds) ? claimIds.filter((id): id is string => typeof id === "string") : []))]
+      .map((id) => ({ id, facets: [...new Set(evidence.flatMap((row) => Array.isArray(row.claimIds) && row.claimIds.includes(id) && Array.isArray(row.facetKeys) ? row.facetKeys : []))].map((key) => ({ key })) }));
+  const sortedCandidates = (claimId: string, relation: string, facetKey?: string) => evidence
+    .filter((row) => row.relation === relation && Array.isArray(row.claimIds) && row.claimIds.includes(claimId))
+    .filter((row) => relation === "CONTEXT" || (Array.isArray(row.facetKeys) && typeof facetKey === "string" && row.facetKeys.includes(facetKey)))
+    .filter((row) => relation === "CONTEXT" || (Array.isArray(row.facetKeys) && row.facetKeys.length > 0))
+    .sort((left, right) => evidenceTierScore(right) - evidenceTierScore(left) || String(left.id).localeCompare(String(right.id)));
+  const selectDiverse = (candidates: Row[], cap: number) => {
+    const diverse: Row[] = [];
+    const seenGroups = new Set<string>();
+    for (const candidate of candidates) {
+      const artifactId = String(candidate.artifactId ?? "");
+      const group = String(candidate.independenceGroup ?? `LEGACY_ARTIFACT:${artifactId}`);
+      if (!artifactId || seenGroups.has(group)) continue;
+      seenGroups.add(group);
+      diverse.push(candidate);
+      if (diverse.length >= cap) break;
+    }
+    return diverse;
+  };
+  for (const claim of claimRows) {
+    const claimId = String(claim.id);
+    const facets = Array.isArray(claim.facets) ? claim.facets : [];
+    for (const facet of facets) {
+      const facetKey = facet && typeof facet === "object" ? String((facet as Row).key ?? "") : "";
+      if (!facetKey) continue;
+      for (const relation of ["SUPPORTS", "CONTRADICTS"] as const) {
+        for (const candidate of selectDiverse(sortedCandidates(claimId, relation, facetKey), 2)) selected.set(String(candidate.id), candidate);
       }
     }
+    for (const candidate of selectDiverse(sortedCandidates(claimId, "CONTEXT"), 1)) selected.set(String(candidate.id), candidate);
   }
   return [...selected.values()];
 }
@@ -92,11 +104,11 @@ export async function buildFrozenEvidenceBundle(investigationId: string, runId: 
     sql`SELECT id, from_entity_id AS "fromEntityId", to_entity_id AS "toEntityId", relationship, confidence, evidence_ids AS "evidenceIds" FROM entity_links WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at`,
     sql`SELECT id, kind, provider, source_url AS "sourceUrl", mime_type AS "mimeType", retrieved_at AS "retrievedAt", sha256, byte_length AS "byteLength", COALESCE(source_authority, 'CONTEXT') AS "sourceAuthority", COALESCE(independence_group, 'LEGACY_ARTIFACT:' || id::text) AS "independenceGroup", canonical_source_url AS "canonicalSourceUrl" FROM artifacts WHERE investigation_id = ${investigationId} ORDER BY created_at`,
     sql`SELECT id, artifact_id AS "artifactId", entity_id AS "entityId", field, value_json AS value, observed_at AS "observedAt", source_event_at AS "sourceEventAt", valid_from AS "validFrom", valid_to AS "validTo" FROM observations WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY valid_from NULLS LAST, observed_at`,
-    sql`SELECT evidence.id, evidence.artifact_id AS "artifactId", evidence.exact_quote AS "exactQuote", evidence.source_location AS "sourceLocation", COALESCE(artifact.source_authority, evidence.source_tier, 'CONTEXT') AS "sourceTier", COALESCE(artifact.independence_group, 'LEGACY_ARTIFACT:' || artifact.id::text) AS "independenceGroup", evidence.relation, evidence.claim_ids AS "claimIds", evidence.entity_ids AS "entityIds" FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id WHERE evidence.investigation_id = ${investigationId} AND evidence.run_id = ${runId} ORDER BY evidence.created_at`,
+    sql`SELECT evidence.id, evidence.artifact_id AS "artifactId", evidence.exact_quote AS "exactQuote", evidence.source_location AS "sourceLocation", COALESCE(artifact.source_authority, evidence.source_tier, 'CONTEXT') AS "sourceTier", COALESCE(artifact.independence_group, 'LEGACY_ARTIFACT:' || artifact.id::text) AS "independenceGroup", evidence.relation, evidence.claim_ids AS "claimIds", evidence.facet_keys AS "facetKeys", evidence.entity_ids AS "entityIds" FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id WHERE evidence.investigation_id = ${investigationId} AND evidence.run_id = ${runId} ORDER BY evidence.created_at`,
     sql`SELECT id, claim_ids AS "claimIds", question, priority, status, selected_route AS "selectedRoute", resolution_summary AS "resolutionSummary" FROM research_questions WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at`,
     sql`SELECT event_type AS "eventType", public_rationale AS "publicRationale", payload FROM agent_events WHERE investigation_id = ${investigationId} AND run_id = ${runId} AND event_type = 'CLAIM_EXTRACTION_TRUNCATED' ORDER BY id`,
   ]);
-  const selectedEvidence = selectEvidenceForCritic([...evidence]);
+  const selectedEvidence = selectEvidenceForCritic([...evidence], [...claims]);
   const evidenceIds = new Set(selectedEvidence.map(({ id }) => String(id)));
   const artifactIds = new Set(selectedEvidence.map(({ artifactId }) => String(artifactId)));
   return {
@@ -112,6 +124,6 @@ export async function buildFrozenEvidenceBundle(investigationId: string, runId: 
     allEvidence: [...evidence],
     researchQuestions: [...questions],
     extractionLimitations: [...extractionLimitations],
-    evidenceSelection: { originalCount: evidence.length, selectedCount: selectedEvidence.length, supportsPerClaim: 4, contradictionsPerClaim: 2, contextPerClaim: 1 },
+    evidenceSelection: { originalCount: evidence.length, selectedCount: selectedEvidence.length, supportsPerFacet: 2, contradictionsPerFacet: 2, contextPerClaim: 1 },
   };
 }

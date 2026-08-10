@@ -21,6 +21,10 @@ export const facetNoteSchema = z.object({
   evidenceIds: z.array(z.string().min(1)).max(100),
 }).strict();
 
+export const facetCoverageStatusSchema = z.enum(["NO_EVIDENCE", "SELF_ONLY", "SUPPORTED", "CONFLICT"]);
+
+export type FacetCoverageStatus = z.infer<typeof facetCoverageStatusSchema>;
+
 export const investigationStatusSchema = z.enum([
   "QUEUED",
   "RUNNING",

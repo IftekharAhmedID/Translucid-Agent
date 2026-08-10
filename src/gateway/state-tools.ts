@@ -22,12 +22,13 @@ import {
   recordObservation,
   resolveResearchQuestion,
   selectResearchRoute,
+  updateClaimFacets,
   updateResearchQuestion,
   upsertEntity,
 } from "../db/state.ts";
 
 export const stateToolNames = [
-  "claim.create", "entity.upsert", "entity.add_identifier", "entity.link", "entity.get_graph",
+  "claim.create", "claim.update_facets", "entity.upsert", "entity.add_identifier", "entity.link", "entity.get_graph",
   "observation.record", "observation.list_timeline", "research.open", "research.select_route",
   "research.update", "research.resolve", "research.list", "research.context", "research.begin_wave", "research.authorize_task", "research.complete_task",
   "artifact.excerpts",
@@ -39,6 +40,7 @@ export type StateToolName = (typeof stateToolNames)[number];
 const uuid = z.uuid();
 const schemas: Record<StateToolName, z.ZodType> = {
   "claim.create": z.object({ category: z.string().min(1).max(100), normalizedClaim: z.string().min(1).max(4_000), materiality: z.enum(["HIGH", "MEDIUM", "LOW"]), facets: claimFacetsSchema, sourceSpan: z.record(z.string(), z.unknown()).optional() }).strict(),
+  "claim.update_facets": z.object({ claimId: uuid, facets: claimFacetsSchema }).strict(),
   "entity.upsert": z.object({ type: z.enum(["PERSON", "ORGANIZATION", "ACCOUNT", "WEBSITE", "PUBLICATION", "PATENT", "PACKAGE"]), canonicalName: z.string().min(1).max(500), role: z.enum(["CANDIDATE_ROOT", "EXTERNAL"]), metadata: z.record(z.string(), z.unknown()).optional() }).strict(),
   "entity.add_identifier": z.object({ entityId: uuid, type: z.string().min(1).max(100), value: z.string().min(1).max(1_000), confidence: z.number().min(0).max(1), evidenceId: uuid }).strict(),
   "entity.link": z.object({ fromEntityId: uuid, toEntityId: uuid, relationship: z.string().min(1).max(100), anchors: z.array(z.object({ type: z.enum(["EMPLOYER_OVERLAP", "VERIFIED_DOMAIN", "CROSS_LINKED_ACCOUNT", "LOCATION_HISTORY", "REPOSITORY_IDENTITY", "AUTHORED_PAGE"]), evidenceId: uuid }).strict()).min(2).max(20) }).strict(),
@@ -55,7 +57,7 @@ const schemas: Record<StateToolName, z.ZodType> = {
   "research.begin_wave": z.object({ waveKind: z.enum(["INITIAL", "TARGETED"]), questionIds: z.array(uuid).min(1).max(12), escalationReason: z.enum(["MATERIAL_CONTRADICTION", "IDENTITY_AMBIGUITY", "CHRONOLOGY_CONFLICT", "NEW_EVIDENCE_FAMILY", "MATERIAL_UNCERTAINTY"]).optional(), publicRationale: z.string().min(10).max(500) }).strict().refine((value) => value.waveKind === "INITIAL" || Boolean(value.escalationReason), "A targeted wave requires an escalation reason."),
   "research.authorize_task": z.object({ role: z.enum(["professional-investigator", "github-investigator", "web-records-investigator", "social-investigator"]) }).strict(),
   "research.complete_task": z.object({ role: z.enum(["professional-investigator", "github-investigator", "web-records-investigator", "social-investigator"]) }).strict(),
-  "evidence.capture": z.object({ artifactId: uuid, exactQuote: z.string().min(1).max(12_000), sourceLocation: z.record(z.string(), z.unknown()).optional(), relation: z.enum(["SUPPORTS", "CONTRADICTS", "CONTEXT"]), claimIds: z.array(uuid).max(100), entityIds: z.array(uuid).max(100) }).strict().superRefine((value, context) => { if (value.relation !== "CONTEXT" && value.claimIds.length !== 1) context.addIssue({ code: "custom", message: `${value.relation} evidence must reference exactly one claim.` }); }),
+  "evidence.capture": z.object({ artifactId: uuid, exactQuote: z.string().min(1).max(12_000), sourceLocation: z.record(z.string(), z.unknown()).optional(), relation: z.enum(["SUPPORTS", "CONTRADICTS", "CONTEXT"]), claimIds: z.array(uuid).max(100), facetKeys: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/)).max(12), entityIds: z.array(uuid).max(100) }).strict().superRefine((value, context) => { if (value.relation !== "CONTEXT" && value.claimIds.length !== 1) context.addIssue({ code: "custom", message: `${value.relation} evidence must reference exactly one claim.` }); if (value.relation !== "CONTEXT" && value.facetKeys.length < 1) context.addIssue({ code: "custom", message: `${value.relation} evidence must reference at least one declared claim facet.` }); }),
   "evidence.link": z.object({ evidenceId: uuid, claimIds: z.array(uuid).max(0), entityIds: z.array(uuid).max(100) }).strict().refine((value) => value.entityIds.length > 0, "An entity link is required."),
   "case_note": z.object({ phase: z.string().min(1).max(100), status: z.string().min(1).max(100), publicRationale: z.string().min(10).max(500) }).strict(),
   "capabilities.list": z.object({}).strict(),
@@ -77,6 +79,8 @@ export async function executeStateTool(name: StateToolName, raw: unknown, contex
   switch (name) {
     case "claim.create":
       return createClaim({ ...base, category: String(args.category), normalizedClaim: String(args.normalizedClaim), materiality: args.materiality as "HIGH" | "MEDIUM" | "LOW", facets: args.facets as Array<{ key: string; label: string; materiality: "HIGH" | "MEDIUM" | "LOW" }>, sourceSpan: args.sourceSpan as Record<string, unknown> | undefined, agent: context.agent, sessionId: context.sessionId });
+    case "claim.update_facets":
+      return updateClaimFacets({ ...base, claimId: String(args.claimId), facets: args.facets as Array<{ key: string; label: string; materiality: "HIGH" | "MEDIUM" | "LOW" }>, agent: context.agent, sessionId: context.sessionId });
     case "entity.upsert":
       return upsertEntity({ ...base, type: args.type as "PERSON" | "ORGANIZATION" | "ACCOUNT" | "WEBSITE" | "PUBLICATION" | "PATENT" | "PACKAGE", canonicalName: String(args.canonicalName), role: args.role as "CANDIDATE_ROOT" | "EXTERNAL", agent: context.agent, metadata: args.metadata as Record<string, unknown> | undefined });
     case "entity.add_identifier":
@@ -121,7 +125,7 @@ export async function executeStateTool(name: StateToolName, raw: unknown, contex
     case "research.complete_task":
       return completeResearchTask({ ...base, role: args.role as "professional-investigator" | "github-investigator" | "web-records-investigator" | "social-investigator", agent: context.agent, sessionId: context.sessionId });
     case "evidence.capture":
-      return captureEvidence({ ...base, artifactId: String(args.artifactId), exactQuote: String(args.exactQuote), sourceLocation: args.sourceLocation as Record<string, unknown> | undefined, relation: args.relation as "SUPPORTS" | "CONTRADICTS" | "CONTEXT", claimIds: args.claimIds as string[], entityIds: args.entityIds as string[] });
+      return captureEvidence({ ...base, artifactId: String(args.artifactId), exactQuote: String(args.exactQuote), sourceLocation: args.sourceLocation as Record<string, unknown> | undefined, relation: args.relation as "SUPPORTS" | "CONTRADICTS" | "CONTEXT", claimIds: args.claimIds as string[], facetKeys: args.facetKeys as string[], entityIds: args.entityIds as string[] });
     case "evidence.link":
       return linkEvidence({ ...base, evidenceId: String(args.evidenceId), claimIds: args.claimIds as string[], entityIds: args.entityIds as string[] });
     case "case_note":

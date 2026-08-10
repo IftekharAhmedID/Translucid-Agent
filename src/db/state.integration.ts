@@ -105,6 +105,7 @@ test("entity graph requires independent evidence-backed anchors", async () => {
     exactQuote: "Synthetic Ada — Acme — Principal Engineer",
     relation: "SUPPORTS",
     claimIds: [claim.id],
+    facetKeys: ["legacy_claim"],
     entityIds: [person.id],
   });
   const evidenceB = await captureEvidence({
@@ -113,6 +114,7 @@ test("entity graph requires independent evidence-backed anchors", async () => {
     exactQuote: "My account is synthetic-ada-dev and I work at Acme.",
     relation: "SUPPORTS",
     claimIds: [claim.id],
+    facetKeys: ["legacy_claim"],
     entityIds: [person.id, account.id],
   });
   const [derived] = await sql<Array<{ sourceTier: string }>>`SELECT source_tier AS "sourceTier" FROM evidence WHERE id = ${evidenceA.id}`;
@@ -163,8 +165,8 @@ test("same-lineage evidence cannot be promoted into independent identity anchors
   const account = await upsertEntity({ ...ids, type: "ACCOUNT", canonicalName: "ada-dev" });
   const first = await captureArtifact({ ...ids, kind: "PROVIDER_RESPONSE", provider: "linkdapi", sourceUrl: "https://www.linkedin.com/in/ada", mimeType: "text/plain", content: "Ada works at Acme.", provenance: { providerRoute: "linkdapi.profile" } });
   const second = await captureArtifact({ ...ids, kind: "PROVIDER_RESPONSE", provider: "brightdata-linkedin-profile", sourceUrl: "https://linkedin.com/in/Ada/#about", mimeType: "text/plain", content: "Ada links to ada-dev.", provenance: { providerRoute: "brightdata.linkedin-profile" } });
-  const evidenceA = await captureEvidence({ ...ids, artifactId: first.id, exactQuote: "Ada works at Acme.", relation: "CONTEXT", claimIds: [], entityIds: [person.id] });
-  const evidenceB = await captureEvidence({ ...ids, artifactId: second.id, exactQuote: "Ada links to ada-dev.", relation: "CONTEXT", claimIds: [], entityIds: [account.id] });
+  const evidenceA = await captureEvidence({ ...ids, artifactId: first.id, exactQuote: "Ada works at Acme.", relation: "CONTEXT", claimIds: [], facetKeys: [], entityIds: [person.id] });
+  const evidenceB = await captureEvidence({ ...ids, artifactId: second.id, exactQuote: "Ada links to ada-dev.", relation: "CONTEXT", claimIds: [], facetKeys: [], entityIds: [account.id] });
   await assert.rejects(() => linkEntities({ ...ids, fromEntityId: person.id, toEntityId: account.id, relationship: "LINKEDIN_ACCOUNT", agent: "professional-investigator", sessionId: "same-lineage", anchors: [{ type: "EMPLOYER_OVERLAP", evidenceId: evidenceA.id }, { type: "CROSS_LINKED_ACCOUNT", evidenceId: evidenceB.id }] }), /two independent/i);
   const [event] = await sql<Array<{ eventType: string }>>`SELECT event_type AS "eventType" FROM agent_events WHERE run_id = ${ids.runId} ORDER BY id DESC LIMIT 1`;
   assert.equal(event?.eventType, "IDENTITY_LINK_REJECTED");
@@ -194,6 +196,7 @@ test("search snippets cannot become evidence and temporal observations remain se
         exactQuote: "Principal Engineer",
         relation: "SUPPORTS",
         claimIds: [],
+        facetKeys: [],
         entityIds: [entity.id],
       }),
     /search snippets are discovery/i,
@@ -358,16 +361,16 @@ test("evidence edges are one-claim for findings and artifacts are searchable loc
     content: JSON.stringify({ experience: [{ title: "Old" }, { title: "Principal Engineer", company: "Acme" }], sharedQuote: "Synthetic Ada maintained Atlas at Acme.", hidden: { package: "atlas-core" } }),
   });
   await assert.rejects(
-    () => captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Principal Engineer", relation: "SUPPORTS", claimIds: [first.id, second.id], entityIds: [] }),
+    () => captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Principal Engineer", relation: "SUPPORTS", claimIds: [first.id, second.id], facetKeys: ["legacy_claim"], entityIds: [] }),
     /exactly one claim/i,
   );
-  const context = await captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Principal Engineer", relation: "CONTEXT", claimIds: [first.id, second.id], entityIds: [] });
+  const context = await captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Principal Engineer", relation: "CONTEXT", claimIds: [first.id, second.id], facetKeys: [], entityIds: [] });
   await assert.rejects(() => linkEvidence({ ...ids, evidenceId: context.id, claimIds: [first.id], entityIds: [] }), /only associates entities/i);
   const sharedClaims: string[] = [];
   for (let index = 0; index < 3; index += 1) {
     sharedClaims.push((await createClaim({ ...ids, category: "PROJECT", normalizedClaim: "Synthetic Ada maintained Atlas at Acme.", materiality: "MEDIUM" })).id);
   }
-  const sharedEvidence = await Promise.all(sharedClaims.map((claimId) => captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Ada maintained Atlas at Acme.", relation: "SUPPORTS", claimIds: [claimId], entityIds: [] })));
+  const sharedEvidence = await Promise.all(sharedClaims.map((claimId) => captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Ada maintained Atlas at Acme.", relation: "SUPPORTS", claimIds: [claimId], facetKeys: ["legacy_claim"], entityIds: [] })));
   assert.equal(new Set(sharedEvidence.map(({ id }) => id)).size, 3);
   const excerpts = await getArtifactExcerpts(ids.investigationId, ids.runId, { artifactId: artifact.id, queries: ["experience", "atlas-core"] });
   assert.ok((excerpts.excerpts as Array<{ path: string }>).some(({ path }) => path === "$.experience[1].title"));

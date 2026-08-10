@@ -1,0 +1,2 @@
+ALTER TABLE evidence
+ADD COLUMN IF NOT EXISTS facet_keys text[] NOT NULL DEFAULT '{}';

@@ -62,6 +62,7 @@ export function validateFindingBatch(
   evidenceClaimIds?: Map<string, Set<string>>,
   claimFacets?: Map<string, ClaimFacet[]>,
   evidenceRelations?: Map<string, "SUPPORTS" | "CONTRADICTS" | "CONTEXT">,
+  evidenceFacetKeys?: Map<string, Set<string>>,
 ): FindingOutput[] {
   if (requestedClaimIds.size > 5) throw new Error("A finding batch may contain at most five requested claims.");
   const { findings } = z.object({ findings: z.array(findingOutputSchema).max(5) }).strict().parse(value);
@@ -84,7 +85,7 @@ export function validateFindingBatch(
     assertEvidenceRelations(finding.contradictingEvidenceIds, "CONTRADICTS", evidenceRelations);
     assertRelevant(finding.claimId, [...finding.supportingEvidenceIds, ...finding.contradictingEvidenceIds]);
     const facets = claimFacets?.get(finding.claimId);
-    if (facets?.length) validateFacetVerdict(finding, facets, knownEvidenceIds, evidenceClaimIds, evidenceRelations);
+    if (facets?.length) validateFacetVerdict(finding, facets, knownEvidenceIds, evidenceClaimIds, evidenceRelations, evidenceFacetKeys);
     if (finding.verdict === "CORROBORATED" && finding.supportingEvidenceIds.length === 0) throw new Error(`Claim ${finding.claimId} is corroborated without supporting evidence.`);
     if (finding.verdict === "CONTRADICTED" && finding.contradictingEvidenceIds.length === 0) throw new Error(`Claim ${finding.claimId} is contradicted without contradicting evidence.`);
     if (finding.verdict === "PARTIALLY_CORROBORATED" && finding.supportingEvidenceIds.length === 0) throw new Error(`Claim ${finding.claimId} is partially corroborated without supporting evidence.`);
@@ -99,6 +100,7 @@ function validateFacetVerdict(
   knownEvidenceIds: Set<string>,
   evidenceClaimIds?: Map<string, Set<string>>,
   evidenceRelations?: Map<string, "SUPPORTS" | "CONTRADICTS" | "CONTEXT">,
+  evidenceFacetKeys?: Map<string, Set<string>>,
 ): void {
   const facetByKey = new Map(facets.map((facet) => [facet.key, facet]));
   if (finding.facetNotes.length !== facets.length || new Set(finding.facetNotes.map((note) => note.facetKey)).size !== facets.length) {
@@ -116,6 +118,9 @@ function validateFacetVerdict(
     }
     for (const evidenceId of note.evidenceIds) {
       if (!allowed.includes(evidenceId)) throw new Error(`Facet ${note.facetKey} cited evidence ${evidenceId} in the wrong relation.`);
+      if (evidenceFacetKeys && !evidenceFacetKeys.get(evidenceId)?.has(note.facetKey)) {
+        throw new Error(`Facet ${note.facetKey} cited evidence ${evidenceId} without a matching facet key.`);
+      }
     }
     if (note.status === "UNRESOLVED" && note.evidenceIds.length > 0) throw new Error(`Unresolved facet ${note.facetKey} cannot cite supporting or contradicting evidence.`);
   }
@@ -185,6 +190,7 @@ export function validateAdjudication(
   claimFacets?: Map<string, ClaimFacet[]>,
   evidenceRelations?: Map<string, "SUPPORTS" | "CONTRADICTS" | "CONTEXT">,
   sourceAuthorityCounts?: Record<string, number>,
+  evidenceFacetKeys?: Map<string, Set<string>>,
 ): AdjudicationOutput {
   const output = adjudicationOutputSchema.parse(value);
   assertSafeLanguage(output);
@@ -198,7 +204,7 @@ export function validateAdjudication(
     const claimIds = [...knownClaimIds];
     for (let index = 0; index < claimIds.length; index += 5) {
       const batchIds = new Set(claimIds.slice(index, index + 5));
-      validateFindingBatch({ findings: output.findings.filter(({ claimId }) => batchIds.has(claimId)) }, batchIds, knownEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations);
+      validateFindingBatch({ findings: output.findings.filter(({ claimId }) => batchIds.has(claimId)) }, batchIds, knownEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations, evidenceFacetKeys);
     }
   } else {
     assertEvidenceExists(output.summary.professionalIdentity.evidenceIds, knownEvidenceIds);

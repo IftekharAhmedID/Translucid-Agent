@@ -1,3 +1,5 @@
+import type { ClaimFacet } from "./contracts.ts";
+
 const ignored = new Set([
   "about", "after", "been", "between", "company", "development", "developer", "engineer", "experience", "from", "have", "into", "more", "over", "project", "role", "software", "team", "that", "their", "there", "these", "this", "through", "with", "work",
 ]);
@@ -39,6 +41,12 @@ function hasNumericOrAcronymAnchor(claimTokens: Token[], quoteTokens: Token[]): 
   return claimAnchors.some(({ value }) => quoteTokens.some((token) => token.value === value));
 }
 
+function facetEvidenceCompatible(exactQuote: string, facetLabel: string): boolean {
+  const compatibility = evaluateEvidenceCompatibility(exactQuote, facetLabel);
+  if (compatibility.compatible) return true;
+  return compatibility.sharedAnchors.length === 1 && compatibility.sharedAnchors[0]!.length >= 4;
+}
+
 export type EvidenceCompatibility = {
   compatible: boolean;
   reason: string;
@@ -72,10 +80,11 @@ export type AuditableEvidence = {
   id: string;
   relation: "SUPPORTS" | "CONTRADICTS" | "CONTEXT";
   claimIds: string[];
+  facetKeys?: string[];
   exactQuote: string;
 };
 
-export type AuditableClaim = { id: string; normalizedClaim: string };
+export type AuditableClaim = { id: string; normalizedClaim: string; facets?: ClaimFacet[] };
 
 export type RejectedEvidenceEdge = {
   evidenceId: string;
@@ -106,6 +115,27 @@ export function auditEvidenceEdges(evidence: AuditableEvidence[], claims: Audita
       continue;
     }
     const claim = claimById.get(claimIds[0]!);
+    const facetKeys = [...new Set(edge.facetKeys ?? [])];
+    if (facetKeys.length === 0) {
+      rejected.push({ evidenceId: edge.id, claimIds, reason: `${edge.relation} evidence has no declared facet keys.` });
+      continue;
+    }
+    if (claim?.facets?.length) {
+      const declared = new Set(claim.facets.map(({ key }) => key));
+      const unknownFacet = facetKeys.find((key) => !declared.has(key));
+      if (unknownFacet) {
+        rejected.push({ evidenceId: edge.id, claimIds, reason: `Evidence references unknown facet ${unknownFacet} on claim ${claim.id}.` });
+        continue;
+      }
+      const incompatibleFacet = facetKeys.find((key) => {
+        const facet = claim.facets?.find(({ key: facetKey }) => facetKey === key);
+        return facet ? !facetEvidenceCompatible(edge.exactQuote, facet.label) : true;
+      });
+      if (incompatibleFacet) {
+        rejected.push({ evidenceId: edge.id, claimIds, reason: `Evidence quote is incompatible with facet ${incompatibleFacet}.` });
+        continue;
+      }
+    }
     const compatibility = evaluateEvidenceCompatibility(edge.exactQuote, claim!.normalizedClaim);
     if (!compatibility.compatible) {
       rejected.push({ evidenceId: edge.id, claimIds, reason: compatibility.reason });

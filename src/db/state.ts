@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type postgres from "postgres";
 
 import { claimFacetsSchema, type ClaimFacet, type EntityType, type EscalationReason, type ResearchQuestionStatus, type ResearchWaveKind } from "../core/contracts.ts";
+import { auditClaimFacetCoverage } from "../core/facet-coverage.ts";
 import { assessEntityLink, type IdentityAnchor } from "../core/identity.ts";
 import { sha256 } from "../core/input.ts";
 import { deriveArtifactTrust } from "../core/source-trust.ts";
@@ -254,6 +255,50 @@ export async function createClaim(
   return { id };
 }
 
+export async function updateClaimFacets(
+  input: CaseIds & {
+    claimId: string;
+    facets: ClaimFacet[];
+    agent: string;
+    sessionId?: string;
+  },
+): Promise<{ id: string; facets: ClaimFacet[] }> {
+  if (input.agent !== "lead-investigator") throw new Error("Only the lead investigator may update claim facets.");
+  const facets = claimFacetsSchema.parse(input.facets);
+  const result = await getSql().begin(async (transaction) => {
+    const [run] = await transaction<Array<{ researchWaveCount: number }>>`
+      SELECT research_wave_count AS "researchWaveCount"
+      FROM runs
+      WHERE id = ${input.runId} AND investigation_id = ${input.investigationId}
+      FOR UPDATE
+    `;
+    if (!run) throw new Error("Run not found while updating claim facets.");
+    if (run.researchWaveCount !== 0) throw new Error("Claim facets cannot be updated after the initial research wave starts.");
+    const [claim] = await transaction<Array<{ id: string }>>`
+      UPDATE claims
+      SET facets = ${transaction.json(toJson(facets))}, updated_at = now()
+      WHERE id = ${input.claimId}
+        AND investigation_id = ${input.investigationId}
+        AND run_id = ${input.runId}
+      RETURNING id
+    `;
+    if (!claim) throw new Error("Claim does not belong to this investigation run.");
+    await transaction`
+      INSERT INTO agent_events (
+        investigation_id, run_id, phase, agent, session_id, event_type,
+        status, budget_delta, public_rationale, payload
+      ) VALUES (
+        ${input.investigationId}, ${input.runId}, 'INTAKE', ${input.agent},
+        ${input.sessionId ?? null}, 'CLAIM_FACETS_UPDATED', 'UPDATED', '{}'::jsonb,
+        'The lead investigator replaced the complete pre-research facet declaration.',
+        ${transaction.json(toJson({ claimId: input.claimId, facets }))}
+      )
+    `;
+    return { id: claim.id, facets };
+  });
+  return result;
+}
+
 export async function upsertEntity(
   input: CaseIds & {
     type: EntityType;
@@ -355,6 +400,7 @@ export async function captureEvidence(
     sourceLocation?: Record<string, unknown>;
     relation: "SUPPORTS" | "CONTRADICTS" | "CONTEXT";
     claimIds: string[];
+    facetKeys: string[];
     entityIds: string[];
   },
 ): Promise<{ id: string }> {
@@ -383,6 +429,25 @@ export async function captureEvidence(
   if (input.relation !== "CONTEXT" && input.claimIds.length !== 1) {
     throw new Error(`${input.relation} evidence must reference exactly one claim.`);
   }
+  if (input.relation !== "CONTEXT" && input.facetKeys.length === 0) {
+    throw new Error(`${input.relation} evidence must reference at least one declared claim facet.`);
+  }
+  if (new Set(input.facetKeys).size !== input.facetKeys.length) {
+    throw new Error("Evidence facet keys must be unique.");
+  }
+  const referencedClaims = input.claimIds.length > 0
+    ? await getSql()<Array<{ id: string; facets: ClaimFacet[] }>>`
+      SELECT id, facets
+      FROM claims
+      WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}
+        AND id = ANY(${input.claimIds}::uuid[])
+    `
+    : [];
+  for (const facetKey of input.facetKeys) {
+    if (!referencedClaims.every((claim) => claim.facets.some((facet) => facet.key === facetKey))) {
+      throw new Error(`Evidence facet key ${facetKey} is not declared on every referenced claim.`);
+    }
+  }
   if (input.relation !== "CONTEXT" && input.claimIds.length) {
     const claims = await getSql()<Array<{ id: string; normalizedClaim: string }>>`
       SELECT id, normalized_claim AS "normalizedClaim"
@@ -407,11 +472,12 @@ export async function captureEvidence(
     INSERT INTO evidence (
       id, investigation_id, run_id, artifact_id, exact_quote, source_location,
       source_tier, relation, claim_ids, entity_ids
+      , facet_keys
     ) VALUES (
       ${id}, ${input.investigationId}, ${input.runId}, ${input.artifactId},
       ${quote}, ${getSql().json(toJson(input.sourceLocation ?? {}))},
       ${artifact.sourceAuthority ?? "CONTEXT"}, ${input.relation}, ${input.claimIds}::uuid[],
-      ${input.entityIds}::uuid[]
+      ${input.entityIds}::uuid[], ${input.facetKeys}::text[]
     )
   `;
   return { id };
@@ -693,6 +759,19 @@ export async function beginResearchWave(input: CaseIds & {
       if (roles.some((role) => !completedRoles.includes(role))) throw new Error("The initial research tasks must finish before a targeted second wave begins.");
     }
     if (input.kind === "INITIAL") {
+      const claims = await transaction<Array<{ id: string; normalizedClaim: string; facets: ClaimFacet[] }>>`
+        SELECT id, normalized_claim AS "normalizedClaim", facets
+        FROM claims
+        WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}
+        ORDER BY created_at, id
+      `;
+      const incomplete = claims
+        .map((claim) => ({ claim, audit: auditClaimFacetCoverage(claim.normalizedClaim, claim.facets) }))
+        .filter(({ audit }) => !audit.complete)
+        .map(({ claim, audit }) => ({ claimId: claim.id, uncoveredClauses: audit.uncovered.map(({ clause }) => clause) }));
+      if (incomplete.length > 0) {
+        throw new Error(`FACET_COVERAGE_INCOMPLETE: ${JSON.stringify(incomplete)}`);
+      }
       const [coverage] = await transaction<Array<{ missingCount: number }>>`
         SELECT count(*)::integer AS "missingCount"
         FROM claims AS claim

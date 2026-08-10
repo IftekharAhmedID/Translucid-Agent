@@ -20,14 +20,14 @@ test("shifted adjacent evidence pairs are rejected when only a shared generic or
 test("the edge audit excludes multi-claim support edges and incompatible quotes", () => {
   const result = auditEvidenceEdges(
     [
-      { id: "good", relation: "SUPPORTS", claimIds: ["c1"], exactQuote: "Diego Russo was Staff Engineer at Arm Ltd in Cambridge from 2013 to 2017." },
+      { id: "good", relation: "SUPPORTS", claimIds: ["c1"], facetKeys: ["employer", "title", "tenure"], exactQuote: "Diego Russo was Staff Engineer at Arm Ltd in Cambridge from 2013 to 2017." },
       { id: "legacy", relation: "SUPPORTS", claimIds: ["c1", "c2"], exactQuote: "Diego Russo was Staff Engineer at Arm Ltd." },
-      { id: "bad", relation: "SUPPORTS", claimIds: ["c2"], exactQuote: "The weather forecast is sunny tomorrow." },
+      { id: "bad", relation: "SUPPORTS", claimIds: ["c2"], facetKeys: ["project"], exactQuote: "The weather forecast is sunny tomorrow." },
       { id: "context", relation: "CONTEXT", claimIds: ["c1", "c2"], exactQuote: "A general industry context paragraph." },
     ],
     [
-      { id: "c1", normalizedClaim: "Diego Russo was Staff Engineer at Arm Ltd from 2013 to 2017." },
-      { id: "c2", normalizedClaim: "Diego Russo led the Northstar project." },
+      { id: "c1", normalizedClaim: "Diego Russo was Staff Engineer at Arm Ltd from 2013 to 2017.", facets: [{ key: "employer", label: "Arm Ltd", materiality: "HIGH" }, { key: "title", label: "Staff Engineer", materiality: "HIGH" }, { key: "tenure", label: "2013 to 2017", materiality: "HIGH" }] },
+      { id: "c2", normalizedClaim: "Diego Russo led the Northstar project.", facets: [{ key: "project", label: "Northstar project", materiality: "HIGH" }] },
     ],
   );
   assert.deepEqual(result.accepted.map(({ id }) => id), ["good", "context"]);

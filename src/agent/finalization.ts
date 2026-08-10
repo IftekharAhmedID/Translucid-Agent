@@ -58,8 +58,30 @@ export function buildCriticBatchBundle(bundle: Record<string, unknown>, claimIds
   const selectedClaims = new Set(claimIds);
   const evidence = rows(bundle, "evidence").filter(({ claimIds: ids }) => Array.isArray(ids) && ids.some((id) => typeof id === "string" && selectedClaims.has(id)));
   const artifactIds = new Set(evidence.map(({ artifactId }) => String(artifactId)));
+  const claimPackets = rows(bundle, "claims")
+    .filter(({ id }) => typeof id === "string" && selectedClaims.has(id))
+    .map((claim) => {
+      const claimId = String(claim.id);
+      const claimEvidence = evidence.filter(({ claimIds: ids }) => Array.isArray(ids) && ids.includes(claimId));
+      const facets = Array.isArray(claim.facets) ? claim.facets : [];
+      return {
+        claimId,
+        facets: facets.map((facet) => {
+          const facetKey = String((facet as Row).key ?? "");
+          return {
+            key: facetKey,
+            label: String((facet as Row).label ?? facetKey),
+            eligibleEvidenceIds: claimEvidence
+              .filter(({ relation, facetKeys }) => (relation === "SUPPORTS" || relation === "CONTRADICTS") && Array.isArray(facetKeys) && facetKeys.includes(facetKey))
+              .map(({ id }) => String(id)),
+          };
+        }),
+        evidence: claimEvidence,
+      };
+    });
   return {
     claims: rows(bundle, "claims").filter(({ id }) => typeof id === "string" && selectedClaims.has(id)),
+    claimPackets,
     entities: rows(bundle, "entities"),
     identifiers: rows(bundle, "identifiers"),
     links: rows(bundle, "links"),
@@ -125,10 +147,20 @@ export function buildFindingBatchBundle(bundle: Record<string, unknown>, claimId
     claimPackets: claims.map((claim) => {
       const claimId = String(claim.id);
       const eligibleEvidence = evidence.filter(({ claimIds: ids }) => Array.isArray(ids) && ids.includes(claimId));
+      const facets = Array.isArray(claim.facets) ? claim.facets : [];
       return {
         claim,
-        eligibleEvidence,
-        eligibleEvidenceIds: eligibleEvidence.map(({ id }) => String(id)),
+        facets: facets.map((facet) => {
+          const facetKey = String((facet as Row).key ?? "");
+          return {
+            key: facetKey,
+            label: String((facet as Row).label ?? facetKey),
+            eligibleEvidenceIds: eligibleEvidence
+              .filter(({ relation, facetKeys }) => (relation === "SUPPORTS" || relation === "CONTRADICTS") && Array.isArray(facetKeys) && facetKeys.includes(facetKey))
+              .map(({ id }) => String(id)),
+          };
+        }),
+        contextEvidence: eligibleEvidence.filter(({ relation }) => relation === "CONTEXT"),
         concerns: concerns.filter((concern) => Boolean(concern) && typeof concern === "object" && String((concern as Row).claimId) === claimId),
       };
     }),

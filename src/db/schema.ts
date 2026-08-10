@@ -205,6 +205,7 @@ export const evidence = pgTable(
     sourceTier: text("source_tier").notNull(),
     relation: text("relation").notNull(),
     claimIds: uuid("claim_ids").array().notNull(),
+    facetKeys: text("facet_keys").array().notNull().default([]),
     entityIds: uuid("entity_ids").array().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },

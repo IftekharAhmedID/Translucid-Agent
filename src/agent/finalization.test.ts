@@ -77,9 +77,9 @@ test("finding batches isolate eligible evidence by durable claim link", () => {
     critic: { claimConcerns: [], limitations: [] },
   }, ["claim-1", "claim-2"]);
 
-  assert.deepEqual(bundle.claimPackets.map(({ claim, eligibleEvidenceIds }) => ({ claimId: claim.id, eligibleEvidenceIds })), [
-    { claimId: "claim-1", eligibleEvidenceIds: ["evidence-1", "evidence-shared"] },
-    { claimId: "claim-2", eligibleEvidenceIds: ["evidence-2", "evidence-shared"] },
+  assert.deepEqual(bundle.claimPackets.map(({ claim, facets }) => ({ claimId: claim.id, facets })), [
+    { claimId: "claim-1", facets: [] },
+    { claimId: "claim-2", facets: [] },
   ]);
   assert.equal("claims" in bundle, false);
   assert.equal("evidence" in bundle, false);

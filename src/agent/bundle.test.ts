@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { buildAdjudicationBundle, selectEvidenceForCritic } from "./bundle.ts";
 
-test("critic evidence selection caps each relation while admitting only one artifact per source family", () => {
+test("critic evidence selection caps each facet relation while admitting one artifact per source family", () => {
   const evidence = [
     ...Array.from({ length: 6 }, (_, index) => ({
       id: `support-${index}`,
@@ -12,16 +12,26 @@ test("critic evidence selection caps each relation while admitting only one arti
       sourceTier: index === 5 ? "Primary - official employer page" : "PRIMARY_SELF_AUTHORED",
       relation: "SUPPORTS",
       claimIds: ["claim-1"],
+      facetKeys: ["employment"],
     })),
     ...Array.from({ length: 3 }, (_, index) => ({ id: `context-${index}`, artifactId: `context-artifact-${index}`, sourceTier: "primary", relation: "CONTEXT", claimIds: ["claim-1"] })),
-    ...Array.from({ length: 3 }, (_, index) => ({ id: `contradiction-${index}`, artifactId: `contradiction-artifact-${index}`, sourceTier: "primary", relation: "CONTRADICTS", claimIds: ["claim-1"] })),
+    ...Array.from({ length: 3 }, (_, index) => ({ id: `contradiction-${index}`, artifactId: `contradiction-artifact-${index}`, sourceTier: "primary", relation: "CONTRADICTS", claimIds: ["claim-1"], facetKeys: ["employment"] })),
   ];
 
   const selected = selectEvidenceForCritic(evidence);
-  assert.equal(selected.filter(({ relation }) => relation === "SUPPORTS").length, 3);
+  assert.equal(selected.filter(({ relation }) => relation === "SUPPORTS").length, 2);
   assert.equal(selected.filter(({ relation }) => relation === "CONTEXT").length, 1);
   assert.equal(selected.filter(({ relation }) => relation === "CONTRADICTS").length, 2);
   assert.equal(selected.some(({ id }) => id === "support-5"), true);
+});
+
+test("the same source group is retained when one artifact supports different facets", () => {
+  const selected = selectEvidenceForCritic([
+    { id: "employer", artifactId: "artifact-1", independenceGroup: "candidate-site", relation: "SUPPORTS", claimIds: ["claim-1"], facetKeys: ["employer"] },
+    { id: "title", artifactId: "artifact-1", independenceGroup: "candidate-site", relation: "SUPPORTS", claimIds: ["claim-1"], facetKeys: ["title"] },
+    { id: "historical", artifactId: "artifact-2", independenceGroup: "legacy", relation: "SUPPORTS", claimIds: ["claim-1"], facetKeys: [] },
+  ], [{ id: "claim-1", facets: [{ key: "employer" }, { key: "title" }] }]);
+  assert.deepEqual(selected.map(({ id }) => id), ["employer", "title"]);
 });
 
 test("adjudication bundle contains only accepted evidence and removes review-only duplication", () => {
