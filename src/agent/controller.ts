@@ -291,6 +291,7 @@ export class OpenCodeInvestigationController {
   private async waitForResearchCompletion(client: ReturnType<typeof createOpencodeClient>, sessionId: string, input: ControllerInput, phaseDeadline: Date): Promise<boolean> {
     let observedBusy = false;
     let continuationPending = false;
+    let emptyFrontierContinuationUsed = false;
     const startedAt = Date.now();
     while (Date.now() < phaseDeadline.getTime()) {
       if (input.signal.aborted) throw new DOMException("Investigation aborted", "AbortError");
@@ -334,6 +335,10 @@ export class OpenCodeInvestigationController {
         await new Promise((resolve) => setTimeout(resolve, 500));
         continue;
       }
+      const emptyFrontier = (frontier?.totalCount ?? 0) === 0;
+      if (emptyFrontier && emptyFrontierContinuationUsed) {
+        throw new Error("LEAD_INTAKE_EMPTY: the lead ended twice without creating durable claims or research questions.");
+      }
       const messages = unwrap(await client.session.messages({ sessionID: sessionId, directory, limit: 2 }), "session messages");
       const latest = messages.at(-1);
       if (latest?.info.role === "assistant" && latest.info.error) throw new Error(`OpenCode session failed: ${latest.info.error.name}`);
@@ -345,16 +350,24 @@ export class OpenCodeInvestigationController {
         sessionId,
         eventType: "RESEARCH_FRONTIER_CONTINUATION",
         status: "IN_PROGRESS",
-        publicRationale: "The lead became idle while durable research questions remained active, so the same session was asked to finish or exhaust them before review.",
-        payload: { activeQuestionCount: activeCount },
+        publicRationale: emptyFrontier
+          ? "The lead ended before persisting intake state, so the same session received one bounded opportunity to complete claim decomposition and open the Research Frontier."
+          : "The lead became idle while durable research questions remained active, so the same session was asked to finish or exhaust them before review.",
+        payload: { activeQuestionCount: activeCount, emptyFrontier },
       });
+      if (emptyFrontier) emptyFrontierContinuationUsed = true;
       await client.session.promptAsync({
         sessionID: sessionId,
         directory,
         agent: "lead-investigator",
         model: { providerID: "translucid", modelID: getConfig().researchModel },
         variant: getConfig().reasoningVariant,
-        parts: [{ type: "text", text: `The durable Research Frontier still has ${activeCount} active question(s). Continue only the evidence-justified work needed to resolve, exhaust, or skip each one. Do not start a third wave. Return as soon as the frontier is terminal.` }],
+        parts: [{
+          type: "text",
+          text: emptyFrontier
+            ? "Your previous turn ended before creating any durable claims or research questions. Resume the ordered intake now without repeating completed file reads: persist the full claim coverage audit, open the compact Research Frontier, and proceed with the bounded research workflow. This is the only empty-intake continuation; do not return before durable intake state exists."
+            : `The durable Research Frontier still has ${activeCount} active question(s). Continue only the evidence-justified work needed to resolve, exhaust, or skip each one. Do not start a third wave. Return as soon as the frontier is terminal.`,
+        }],
       }, { signal: input.signal });
       continuationPending = true;
       await new Promise((resolve) => setTimeout(resolve, 500));

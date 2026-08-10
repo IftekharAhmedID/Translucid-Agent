@@ -15,5 +15,9 @@ test("an active frontier waits while busy and continues only after the session b
 
 test("an empty pre-intake frontier is not mistaken for completed research", () => {
   assert.equal(researchCompletionAction({ totalQuestionCount: 0, activeQuestionCount: 0, sessionStatus: "busy", readyForContinuation: false }), "WAIT");
-  assert.equal(researchCompletionAction({ totalQuestionCount: 0, activeQuestionCount: 0, sessionStatus: "idle", readyForContinuation: true }), "WAIT");
+  assert.equal(researchCompletionAction({ totalQuestionCount: 0, activeQuestionCount: 0, sessionStatus: "idle", readyForContinuation: false }), "WAIT");
+});
+
+test("an idle empty intake receives an orchestrator-controlled continuation opportunity", () => {
+  assert.equal(researchCompletionAction({ totalQuestionCount: 0, activeQuestionCount: 0, sessionStatus: "idle", readyForContinuation: true }), "CONTINUE");
 });
