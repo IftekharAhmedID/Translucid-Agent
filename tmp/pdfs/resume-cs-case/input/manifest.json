@@ -1,0 +1,20 @@
+{
+  "investigationId": "parser-diagnostic",
+  "runId": "resume-computer-science",
+  "classification": "PUBLIC_PROFESSIONAL",
+  "submission": {
+    "kind": "TEXT",
+    "rawPath": "/workspace/case/input/submission.raw.txt",
+    "normalizedPath": "/workspace/case/input/submission.normalized.txt",
+    "sha256": "diagnostic"
+  },
+  "pdfPath": "/workspace/case/input/resume.original.pdf",
+  "pdf": {
+    "originalPath": "/workspace/case/input/resume.original.pdf",
+    "cleanTextPath": "/workspace/case/input/resume.clean.txt",
+    "pagesPath": "/workspace/case/input/resume.pages.json",
+    "pageCount": 2,
+    "sparsePageNumbers": []
+  },
+  "generatedAt": "2026-08-09T21:38:07.343Z"
+}
