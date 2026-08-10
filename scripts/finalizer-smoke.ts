@@ -10,6 +10,8 @@ import {
   summaryOutputSchema,
 } from "../src/agent/finalization.ts";
 import { extractStructuredOutput } from "../src/agent/structured-output.ts";
+import { getConfig } from "../src/core/config.ts";
+import { finalizerOutputTransport } from "../src/core/finalizer-transport.ts";
 
 const runId = process.argv[2];
 if (!runId || !/^[0-9a-f-]{36}$/i.test(runId)) throw new Error("Usage: npm run smoke:finalizer -- <active-local-run-id>");
@@ -23,16 +25,21 @@ const directory = "/workspace/case";
 const claimId = "00000000-0000-4000-8000-000000000001";
 
 async function focused<T>(agent: "evidence-critic" | "fresh-adjudicator", title: string, prompt: string, schema: z.ZodType<T>): Promise<void> {
+  const config = getConfig();
+  const transport = finalizerOutputTransport(config.finalizerOpenCodeProvider, config.finalizerModel);
   const created = await client.session.create({ directory, title, agent, model: { id: "deepseek-v4-flash", providerID: "translucid", variant: "medium" } });
   if (!created.data || created.error) throw new Error(`${title} session creation failed.`);
+  const schemaJson = z.toJSONSchema(schema);
   const message = await client.session.prompt({
     sessionID: created.data.id,
     directory,
     agent,
     model: { providerID: "translucid", modelID: "deepseek-v4-flash" },
     variant: "medium",
-    format: { type: "json_schema", schema: z.toJSONSchema(schema), retryCount: 2 },
-    parts: [{ type: "text", text: prompt }],
+    ...(transport === "NATIVE_JSON_SCHEMA" ? { format: { type: "json_schema" as const, schema: schemaJson, retryCount: 2 } } : {}),
+    parts: [{ type: "text", text: transport === "NATIVE_JSON_SCHEMA"
+      ? prompt
+      : `${prompt}\n\nReturn only one JSON object with no prose. It must validate against this JSON Schema:\n${JSON.stringify(schemaJson)}` }],
   });
   if (!message.data || message.error) throw new Error(`${title} prompt failed: ${JSON.stringify(message.error ?? "missing response")}`);
   schema.parse(extractStructuredOutput(message.data));

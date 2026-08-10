@@ -6,6 +6,7 @@ import { validateAdjudication, validateFindingBatch, validateInvestigationSummar
 import { getConfig } from "../core/config.ts";
 import type { AdjudicationOutput } from "../core/contracts.ts";
 import { forcedFinalizationAt } from "../core/deadlines.ts";
+import { finalizerOutputTransport } from "../core/finalizer-transport.ts";
 import { getSql } from "../db/client.ts";
 import { insertAgentEvent } from "../db/investigations.ts";
 import { reconcileResearchFrontier } from "../db/state.ts";
@@ -189,20 +190,26 @@ export class OpenCodeInvestigationController {
     prompt: string;
     schema: z.ZodType<T>;
   }): Promise<{ value: T; sessionId: string }> {
-    const native = await this.createSession(client, title, agent, input.signal);
-    knownSessions.add(native.id);
-    try {
-      const message = unwrap(await client.session.prompt({
-        sessionID: native.id,
-        directory,
-        agent,
-        model: { providerID: "translucid", modelID: getConfig().finalizerModel },
-        variant: getConfig().reasoningVariant,
-        format: { type: "json_schema", schema: z.toJSONSchema(schema), retryCount: 2 },
-        parts: [{ type: "text", text: prompt }],
-      }, { signal: input.signal }), `${phase.toLowerCase()} prompt`);
-      return { value: schema.parse(extractStructuredOutput(message)), sessionId: native.id };
-    } catch (nativeError) {
+    const config = getConfig();
+    const transport = finalizerOutputTransport(config.finalizerOpenCodeProvider, config.finalizerModel);
+    let nativeError: unknown;
+    if (transport === "NATIVE_JSON_SCHEMA") {
+      const native = await this.createSession(client, title, agent, input.signal);
+      knownSessions.add(native.id);
+      try {
+        const message = unwrap(await client.session.prompt({
+          sessionID: native.id,
+          directory,
+          agent,
+          model: { providerID: "translucid", modelID: config.finalizerModel },
+          variant: config.reasoningVariant,
+          format: { type: "json_schema", schema: z.toJSONSchema(schema), retryCount: 2 },
+          parts: [{ type: "text", text: prompt }],
+        }, { signal: input.signal }), `${phase.toLowerCase()} prompt`);
+        return { value: schema.parse(extractStructuredOutput(message)), sessionId: native.id };
+      } catch (error) {
+        nativeError = error;
+      }
       await insertAgentEvent({
         investigationId: input.investigationId,
         runId: input.runId,
@@ -214,26 +221,41 @@ export class OpenCodeInvestigationController {
         publicRationale: "Native structured output was unavailable; retrying once in a fresh top-level session using JSON-only text.",
         payload: { nativeError: nativeError instanceof Error ? nativeError.message : "Unknown structured-output error" },
       });
-      const fallback = await this.createSession(client, `${title} JSON fallback`, agent, input.signal);
-      knownSessions.add(fallback.id);
-      const fallbackMessage = unwrap(await client.session.prompt({
-        sessionID: fallback.id,
-        directory,
+    } else {
+      await insertAgentEvent({
+        investigationId: input.investigationId,
+        runId: input.runId,
+        phase,
         agent,
-        model: { providerID: "translucid", modelID: getConfig().finalizerModel },
-        variant: getConfig().reasoningVariant,
-        parts: [{
-          type: "text",
-          text: `${prompt}\n\nReturn only one JSON object with no prose. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}`,
-        }],
-      }, { signal: input.signal }), `${phase.toLowerCase()} JSON fallback prompt`);
-      try {
-        return { value: schema.parse(extractStructuredOutput(fallbackMessage)), sessionId: fallback.id };
-      } catch (fallbackError) {
+        eventType: "STRUCTURED_OUTPUT_COMPATIBILITY_MODE",
+        status: "STARTED",
+        publicRationale: "The configured GO reasoning model does not support forced tool choice; using its JSON-object response mode with backend schema validation.",
+        payload: { transport },
+      });
+    }
+
+    const fallback = await this.createSession(client, `${title} JSON`, agent, input.signal);
+    knownSessions.add(fallback.id);
+    const fallbackMessage = unwrap(await client.session.prompt({
+      sessionID: fallback.id,
+      directory,
+      agent,
+      model: { providerID: "translucid", modelID: config.finalizerModel },
+      variant: config.reasoningVariant,
+      parts: [{
+        type: "text",
+        text: `${prompt}\n\nReturn only one JSON object with no prose. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}`,
+      }],
+    }, { signal: input.signal }), `${phase.toLowerCase()} JSON prompt`);
+    try {
+      return { value: schema.parse(extractStructuredOutput(fallbackMessage)), sessionId: fallback.id };
+    } catch (fallbackError) {
+      const second = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      if (nativeError !== undefined) {
         const first = nativeError instanceof Error ? nativeError.message : String(nativeError);
-        const second = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
         throw new Error(`${phase} structured output failed natively (${first}) and through its one JSON fallback (${second}).`);
       }
+      throw new Error(`${phase} JSON-object output failed (${second}).`);
     }
   }
 

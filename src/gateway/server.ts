@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 
 import { buildCompactionContext } from "../agent/compaction.ts";
 import { getConfig } from "../core/config.ts";
+import { prepareFinalizerUpstreamBody } from "../core/finalizer-transport.ts";
 import { getSql } from "../db/client.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
 import { toolNames } from "../providers/contracts.ts";
@@ -123,13 +124,21 @@ async function handleModel(request: IncomingMessage, response: ServerResponse): 
   let upstream: Response;
   try {
     const finalizerAgents = new Set(["evidence-critic", "fresh-adjudicator"]);
-    const upstreamUrl = finalizerAgents.has(agent)
-      ? getConfig().finalizerOpenCodeUpstreamUrl
-      : getConfig().researchOpenCodeUpstreamUrl;
+    const finalizer = finalizerAgents.has(agent);
+    const config = getConfig();
+    const upstreamUrl = finalizer
+      ? config.finalizerOpenCodeUpstreamUrl
+      : config.researchOpenCodeUpstreamUrl;
+    const upstreamBody = finalizer
+      ? prepareFinalizerUpstreamBody(
+          { ...encoded.body, model },
+          { agent, provider: config.finalizerOpenCodeProvider, model: config.finalizerModel },
+        )
+      : { ...encoded.body, model };
     upstream = await fetch(upstreamUrl, {
       method: "POST",
       headers: { authorization: `Bearer ${upstreamKey}`, "content-type": "application/json" },
-      body: JSON.stringify({ ...encoded.body, model }),
+      body: JSON.stringify(upstreamBody),
       signal: upstreamAbort.signal,
     });
   } catch (error) {
