@@ -83,7 +83,7 @@ async function runOne(run: ClaimedRun, runnerId: string, expectedManifestHash: s
       investigationId: run.investigationId,
       runId: run.id,
       allowedTools: [...toolNames, ...stateToolNames, "state.compaction"],
-      allowedModels: ["opencode/deepseek-v4-flash", "opencode/mimo-v2.5-free"],
+      allowedModels: [...new Set([`opencode/${config.researchModel}`, `opencode/${config.finalizerModel}`, "opencode/mimo-v2.5-free"])],
       ttlMs: Math.max(1_000, Math.min(config.investigationTimeoutMs, run.deadlineAt.getTime() - Date.now())),
     });
     const openCodePassword = randomBytes(24).toString("base64url");

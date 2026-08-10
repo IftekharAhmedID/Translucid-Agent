@@ -14,7 +14,7 @@ import { decodeJsonToolNames, encodeModelToolNames, SseToolNameDecoder } from ".
 
 const MAX_TOOL_BODY = 1024 * 1024;
 const MAX_MODEL_BODY = 16 * 1024 * 1024;
-const MODEL_IDS = new Set(["deepseek-v4-flash", "mimo-v2.5-free"]);
+const MODEL_IDS = new Set(["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-free"]);
 
 function bearer(request: IncomingMessage): string {
   const header = request.headers.authorization;
@@ -56,7 +56,10 @@ function modelCostReservation(body: Record<string, unknown>, model: string): num
   const inputCharacters = JSON.stringify(body.messages ?? []).length;
   const estimatedInputTokens = Math.ceil(inputCharacters / 4);
   const maximumOutputTokens = Math.min(Number(body.max_tokens ?? body.max_completion_tokens ?? 32_000), 384_000);
-  return (estimatedInputTokens * 0.14 + maximumOutputTokens * 0.28) / 1_000_000;
+  const rates = model === "deepseek-v4-pro"
+    ? { input: 0.435, output: 0.87 }
+    : { input: 0.14, output: 0.28 };
+  return (estimatedInputTokens * rates.input + maximumOutputTokens * rates.output) / 1_000_000;
 }
 
 async function handleTool(request: IncomingMessage, response: ServerResponse, executor: ProviderExecutor): Promise<void> {

@@ -44,7 +44,7 @@ test("every DeepSeek investigation role uses medium reasoning and none uses max"
   const agentFiles = (await readdir(directory)).filter((name) => name.endsWith(".md"));
   for (const file of agentFiles) {
     const source = await readFile(new URL(file, directory), "utf8");
-    if (!source.includes("model: translucid/deepseek-v4-flash")) continue;
+    if (!/model: translucid\/deepseek-v4-(?:flash|pro)/.test(source)) continue;
     assert.match(source, /variant:\s*medium/);
     assert.doesNotMatch(source, /variant:\s*max/);
   }
