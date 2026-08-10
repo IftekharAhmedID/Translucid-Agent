@@ -55,3 +55,61 @@ export function isSparsePage(text: string): boolean {
 export function isSparseDocument(pageTexts: string[]): boolean {
   return pageTexts.join("").replace(/\s/g, "").length < SPARSE_DOCUMENT_CHARACTER_LIMIT;
 }
+
+export function wrapExtractedText(text: string, width = 160): string {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let line = "";
+  for (const word of words) {
+    if (!line) line = word;
+    else if (line.length + word.length + 1 <= width) line += ` ${word}`;
+    else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.join("\n");
+}
+
+export type PdfTextItem = {
+  str: string;
+  hasEOL?: boolean;
+};
+
+export function pdfTextItemsToLines(items: PdfTextItem[]): string[] {
+  const lines: string[] = [];
+  let line = "";
+  const flush = () => {
+    const normalized = line.replace(/\s+/g, " ").trim();
+    if (normalized) lines.push(normalized);
+    line = "";
+  };
+
+  for (const item of items) {
+    line += item.str;
+    if (item.hasEOL) flush();
+  }
+  flush();
+  return lines;
+}
+
+export function buildAgentInputManifest(
+  seed: Record<string, unknown> & { pdfPath?: unknown; pdfSha256?: unknown },
+  parsedDocument?: Record<string, unknown>,
+): Record<string, unknown> {
+  const safeSeed = { ...seed };
+  const pdfSha256 = safeSeed.pdfSha256;
+  delete safeSeed.pdfPath;
+  delete safeSeed.pdfSha256;
+  return {
+    ...safeSeed,
+    parsedDocument: parsedDocument ? {
+      ...parsedDocument,
+      ...(typeof pdfSha256 === "string" ? { sourceSha256: pdfSha256 } : {}),
+      sourceType: "PDFJS_STRUCTURED_TEXT",
+      rawPdfAvailableToAgent: false,
+    } : undefined,
+    generatedAt: new Date().toISOString(),
+  };
+}

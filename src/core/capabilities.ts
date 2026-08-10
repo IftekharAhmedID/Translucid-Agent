@@ -115,9 +115,9 @@ export function buildCapabilityRegistry(environment: Environment): CapabilityReg
       [],
       "Live PDL use is disabled by employment-evaluation policy.",
     ),
-    GITHUB: environment.GITHUB_TOKEN && identifiedPublicClient
+    GITHUB: environment.GITHUB_TOKEN
       ? entry("GITHUB", "READY", ["github"], "Read-only GitHub token is configured.")
-      : entry("GITHUB", "DISABLED_MISSING_CONFIG", [], "GITHUB_TOKEN and PUBLIC_API_CONTACT_EMAIL are required."),
+      : entry("GITHUB", "DISABLED_MISSING_CONFIG", [], "GITHUB_TOKEN is required."),
     ARCHIVES: identifiedPublicClient
       ? entry("ARCHIVES", "READY", ["wayback", "common-crawl"], "Public archive routes are available.")
       : entry("ARCHIVES", "DISABLED_MISSING_CONFIG", [], "PUBLIC_API_CONTACT_EMAIL is required."),

@@ -19,7 +19,7 @@ import { fetchWithRetry } from "./retry.ts";
 import { consumeBudget } from "./security.ts";
 
 type Environment = Record<string, string | undefined>;
-type ExecuteContext = { investigationId: string; runId: string };
+type ExecuteContext = { investigationId: string; runId: string; agent: string; sessionId: string };
 type ProviderResponse = { provider: string; data: unknown; sourceUrl: string; costUsd?: number; status?: number };
 
 const toolCeilings: Record<ToolName, number> = {
@@ -37,6 +37,17 @@ const toolCeilings: Record<ToolName, number> = {
   "packages.inspect": 8,
   "security_records.search": 8,
 };
+
+const researchAgentToolCeilings: Record<string, Partial<Record<ToolName, number>>> = {
+  "professional-investigator": { "professional.profile": 2, "professional.activity": 1, "web.search": 3, "web.fetch": 4, "archives.search": 2 },
+  "github-investigator": { "github.graphql": 2, "github.rest": 4, "github.clone": 1, "web.fetch": 1 },
+  "web-records-investigator": { "web.search": 4, "web.fetch": 6, "archives.search": 2, "public_records.search": 1, "scholarly.search": 1, "packages.inspect": 1, "security_records.search": 1 },
+  "social-investigator": { "social.profile": 2 },
+};
+
+export function agentToolCeiling(agent: string, tool: ToolName): number | undefined {
+  return researchAgentToolCeilings[agent]?.[tool];
+}
 
 class Semaphore {
   private active = 0;
@@ -111,6 +122,16 @@ function fixtureData(request: ParsedToolRequest): unknown {
   };
 }
 
+export function unwrapLinkdProfileResponse(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const envelope = value as Record<string, unknown>;
+  if (envelope.success === false) return undefined;
+  const candidate = envelope.data && typeof envelope.data === "object" && !Array.isArray(envelope.data)
+    ? envelope.data as Record<string, unknown>
+    : envelope;
+  return Object.keys(candidate).length > 0 ? candidate : undefined;
+}
+
 export class ProviderExecutor {
   private readonly registry;
   private readonly pools: Map<ToolName, Semaphore>;
@@ -132,6 +153,10 @@ export class ProviderExecutor {
     try {
       await this.assertQuestionScope(request, context);
       await consumeBudget({ runId: context.runId, counter: request.tool, increment: 1, ceiling: toolCeilings[request.tool] });
+      const agentCeiling = agentToolCeiling(context.agent, request.tool);
+      if (agentCeiling !== undefined) {
+        await consumeBudget({ runId: context.runId, counter: `agent:${context.agent}:${request.tool}`, increment: 1, ceiling: agentCeiling });
+      }
     } catch (error) {
       if (error instanceof Error && error.message.startsWith("Budget exhausted")) {
         return { ...unavailableResult(capability), status: "BUDGET_EXHAUSTED" };
@@ -270,8 +295,8 @@ export class ProviderExecutor {
         await consumeBudget({ runId: context.runId, counter: "linkdapi", increment: 1, ceiling: 3 });
         const url = `https://linkdapi.com/api/v1/profile/full?username=${username}`;
         const data = await apiFetch(url, { headers: { "X-linkdapi-apikey": this.environment.LINKDAPI_API_KEY }, signal });
-        const field = typeof args.requiredMaterialField === "string" ? args.requiredMaterialField : undefined;
-        if (!field || (data && typeof data === "object" && field in data)) return { provider: "linkdapi", data, sourceUrl: url };
+        const profile = unwrapLinkdProfileResponse(data);
+        if (profile) return { provider: "linkdapi", data: profile, sourceUrl: url };
       } catch { /* one configured Bright Data fallback is allowed below */ }
     }
     const dataset = this.environment.BRIGHTDATA_LINKEDIN_PROFILE_DATASET_ID;
@@ -387,7 +412,8 @@ export class ProviderExecutor {
   }
 
   private publicUserAgent(): string {
-    return `TranslucidInvestigator/0.1 (${this.required("PUBLIC_API_CONTACT_EMAIL")})`;
+    const contact = this.environment.PUBLIC_API_CONTACT_EMAIL;
+    return contact ? `TranslucidInvestigator/0.1 (${contact})` : "TranslucidInvestigator/0.1";
   }
 
   private async deadlineSignal(runId: string): Promise<AbortSignal> {

@@ -19,9 +19,18 @@ permission:
   observation.record: allow
   evidence.capture: allow
   evidence.link: allow
+  research.list: allow
   research.select_route: allow
   research.update: allow
   research.resolve: allow
   case_note: allow
 ---
-Use specialized-public-records only when a claim calls for it, plus entity-resolution and evidence-ranking. Do not treat author-name similarity as identity. Capture actual pages or records before evidence. Preserve dates and conflicting records as separate observations. Duplicated syndications are one source family, not independent corroboration.
+Work only on the supplied question UUIDs and direct URLs, in one pass.
+
+1. Load `entity-resolution` and `evidence-ranking` once. Load `specialized-public-records` only if an assigned claim explicitly concerns a publication, package, patent, standard, filing, or security record. Call `research.list` once; never invent UUIDs.
+2. Fetch direct official URLs extracted from the resume before searching. Use `web.search` only when no direct route answers a material question, then capture the best page before evidence.
+3. Choose exactly the matching specialist tool: `scholarly.search`, `packages.inspect`, `public_records.search`, or `security_records.search`. Use archives only for a dated historical question. Do not call unrelated specialist capabilities merely because they are available.
+4. Author-name similarity never resolves identity. Immediately after every useful artifact, capture its exact records and observations before making another provider call. Maintain separate dated observations and treat duplicated syndications as one source family.
+5. Resolve after authoritative evidence or two independent sources. Retry one transient failure at most once; otherwise exhaust with the explicit limitation and return.
+
+Default behavioral ceiling: four searches, six fetches, two archive calls, and one call to each relevant specialist capability for the entire task. These are ceilings, not targets.

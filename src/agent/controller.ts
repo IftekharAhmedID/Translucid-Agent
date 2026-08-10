@@ -4,10 +4,11 @@ import { z } from "zod";
 
 import { validateAdjudication } from "../core/adjudication.ts";
 import { adjudicationOutputSchema, type AdjudicationOutput } from "../core/contracts.ts";
+import { researchPhaseDeadline } from "../core/deadlines.ts";
 import { getSql } from "../db/client.ts";
 import { insertAgentEvent } from "../db/investigations.ts";
 import type { RunHandle } from "../runtime/types.ts";
-import { buildFrozenEvidenceBundle } from "./bundle.ts";
+import { buildAdjudicationBundle, buildFrozenEvidenceBundle } from "./bundle.ts";
 import { extractStructuredOutput } from "./structured-output.ts";
 
 const directory = "/workspace/case";
@@ -81,10 +82,8 @@ export class OpenCodeInvestigationController {
       knownSessions.add(lead.id);
       input.signal.throwIfAborted();
       await getSql()`UPDATE runs SET opencode_primary_session_id = ${lead.id}, updated_at = now() WHERE id = ${input.runId}`;
-      await client.session.promptAsync({ sessionID: lead.id, directory, agent: "lead-investigator", model: { providerID: "translucid", modelID: "deepseek-v4-flash" }, variant: "max", parts: [{ type: "text", text: "Begin the authorized investigation from /workspace/case/input/manifest.json. Obey the classification declared in that manifest. Persist all claims, entities, questions, observations, evidence, and public notes through semantic tools. Complete the durable frontier; do not write a final adjudication." }] }, { signal: input.signal });
-      const remainingAtResearchStart = Math.max(1, input.deadlineAt.getTime() - Date.now());
-      const reviewReserve = Math.min(8 * 60_000, Math.floor(remainingAtResearchStart * (8 / 30)));
-      const researchDeadline = new Date(input.deadlineAt.getTime() - reviewReserve);
+      const researchDeadline = researchPhaseDeadline(new Date(), input.deadlineAt);
+      await client.session.promptAsync({ sessionID: lead.id, directory, agent: "lead-investigator", model: { providerID: "translucid", modelID: "deepseek-v4-flash" }, variant: "max", parts: [{ type: "text", text: `Begin the authorized investigation from /workspace/case/input/manifest.json. The raw PDF has already been parsed and removed; use only the manifest's structured text/JSON paths and sparse-page images. Obey the declared classification and your ordered workflow. Persist durable state through semantic tools. Finish research by ${researchDeadline.toISOString()} so frozen critic and adjudication can run before the hard deadline ${input.deadlineAt.toISOString()}. Do not write a final adjudication.` }] }, { signal: input.signal });
       const researchFinished = await this.waitForIdle(client, lead.id, input, researchDeadline);
       if (!researchFinished) {
         await abortAll();
@@ -92,10 +91,16 @@ export class OpenCodeInvestigationController {
       }
 
       const frozen = await buildFrozenEvidenceBundle(input.investigationId, input.runId);
-      const critic = await this.createSession(client, "Frozen evidence critic", "evidence-critic", input.signal);
-      knownSessions.add(critic.id);
-      const criticMessage = unwrap(await client.session.prompt({ sessionID: critic.id, directory, agent: "evidence-critic", model: { providerID: "translucid", modelID: "deepseek-v4-flash" }, variant: "max", format: { type: "json_schema", schema: z.toJSONSchema(criticSchema), retryCount: 2 }, parts: [{ type: "text", text: `Audit this frozen durable bundle. Do not research. Return the required structured audit.\n${JSON.stringify(frozen)}` }] }, { signal: input.signal }), "critic prompt");
-      const criticOutput = criticSchema.parse(extractStructuredOutput(criticMessage));
+      const criticOutput = (await this.promptStructured({
+        client,
+        input,
+        knownSessions,
+        title: "Frozen evidence critic",
+        agent: "evidence-critic",
+        phase: "CRITIC",
+        prompt: `Audit this frozen durable bundle. Do not research. Return the required structured audit.\n${JSON.stringify(frozen)}`,
+        schema: criticSchema,
+      })).value;
       const frozenEvidence = frozen.evidence as Array<{ id: string; claimIds: string[] }>;
       const allEvidenceIds = new Set(frozenEvidence.map(({ id }) => id));
       const knownClaimIds = new Set((frozen.claims as Array<{ id: string }>).map(({ id }) => id));
@@ -107,13 +112,21 @@ export class OpenCodeInvestigationController {
       }
       const rejectedEvidenceIds = new Set(criticOutput.rejectedEvidence.map(({ evidenceId }) => evidenceId));
       const acceptedEvidenceIds = new Set(criticOutput.acceptedEvidenceIds.filter((id) => !rejectedEvidenceIds.has(id)));
+      const adjudicationBundle = buildAdjudicationBundle(frozen, acceptedEvidenceIds, criticOutput);
 
-      const adjudicator = await this.createSession(client, "Fresh final adjudication", "fresh-adjudicator", input.signal);
-      knownSessions.add(adjudicator.id);
-      await getSql()`UPDATE runs SET opencode_adjudicator_session_id = ${adjudicator.id}, updated_at = now() WHERE id = ${input.runId}`;
-      const adjudicationMessage = unwrap(await client.session.prompt({ sessionID: adjudicator.id, directory, agent: "fresh-adjudicator", model: { providerID: "translucid", modelID: "deepseek-v4-flash" }, variant: "max", format: { type: "json_schema", schema: z.toJSONSchema(adjudicationOutputSchema), retryCount: 2 }, parts: [{ type: "text", text: `Adjudicate only this frozen evidence bundle and critic audit. Return the required non-ranking JSON.\nBUNDLE:\n${JSON.stringify(frozen)}\nCRITIC:\n${JSON.stringify(criticOutput)}` }] }, { signal: input.signal }), "adjudicator prompt");
+      const adjudication = await this.promptStructured({
+        client,
+        input,
+        knownSessions,
+        title: "Fresh final adjudication",
+        agent: "fresh-adjudicator",
+        phase: "ADJUDICATION",
+        prompt: `Adjudicate only this critic-filtered frozen bundle. Return the required non-ranking JSON.\n${JSON.stringify(adjudicationBundle)}`,
+        schema: adjudicationOutputSchema,
+      });
+      await getSql()`UPDATE runs SET opencode_adjudicator_session_id = ${adjudication.sessionId}, updated_at = now() WHERE id = ${input.runId}`;
       const evidenceClaimIds = new Map(frozenEvidence.map(({ id, claimIds }) => [id, new Set(claimIds)]));
-      const output = validateAdjudication(extractStructuredOutput(adjudicationMessage), acceptedEvidenceIds, knownClaimIds, evidenceClaimIds);
+      const output = validateAdjudication(adjudication.value, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds);
       await this.persistAdjudication(input.investigationId, input.runId, output);
       return output;
     } finally {
@@ -124,7 +137,74 @@ export class OpenCodeInvestigationController {
   }
 
   private async createSession(client: ReturnType<typeof createOpencodeClient>, title: string, agent: string, signal: AbortSignal): Promise<Session> {
-    return unwrap(await client.session.create({ directory, title, agent, model: { id: "deepseek-v4-flash", providerID: "translucid", variant: agent.includes("critic") || agent.includes("adjudicator") ? "max" : "high" } }, { signal }), "session creation");
+    return unwrap(await client.session.create({ directory, title, agent, model: { id: "deepseek-v4-flash", providerID: "translucid", variant: "high" } }, { signal }), "session creation");
+  }
+
+  private async promptStructured<T>({
+    client,
+    input,
+    knownSessions,
+    title,
+    agent,
+    phase,
+    prompt,
+    schema,
+  }: {
+    client: ReturnType<typeof createOpencodeClient>;
+    input: ControllerInput;
+    knownSessions: Set<string>;
+    title: string;
+    agent: "evidence-critic" | "fresh-adjudicator";
+    phase: "CRITIC" | "ADJUDICATION";
+    prompt: string;
+    schema: z.ZodType<T>;
+  }): Promise<{ value: T; sessionId: string }> {
+    const native = await this.createSession(client, title, agent, input.signal);
+    knownSessions.add(native.id);
+    try {
+      const message = unwrap(await client.session.prompt({
+        sessionID: native.id,
+        directory,
+        agent,
+        model: { providerID: "translucid", modelID: "deepseek-v4-flash" },
+        variant: "high",
+        format: { type: "json_schema", schema: z.toJSONSchema(schema), retryCount: 2 },
+        parts: [{ type: "text", text: prompt }],
+      }, { signal: input.signal }), `${phase.toLowerCase()} prompt`);
+      return { value: schema.parse(extractStructuredOutput(message)), sessionId: native.id };
+    } catch (nativeError) {
+      await insertAgentEvent({
+        investigationId: input.investigationId,
+        runId: input.runId,
+        phase,
+        agent,
+        sessionId: native.id,
+        eventType: "STRUCTURED_OUTPUT_FALLBACK",
+        status: "RETRYING",
+        publicRationale: "Native structured output was unavailable; retrying once in a fresh top-level session using JSON-only text.",
+        payload: { nativeError: nativeError instanceof Error ? nativeError.message : "Unknown structured-output error" },
+      });
+      const fallback = await this.createSession(client, `${title} JSON fallback`, agent, input.signal);
+      knownSessions.add(fallback.id);
+      const fallbackMessage = unwrap(await client.session.prompt({
+        sessionID: fallback.id,
+        directory,
+        agent,
+        model: { providerID: "translucid", modelID: "deepseek-v4-flash" },
+        variant: "high",
+        parts: [{
+          type: "text",
+          text: `${prompt}\n\nReturn only one JSON object with no prose. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}`,
+        }],
+      }, { signal: input.signal }), `${phase.toLowerCase()} JSON fallback prompt`);
+      try {
+        return { value: schema.parse(extractStructuredOutput(fallbackMessage)), sessionId: fallback.id };
+      } catch (fallbackError) {
+        const first = nativeError instanceof Error ? nativeError.message : String(nativeError);
+        const second = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        throw new Error(`${phase} structured output failed natively (${first}) and through its one JSON fallback (${second}).`);
+      }
+    }
   }
 
   private async waitForIdle(client: ReturnType<typeof createOpencodeClient>, sessionId: string, input: ControllerInput, phaseDeadline: Date): Promise<boolean> {

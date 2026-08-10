@@ -44,6 +44,10 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.end(JSON.stringify(body));
 }
 
+export function canWriteGatewayError(response: Pick<ServerResponse, "headersSent" | "writableEnded" | "destroyed">): boolean {
+  return !response.headersSent && !response.writableEnded && !response.destroyed;
+}
+
 function modelCostReservation(body: Record<string, unknown>, model: string): number {
   if (model === "mimo-v2.5-free") return 0;
   const inputCharacters = JSON.stringify(body.messages ?? []).length;
@@ -169,6 +173,10 @@ export function createGatewayServer() {
       if (request.method === "GET" && url.pathname === "/internal/state/compaction") return await handleCompaction(request, response);
       json(response, 404, { error: { code: "NOT_FOUND", message: "Not found." } });
     } catch (error) {
+      if (!canWriteGatewayError(response)) {
+        if (!response.destroyed) response.destroy();
+        return;
+      }
       json(response, 400, { error: { code: "GATEWAY_REJECTED", message: error instanceof Error ? error.message : "Gateway rejected request." } });
     }
   });

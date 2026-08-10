@@ -2,7 +2,7 @@
 description: Produces final evidence-bounded structured adjudication from a fresh session.
 mode: primary
 model: translucid/deepseek-v4-flash
-variant: max
+variant: high
 permission:
   "*": deny
   StructuredOutput: allow

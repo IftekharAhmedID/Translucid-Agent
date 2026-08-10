@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { getSql } from "../db/client.ts";
 import { insertAgentEvent } from "../db/investigations.ts";
+import { toolNames } from "../providers/contracts.ts";
 import {
   addEntityIdentifier,
   captureEvidence,
@@ -36,9 +37,9 @@ const schemas: Record<StateToolName, z.ZodType> = {
   "entity.get_graph": z.object({}).strict(),
   "observation.record": z.object({ artifactId: uuid, entityId: uuid, field: z.string().min(1).max(200), valueJson: z.unknown(), sourceEventAt: z.iso.datetime().optional(), validFrom: z.iso.datetime().optional(), validTo: z.iso.datetime().optional() }).strict(),
   "observation.list_timeline": z.object({ entityId: uuid.optional() }).strict(),
-  "research.open": z.object({ claimIds: z.array(uuid).max(100), question: z.string().min(5).max(2_000), priority: z.enum(["HIGH", "MEDIUM", "LOW"]), possibleRoutes: z.array(z.string().min(1).max(200)).min(1).max(20) }).strict(),
+  "research.open": z.object({ claimIds: z.array(uuid).max(100), question: z.string().min(5).max(2_000), priority: z.enum(["HIGH", "MEDIUM", "LOW"]), possibleRoutes: z.array(z.enum(toolNames)).min(1).max(20) }).strict(),
   "research.select_route": z.object({ questionId: uuid, route: z.string().min(1).max(200), publicRationale: z.string().min(10).max(500) }).strict(),
-  "research.update": z.object({ questionId: uuid, priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(), possibleRoutes: z.array(z.string().min(1).max(200)).min(1).max(20).optional(), status: z.enum(["OPEN", "IN_PROGRESS"]).optional(), publicRationale: z.string().min(10).max(500) }).strict().refine((value) => Boolean(value.priority || value.possibleRoutes || value.status), "A research question update is required."),
+  "research.update": z.object({ questionId: uuid, priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(), possibleRoutes: z.array(z.enum(toolNames)).min(1).max(20).optional(), status: z.enum(["OPEN", "IN_PROGRESS"]).optional(), publicRationale: z.string().min(10).max(500) }).strict().refine((value) => Boolean(value.priority || value.possibleRoutes || value.status), "A research question update is required."),
   "research.resolve": z.object({ questionId: uuid, status: z.enum(["RESOLVED", "EXHAUSTED", "SKIPPED"]), resolutionSummary: z.string().min(5).max(2_000) }).strict(),
   "research.list": z.object({}).strict(),
   "evidence.capture": z.object({ artifactId: uuid, exactQuote: z.string().min(1).max(12_000), sourceLocation: z.record(z.string(), z.unknown()).optional(), sourceTier: z.string().min(1).max(100), relation: z.enum(["SUPPORTS", "CONTRADICTS", "CONTEXT"]), claimIds: z.array(uuid).max(100), entityIds: z.array(uuid).max(100) }).strict(),

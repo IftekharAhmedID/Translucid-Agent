@@ -38,6 +38,13 @@ const common = {
   publicRationale: z.string().min(10).max(500).describe("Concise rationale safe to show in Agent Trace"),
 };
 
+const researchRoute = z.enum([
+  "web.search", "web.fetch", "professional.profile", "professional.activity",
+  "social.profile", "github.graphql", "github.rest", "github.clone",
+  "archives.search", "public_records.search", "scholarly.search",
+  "packages.inspect", "security_records.search",
+]);
+
 function gatewayTool(name: string, description: string, args: Record<string, ReturnType<typeof z.string> | ReturnType<typeof z.array> | ReturnType<typeof z.enum> | ReturnType<typeof z.record> | ReturnType<typeof z.number> | ReturnType<typeof z.any>>) {
   return tool({ description, args, async execute(values, context) { return execute(name, values, context); } });
 }
@@ -68,9 +75,9 @@ const plugin: Plugin = async () => ({
     "entity.get_graph": gatewayTool("entity.get_graph", "Read the durable entity graph.", {}),
     "observation.record": gatewayTool("observation.record", "Record a temporal observation from a captured artifact.", { artifactId: z.string().uuid(), entityId: z.string().uuid(), field: z.string().min(1).max(200), valueJson: z.any(), sourceEventAt: z.string().datetime().optional(), validFrom: z.string().datetime().optional(), validTo: z.string().datetime().optional() }),
     "observation.list_timeline": gatewayTool("observation.list_timeline", "Read the data-backed timeline without collapsing conflicts.", { entityId: z.string().uuid().optional() }),
-    "research.open": gatewayTool("research.open", "Open a durable research question before using an expensive tool.", { claimIds: z.array(z.string().uuid()).max(100), question: z.string().min(5).max(2000), priority: z.enum(["HIGH", "MEDIUM", "LOW"]), possibleRoutes: z.array(z.string().min(1)).min(1).max(20) }),
-    "research.select_route": gatewayTool("research.select_route", "Select one available route with a public rationale.", { questionId: z.string().uuid(), route: z.string().min(1).max(200), publicRationale: z.string().min(10).max(500) }),
-    "research.update": gatewayTool("research.update", "Update an open durable question when priorities or available routes change.", { questionId: z.string().uuid(), priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(), possibleRoutes: z.array(z.string().min(1).max(200)).min(1).max(20).optional(), status: z.enum(["OPEN", "IN_PROGRESS"]).optional(), publicRationale: z.string().min(10).max(500) }),
+    "research.open": gatewayTool("research.open", "Open a durable research question before using an expensive tool. possibleRoutes must be exact semantic tool IDs.", { claimIds: z.array(z.string().uuid()).max(100), question: z.string().min(5).max(2000), priority: z.enum(["HIGH", "MEDIUM", "LOW"]), possibleRoutes: z.array(researchRoute).min(1).max(20) }),
+    "research.select_route": gatewayTool("research.select_route", "Select a route using exactly one semantic tool ID already stored in possibleRoutes.", { questionId: z.string().uuid(), route: researchRoute, publicRationale: z.string().min(10).max(500) }),
+    "research.update": gatewayTool("research.update", "Update an open durable question. possibleRoutes must be exact semantic tool IDs.", { questionId: z.string().uuid(), priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(), possibleRoutes: z.array(researchRoute).min(1).max(20).optional(), status: z.enum(["OPEN", "IN_PROGRESS"]).optional(), publicRationale: z.string().min(10).max(500) }),
     "research.resolve": gatewayTool("research.resolve", "Resolve, exhaust, or skip a durable research question.", { questionId: z.string().uuid(), status: z.enum(["RESOLVED", "EXHAUSTED", "SKIPPED"]), resolutionSummary: z.string().min(5).max(2000) }),
     "research.list": gatewayTool("research.list", "Read the current durable research frontier.", {}),
     "evidence.capture": gatewayTool("evidence.capture", "Create evidence from an exact quote in an immutable non-snippet artifact.", { artifactId: z.string().uuid(), exactQuote: z.string().min(1).max(12000), sourceLocation: z.record(z.string(), z.any()).optional(), sourceTier: z.string().min(1).max(100), relation: z.enum(["SUPPORTS", "CONTRADICTS", "CONTEXT"]), claimIds: z.array(z.string().uuid()).max(100), entityIds: z.array(z.string().uuid()).max(100) }),

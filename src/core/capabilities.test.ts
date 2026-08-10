@@ -37,14 +37,14 @@ test("live capability readiness is scoped to exact credentials and datasets", ()
   assert.equal(registry.SCHOLARLY.state, "DEGRADED");
 });
 
-test("public API capabilities require an identified contact", () => {
+test("authenticated GitHub is ready without coupling it to public API contact configuration", () => {
   const registry = buildCapabilityRegistry({
     PROVIDER_MODE: "live",
     GITHUB_TOKEN: "redacted-test-value",
     USPTO_API_KEY: "redacted-test-value",
   });
 
-  assert.equal(registry.GITHUB.state, "DISABLED_MISSING_CONFIG");
+  assert.equal(registry.GITHUB.state, "READY");
   assert.equal(registry.ARCHIVES.state, "DISABLED_MISSING_CONFIG");
   assert.equal(registry.PATENTS.state, "DISABLED_MISSING_CONFIG");
   assert.equal(registry.PACKAGES.state, "DISABLED_MISSING_CONFIG");

@@ -27,6 +27,7 @@ export async function prepareCaseWorkspace(investigationId: string, runId: strin
     writeFile(join(inputDirectory, investigation.submissionKind === "JSON" ? "submission.normalized.json" : "submission.normalized.txt"), investigation.submissionNormalized),
   ]);
   let pdfPath: string | undefined;
+  let pdfSha256: string | undefined;
   if (investigation.resumeArtifactId) {
     const [artifact] = await getSql()<Array<{ contentBytes: Uint8Array; sha256: string }>>`
       SELECT content_bytes AS "contentBytes", sha256 FROM artifacts
@@ -35,6 +36,7 @@ export async function prepareCaseWorkspace(investigationId: string, runId: strin
     if (!artifact) throw new Error("Original PDF artifact is missing.");
     pdfPath = "/workspace/case/input/resume.original.pdf";
     await writeFile(join(inputDirectory, "resume.original.pdf"), Buffer.from(artifact.contentBytes));
+    pdfSha256 = artifact.sha256;
   }
   await writeFile(join(inputDirectory, "intake.json"), JSON.stringify({
     investigationId,
@@ -47,6 +49,7 @@ export async function prepareCaseWorkspace(investigationId: string, runId: strin
       sha256: investigation.submissionSha256,
     },
     pdfPath,
+    pdfSha256,
   }, null, 2));
   return directory;
 }
