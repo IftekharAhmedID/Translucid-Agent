@@ -1,12 +1,117 @@
 const ignored = new Set([
-  "about", "after", "been", "between", "from", "have", "into", "more", "over", "that", "their", "there", "these", "this", "through", "with",
+  "about", "after", "been", "between", "company", "development", "developer", "engineer", "experience", "from", "have", "into", "more", "over", "project", "role", "software", "team", "that", "their", "there", "these", "this", "through", "with", "work",
 ]);
 
-function tokens(value: string): string[] {
-  return value.toLocaleLowerCase("en-US").match(/[a-z][a-z0-9+.#-]{3,}/g)?.filter((token) => !ignored.has(token)) ?? [];
+const actionFamilies = [
+  ["work", "worked", "works", "employment", "employed", "joined", "served"],
+  ["build", "built", "developed", "implemented", "created", "authored", "maintained"],
+  ["lead", "led", "owned", "managed", "directed"],
+  ["study", "studied", "degree", "graduated", "education"],
+  ["speak", "spoke", "presented", "conference", "event"],
+];
+
+type Token = { value: string; source: string; index: number };
+
+function tokenise(value: string): Token[] {
+  const matches = value.match(/[A-Za-z][A-Za-z0-9+.#-]*[A-Za-z0-9+#-]|\d[\dA-Za-z+.#-]*\d/g) ?? [];
+  return matches
+    .filter((source) => source.length >= 3)
+    .flatMap((source, index) => [source, ...source.split(/[+.#-]/).filter((part) => part.length >= 3)].map((part, partIndex) => ({ value: part.toLocaleLowerCase("en-US"), source: part, index: index + partIndex })));
+}
+
+function meaningfulTokens(value: string): Token[] {
+  return tokenise(value).filter(({ value }) => !ignored.has(value));
+}
+
+function normalizedPhrase(tokens: Token[]): string {
+  return tokens.map(({ value }) => value).join(" ");
+}
+
+function hasActionOverlap(claimTokens: Token[], quoteTokens: Token[]): boolean {
+  const claimActions = actionFamilies.filter((family) => family.some((action) => claimTokens.some(({ value }) => value === action)));
+  if (claimActions.length === 0) return true;
+  const quoteHasAction = actionFamilies.some((family) => family.some((action) => quoteTokens.some(({ value }) => value === action)));
+  return !quoteHasAction || claimActions.some((family) => family.some((action) => quoteTokens.some(({ value }) => value === action)));
+}
+
+function hasNumericOrAcronymAnchor(claimTokens: Token[], quoteTokens: Token[]): boolean {
+  const claimAnchors = claimTokens.filter(({ source }) => /\d/.test(source) || /^[A-Z]{2,}(?:\d+)?$/.test(source));
+  return claimAnchors.some(({ value }) => quoteTokens.some((token) => token.value === value));
+}
+
+export type EvidenceCompatibility = {
+  compatible: boolean;
+  reason: string;
+  sharedAnchors: string[];
+};
+
+/**
+ * Conservative lexical gate only. It rejects obvious mismatches before a
+ * semantic critic sees an edge; it is deliberately not an entailment model.
+ */
+export function evaluateEvidenceCompatibility(exactQuote: string, normalizedClaim: string): EvidenceCompatibility {
+  const claimTokens = meaningfulTokens(normalizedClaim);
+  const quoteTokens = meaningfulTokens(exactQuote);
+  const quoteSet = new Set(quoteTokens.map(({ value }) => value));
+  const sharedAnchors = [...new Set(claimTokens.filter(({ value }) => quoteSet.has(value)).map(({ value }) => value))];
+  if (claimTokens.length === 0 || quoteTokens.length === 0) return { compatible: false, reason: "No meaningful lexical anchors were available.", sharedAnchors };
+  if (!hasActionOverlap(claimTokens, quoteTokens)) return { compatible: false, reason: "The evidence predicate does not match the claim predicate.", sharedAnchors };
+  if (sharedAnchors.length >= 2) return { compatible: true, reason: "Two or more non-generic claim anchors overlap.", sharedAnchors };
+  if (hasNumericOrAcronymAnchor(claimTokens, quoteTokens)) return { compatible: true, reason: "A date, number, or acronym anchor overlaps.", sharedAnchors };
+  const claimPhrase = normalizedPhrase(claimTokens);
+  const quotePhrase = normalizedPhrase(quoteTokens);
+  if (claimPhrase.length >= 12 && (quotePhrase.includes(claimPhrase) || claimPhrase.includes(quotePhrase))) return { compatible: true, reason: "A distinctive phrase overlaps.", sharedAnchors };
+  return { compatible: false, reason: "Only generic or insufficient anchors overlap.", sharedAnchors };
 }
 
 export function evidenceQuoteHasClaimAnchor(exactQuote: string, normalizedClaim: string): boolean {
-  const quoteTokens = new Set(tokens(exactQuote));
-  return tokens(normalizedClaim).some((token) => quoteTokens.has(token));
+  return evaluateEvidenceCompatibility(exactQuote, normalizedClaim).compatible;
+}
+
+export type AuditableEvidence = {
+  id: string;
+  relation: "SUPPORTS" | "CONTRADICTS" | "CONTEXT";
+  claimIds: string[];
+  exactQuote: string;
+};
+
+export type AuditableClaim = { id: string; normalizedClaim: string };
+
+export type RejectedEvidenceEdge = {
+  evidenceId: string;
+  reason: string;
+  claimIds: string[];
+};
+
+export function auditEvidenceEdges(evidence: AuditableEvidence[], claims: AuditableClaim[]): {
+  accepted: AuditableEvidence[];
+  rejected: RejectedEvidenceEdge[];
+} {
+  const claimById = new Map(claims.map((claim) => [claim.id, claim]));
+  const accepted: AuditableEvidence[] = [];
+  const rejected: RejectedEvidenceEdge[] = [];
+  for (const edge of evidence) {
+    const claimIds = [...new Set(edge.claimIds)];
+    const invalidClaim = claimIds.find((claimId) => !claimById.has(claimId));
+    if (invalidClaim) {
+      rejected.push({ evidenceId: edge.id, claimIds, reason: `Evidence references unknown claim ${invalidClaim}.` });
+      continue;
+    }
+    if (edge.relation !== "CONTEXT" && claimIds.length !== 1) {
+      rejected.push({ evidenceId: edge.id, claimIds, reason: `${edge.relation} evidence must reference exactly one claim.` });
+      continue;
+    }
+    if (edge.relation === "CONTEXT") {
+      accepted.push({ ...edge, claimIds });
+      continue;
+    }
+    const claim = claimById.get(claimIds[0]!);
+    const compatibility = evaluateEvidenceCompatibility(edge.exactQuote, claim!.normalizedClaim);
+    if (!compatibility.compatible) {
+      rejected.push({ evidenceId: edge.id, claimIds, reason: compatibility.reason });
+      continue;
+    }
+    accepted.push({ ...edge, claimIds });
+  }
+  return { accepted, rejected };
 }

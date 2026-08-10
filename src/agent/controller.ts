@@ -3,6 +3,8 @@ import type { GlobalEvent, Session } from "@opencode-ai/sdk/v2/client";
 import { z } from "zod";
 
 import { validateAdjudication, validateFindingBatch, validateInvestigationSummary } from "../core/adjudication.ts";
+import { auditEvidenceEdges } from "../core/evidence-fit.ts";
+import { countSourceAuthorities, type AuditStats } from "../core/audit-stats.ts";
 import { getConfig } from "../core/config.ts";
 import type { AdjudicationOutput } from "../core/contracts.ts";
 import { forcedFinalizationAt } from "../core/deadlines.ts";
@@ -27,7 +29,7 @@ import {
   validateCriticBatch,
 } from "./finalization.ts";
 import { extractStructuredOutput, structuredOutputRecovery } from "./structured-output.ts";
-import { researchCompletionAction, researchContinuationAllowed } from "./research-completion.ts";
+import { researchCompletionAction, researchContinuationAllowed, researchProgressFingerprint } from "./research-completion.ts";
 
 const directory = "/workspace/case";
 type ControllerInput = {
@@ -100,10 +102,30 @@ export class OpenCodeInvestigationController {
       }
 
       await reconcileResearchFrontier(input.investigationId, input.runId);
-      const frozen = await buildFrozenEvidenceBundle(input.investigationId, input.runId);
-      const frozenEvidence = frozen.evidence as Array<{ id: string; claimIds: string[] }>;
+      const rawFrozen = await buildFrozenEvidenceBundle(input.investigationId, input.runId);
+      const edgeAudit = auditEvidenceEdges(
+        (rawFrozen.allEvidence ?? rawFrozen.evidence) as Array<{ id: string; relation: "SUPPORTS" | "CONTRADICTS" | "CONTEXT"; claimIds: string[]; exactQuote: string }>,
+        rawFrozen.claims as Array<{ id: string; normalizedClaim: string }>,
+      );
+      for (const rejected of edgeAudit.rejected) {
+        await insertAgentEvent({
+          investigationId: input.investigationId,
+          runId: input.runId,
+          phase: "CRITIC",
+          agent: "gateway",
+          eventType: "EVIDENCE_EDGE_REJECTED",
+          status: "REJECTED",
+          publicRationale: "A deterministic pre-freeze evidence audit excluded an invalid edge from critic and adjudication eligibility while preserving the database row for diagnostics.",
+          payload: rejected,
+        });
+      }
+      const acceptedEdgeIds = new Set(edgeAudit.accepted.map(({ id }) => id));
+      const frozenBundle = rawFrozen as Record<string, unknown>;
+      const frozen: Record<string, unknown> = { ...frozenBundle, evidence: (frozenBundle.evidence as Array<{ id: string }>).filter(({ id }) => acceptedEdgeIds.has(id)) };
+      const frozenEvidence = frozen.evidence as Array<{ id: string; relation: "SUPPORTS" | "CONTRADICTS" | "CONTEXT"; claimIds: string[] }>;
       const allEvidenceIds = new Set(frozenEvidence.map(({ id }) => id));
-      const frozenClaims = frozen.claims as Array<{ id: string }>;
+      const frozenClaims = frozen.claims as Array<{ id: string; facets: Array<{ key: string; label: string; materiality: "HIGH" | "MEDIUM" | "LOW" }> }>;
+      const claimFacets = new Map(frozenClaims.map(({ id, facets }) => [id, facets]));
       const knownClaimIds = new Set(frozenClaims.map(({ id }) => id));
       const criticClaimBatches = partitionClaims(frozenClaims, 20);
       const criticOutputs = await mapWithConcurrency(criticClaimBatches, 2, async (batch, index) => {
@@ -135,8 +157,38 @@ export class OpenCodeInvestigationController {
       const adjudicationBundle = buildAdjudicationBundle(frozen, acceptedEvidenceIds, criticOutput);
 
       const evidenceClaimIds = new Map(frozenEvidence.map(({ id, claimIds }) => [id, new Set(claimIds)]));
+      const evidenceRelations = new Map(frozenEvidence.map(({ id, relation }) => [id, relation]));
       const claims = (adjudicationBundle.claims as Array<{ id: string }>);
       const claimBatches = partitionClaims(claims);
+      const [auditCountRows, authorityRows] = await Promise.all([
+        getSql()<Array<{ totalClaims: number; totalEvidenceRows: number; researchQuestionCount: number }>>`
+          SELECT
+            (SELECT count(*)::integer FROM claims WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}) AS "totalClaims",
+            (SELECT count(*)::integer FROM evidence WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}) AS "totalEvidenceRows",
+            (SELECT count(*)::integer FROM research_questions WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}) AS "researchQuestionCount"
+        `,
+        getSql()<Array<{ sourceAuthority: string | null; sourceTier: string | null }>>`
+          SELECT COALESCE(artifact.source_authority, evidence.source_tier, 'CONTEXT') AS "sourceAuthority", evidence.source_tier AS "sourceTier"
+          FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id
+          WHERE evidence.investigation_id = ${input.investigationId} AND evidence.run_id = ${input.runId}
+          ORDER BY evidence.created_at, evidence.id
+        `,
+      ]);
+      const countRow = auditCountRows[0];
+      const extractionLimitations = Array.isArray(rawFrozen.extractionLimitations) ? rawFrozen.extractionLimitations : [];
+      const capabilityLimitations = [...new Set(extractionLimitations.flatMap((value) => value && typeof value === "object" && typeof (value as { publicRationale?: unknown }).publicRationale === "string" ? [String((value as { publicRationale: string }).publicRationale)] : []))];
+      const auditStats: AuditStats = {
+        totalClaims: countRow?.totalClaims ?? claims.length,
+        totalEvidenceRows: countRow?.totalEvidenceRows ?? allEvidenceIds.size,
+        selectedEvidenceRows: acceptedEvidenceIds.size,
+        researchQuestionCount: countRow?.researchQuestionCount ?? 0,
+        criticPacketCount: criticClaimBatches.length,
+        claimsProcessed: claims.length,
+        extractionTruncated: extractionLimitations.length > 0,
+        evidenceEdgesRejected: edgeAudit.rejected.length,
+        sourceAuthorityCounts: countSourceAuthorities(authorityRows),
+        capabilityLimitations,
+      };
       const batchSessionIds = new Array<string>(claimBatches.length);
       const findingBatches = await mapWithConcurrency(claimBatches, 2, async (batch, index) => {
         const claimIds = batch.map(({ id }) => id);
@@ -149,10 +201,16 @@ export class OpenCodeInvestigationController {
             explanation: "The eligible evidence is insufficient to resolve this claim.",
             supportingEvidenceIds: [],
             contradictingEvidenceIds: [],
+            facetNotes: (claimFacets.get(claimId) ?? []).map((facet) => ({
+              facetKey: facet.key,
+              status: "UNRESOLVED",
+              note: `No eligible evidence resolved the ${facet.label} facet.`,
+              evidenceIds: [],
+            })),
             limitations: ["Only evidence in this claim packet may be cited."],
           })),
         };
-        const batchPrompt = `Adjudicate exactly these ${claimIds.length} claim packets. For each claim, cite only evidence IDs in that same packet's eligibleEvidenceIds. Evidence listed for another claim is ineligible even when its quote appears relevant. If the eligible evidence does not establish the claim, return UNRESOLVED with empty citation arrays. Return only the focused findings object.\n${JSON.stringify(batchBundle)}`;
+        const batchPrompt = `Adjudicate exactly these ${claimIds.length} claim packets. Each claim already declares its facets; do not invent, merge, or omit facets. Return exactly one facetNote for every declared facet. Cite only evidence IDs in that same packet's eligibleEvidenceIds. Evidence listed for another claim is ineligible even when its quote appears relevant. A SUPPORTED facet must cite supporting evidence, a CONTRADICTED facet must cite contradicting evidence, and an UNRESOLVED facet must cite nothing. Apply the deterministic overall verdict implied by the facet statuses, with HIGH/MEDIUM contradiction taking precedence over partial support. If the eligible evidence does not establish a facet, return UNRESOLVED. Return only the focused findings object.\n${JSON.stringify(batchBundle)}`;
         try {
           const adjudication = await this.promptStructured({
             client,
@@ -167,7 +225,7 @@ export class OpenCodeInvestigationController {
           });
           batchSessionIds[index] = adjudication.sessionId;
           try {
-            return validateFindingBatch(adjudication.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds);
+            return validateFindingBatch(adjudication.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations);
           } catch (validationError) {
             const validationMessage = validationError instanceof Error ? validationError.message : String(validationError);
             await insertAgentEvent({
@@ -193,7 +251,7 @@ export class OpenCodeInvestigationController {
               jsonExample: batchJsonExample,
             });
             batchSessionIds[index] = correction.sessionId;
-            return validateFindingBatch(correction.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds);
+            return validateFindingBatch(correction.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations);
           }
         } catch (error) {
           throw new Error(`Adjudication batch ${index + 1}/${claimBatches.length} failed on ${getConfig().finalizerOpenCodeProvider}: ${error instanceof Error ? error.message : String(error)}`);
@@ -207,7 +265,7 @@ export class OpenCodeInvestigationController {
         title: "Fresh investigation summary",
         agent: "fresh-adjudicator",
         phase: "ADJUDICATION",
-        prompt: `Summarize only the validated findings, accepted evidence, entity resolution, observations and stated capability limitations. Return the focused non-ranking summary object.\n${JSON.stringify(buildSummaryBundle(adjudicationBundle, findings))}`,
+        prompt: `Summarize only the validated findings, accepted evidence, entity resolution, observations and stated capability limitations. Backend audit statistics below are authoritative; do not infer or restate counts that are not present. Treat CONTEXT as conservative unknown authority, not self-representation. Return the focused non-ranking summary object.\n${JSON.stringify(buildSummaryBundle(adjudicationBundle, findings, auditStats))}`,
         schema: summaryOutputSchema,
         jsonExample: {
           summary: {
@@ -221,9 +279,12 @@ export class OpenCodeInvestigationController {
           },
         },
       });
-      const summary = validateInvestigationSummary(summaryResult.value.summary, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds);
-      await getSql()`UPDATE runs SET opencode_adjudicator_session_id = ${summaryResult.sessionId}, runtime_handle = COALESCE(runtime_handle, '{}'::jsonb) || ${getSql().json({ finalization: { provider: getConfig().finalizerOpenCodeProvider, batchSessionIds, summarySessionId: summaryResult.sessionId } })}::jsonb, updated_at = now() WHERE id = ${input.runId}`;
-      const output = validateAdjudication({ summary, findings }, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds);
+      let summary = validateInvestigationSummary(summaryResult.value.summary, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds, auditStats.sourceAuthorityCounts);
+      if ((auditStats.sourceAuthorityCounts.CONTEXT ?? 0) > 0 && !summary.investigationLimitations.some((limitation) => limitation.includes("conservatively classified as CONTEXT"))) {
+        summary = { ...summary, investigationLimitations: [...summary.investigationLimitations.slice(0, 99), "Some captured sources remain conservatively classified as CONTEXT because the backend does not deterministically recognize their authority."] };
+      }
+      await getSql()`UPDATE runs SET opencode_adjudicator_session_id = ${summaryResult.sessionId}, runtime_handle = COALESCE(runtime_handle, '{}'::jsonb) || ${getSql().json({ finalization: { provider: getConfig().finalizerOpenCodeProvider, batchSessionIds, summarySessionId: summaryResult.sessionId, auditStats } })}::jsonb, updated_at = now() WHERE id = ${input.runId}`;
+      const output = validateAdjudication({ summary, findings }, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds, claimFacets, evidenceRelations, auditStats.sourceAuthorityCounts);
       await this.persistAdjudication(input.investigationId, input.runId, output);
       return output;
     } finally {
@@ -396,6 +457,12 @@ export class OpenCodeInvestigationController {
     let continuationPending = false;
     let emptyFrontierContinuationUsed = false;
     let continuationCount = 0;
+    let progressState: { fingerprint?: string; unchangedCheckpointCount?: number; fingerprintVersion?: number } = {};
+    const [savedProgress] = await getSql()<Array<{ progress: { fingerprint?: string; unchangedCheckpointCount?: number; fingerprintVersion?: number } | null }>>`
+      SELECT COALESCE(runtime_handle->'researchProgress', '{}'::jsonb) AS progress
+      FROM runs WHERE id = ${input.runId} AND investigation_id = ${input.investigationId}
+    `;
+    progressState = savedProgress?.progress ?? {};
     const startedAt = Date.now();
     while (Date.now() < phaseDeadline.getTime()) {
       if (input.signal.aborted) throw new DOMException("Investigation aborted", "AbortError");
@@ -412,21 +479,6 @@ export class OpenCodeInvestigationController {
         WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}
       `;
       const activeCount = frontier?.activeCount ?? 0;
-      if (!researchContinuationAllowed({ continuationCount, activeQuestionCount: activeCount, durableProgress: true }) && activeCount > 0) {
-        await client.session.abort({ sessionID: sessionId, directory }).catch(() => undefined);
-        await insertAgentEvent({
-          investigationId: input.investigationId,
-          runId: input.runId,
-          phase: "RESEARCH",
-          agent: "runner",
-          sessionId,
-          eventType: "RESEARCH_CONTINUATION_EXHAUSTED",
-          status: "COMPLETED",
-          publicRationale: "The lead remained active after one bounded continuation; its session was stopped and the durable frontier will be reconciled before critic review.",
-          payload: { activeQuestionCount: activeCount, continuationCount },
-        });
-        return true;
-      }
       const action = researchCompletionAction({
         totalQuestionCount: frontier?.totalCount ?? 0,
         activeQuestionCount: activeCount,
@@ -475,7 +527,50 @@ export class OpenCodeInvestigationController {
         payload: { activeQuestionCount: activeCount, emptyFrontier },
       });
       if (emptyFrontier) emptyFrontierContinuationUsed = true;
-      else continuationCount += 1;
+      else {
+        const [questionStates, counts, runState] = await Promise.all([
+          getSql()<Array<{ id: string; status: string }>>`SELECT id, status FROM research_questions WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId} ORDER BY id`,
+          getSql()<Array<{ evidenceCount: number; observationCount: number; successfulProviderCallCount: number }>>`
+            SELECT
+              (SELECT count(*)::integer FROM evidence WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}) AS "evidenceCount",
+              (SELECT count(*)::integer FROM observations WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}) AS "observationCount",
+              (SELECT count(*)::integer FROM provider_calls WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId} AND result_status = 'OK') AS "successfulProviderCallCount"
+          `,
+          getSql()<Array<{ researchWave: number }>>`SELECT research_wave_count AS "researchWave" FROM runs WHERE id = ${input.runId} AND investigation_id = ${input.investigationId}`,
+        ]);
+        const countsRow = counts[0];
+        const fingerprint = researchProgressFingerprint({
+          questionStates,
+          evidenceCount: countsRow?.evidenceCount ?? 0,
+          observationCount: countsRow?.observationCount ?? 0,
+          successfulProviderCallCount: countsRow?.successfulProviderCallCount ?? 0,
+          researchWave: runState[0]?.researchWave ?? 0,
+          fingerprintVersion: 1,
+        });
+        continuationCount = progressState.fingerprint === fingerprint ? (progressState.unchangedCheckpointCount ?? 0) + 1 : 0;
+        progressState = { fingerprint, unchangedCheckpointCount: continuationCount, fingerprintVersion: 1 };
+        await getSql()`
+          UPDATE runs
+          SET runtime_handle = COALESCE(runtime_handle, '{}'::jsonb) || ${getSql().json({ researchProgress: progressState })}::jsonb,
+              updated_at = now()
+          WHERE id = ${input.runId} AND investigation_id = ${input.investigationId}
+        `;
+        if (!researchContinuationAllowed({ continuationCount, activeQuestionCount: activeCount, durableProgress: continuationCount === 0, unchangedCheckpointCount: continuationCount })) {
+          await client.session.abort({ sessionID: sessionId, directory }).catch(() => undefined);
+          await insertAgentEvent({
+            investigationId: input.investigationId,
+            runId: input.runId,
+            phase: "RESEARCH",
+            agent: "runner",
+            sessionId,
+            eventType: "RESEARCH_STALLED",
+            status: "COMPLETED",
+            publicRationale: "The durable research fingerprint remained unchanged through two continuation checkpoints; research stopped and the saved frontier will be reconciled before finalization.",
+            payload: { activeQuestionCount: activeCount, unchangedCheckpointCount: continuationCount, fingerprintVersion: 1 },
+          });
+          return true;
+        }
+      }
       await client.session.promptAsync({
         sessionID: sessionId,
         directory,
@@ -514,12 +609,14 @@ export class OpenCodeInvestigationController {
         await transaction`
           INSERT INTO findings (
             investigation_id, run_id, claim_id, verdict, strength, explanation,
-            supporting_evidence_ids, contradicting_evidence_ids, limitations
+            supporting_evidence_ids, contradicting_evidence_ids, limitations,
+            facet_notes
           ) VALUES (
             ${investigationId}, ${runId}, ${finding.claimId}, ${finding.verdict},
             ${finding.strength}, ${finding.explanation},
             ${finding.supportingEvidenceIds}::uuid[],
-            ${finding.contradictingEvidenceIds}::uuid[], ${finding.limitations}
+            ${finding.contradictingEvidenceIds}::uuid[], ${finding.limitations},
+            ${transaction.json(JSON.parse(JSON.stringify(finding.facetNotes)))}
           )
         `;
       }

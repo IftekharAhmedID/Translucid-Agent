@@ -26,6 +26,7 @@ const baseOutput: AdjudicationOutput = {
       explanation: "Two independent sources support the association.",
       supportingEvidenceIds: ["ev-1", "ev-2"],
       contradictingEvidenceIds: [],
+      facetNotes: [{ facetKey: "claim", status: "SUPPORTED", note: "The association is supported.", evidenceIds: ["ev-1", "ev-2"] }],
       limitations: [],
     },
     {
@@ -35,6 +36,7 @@ const baseOutput: AdjudicationOutput = {
       explanation: "No contemporaneous title source was available.",
       supportingEvidenceIds: [],
       contradictingEvidenceIds: [],
+      facetNotes: [{ facetKey: "claim", status: "UNRESOLVED", note: "No evidence was available.", evidenceIds: [] }],
       limitations: ["The available routes were exhausted."],
     },
   ],
@@ -86,5 +88,88 @@ test("non-unresolved findings require evidence linked to that claim", () => {
   assert.throws(
     () => validateAdjudication(baseOutput, new Set(["ev-1", "ev-2"]), new Set(["claim-1", "claim-2"]), unrelated),
     /not linked to claim claim-1/i,
+  );
+});
+
+test("facet verdicts deterministically produce partial corroboration", () => {
+  const output = structuredClone(baseOutput);
+  output.findings[0] = {
+    ...output.findings[0]!,
+    verdict: "PARTIALLY_CORROBORATED",
+    facetNotes: [
+      { facetKey: "title", status: "SUPPORTED", note: "Title supported.", evidenceIds: ["ev-1"] },
+      { facetKey: "tenure", status: "UNRESOLVED", note: "Dates unresolved.", evidenceIds: [] },
+    ],
+  };
+  const claimFacets = new Map([
+    ["claim-1", [
+      { key: "title", label: "Staff Software Engineer", materiality: "HIGH" as const },
+      { key: "tenure", label: "2013–2017", materiality: "HIGH" as const },
+    ]],
+    ["claim-2", [{ key: "claim", label: "Claim", materiality: "LOW" as const }]],
+  ]);
+  const evidenceClaims = new Map([["ev-1", new Set(["claim-1"])], ["ev-2", new Set(["claim-1"])]]);
+  assert.doesNotThrow(() => validateAdjudication(output, new Set(["ev-1", "ev-2"]), new Set(["claim-1", "claim-2"]), evidenceClaims, claimFacets));
+});
+
+test("materially contradicted facets take precedence over partial support", () => {
+  const output = structuredClone(baseOutput);
+  output.findings[0] = {
+    ...output.findings[0]!,
+    verdict: "CONTRADICTED",
+    supportingEvidenceIds: ["ev-1"],
+    contradictingEvidenceIds: ["ev-2"],
+    facetNotes: [
+      { facetKey: "title", status: "SUPPORTED", note: "Title supported.", evidenceIds: ["ev-1"] },
+      { facetKey: "tenure", status: "CONTRADICTED", note: "Dates conflict.", evidenceIds: ["ev-2"] },
+    ],
+  };
+  const claimFacets = new Map([
+    ["claim-1", [
+      { key: "title", label: "Title", materiality: "HIGH" as const },
+      { key: "tenure", label: "Dates", materiality: "HIGH" as const },
+    ]],
+    ["claim-2", [{ key: "claim", label: "Claim", materiality: "LOW" as const }]],
+  ]);
+  const evidenceClaims = new Map([["ev-1", new Set(["claim-1"])], ["ev-2", new Set(["claim-1"])]]);
+  assert.doesNotThrow(() => validateAdjudication(output, new Set(["ev-1", "ev-2"]), new Set(["claim-1", "claim-2"]), evidenceClaims, claimFacets));
+});
+
+test("facet notes must cover declared facets and use matching evidence relations", () => {
+  const output = structuredClone(baseOutput);
+  output.findings[0] = {
+    ...output.findings[0]!,
+    facetNotes: [{ facetKey: "unknown", status: "SUPPORTED", note: "Wrong facet.", evidenceIds: ["ev-1"] }],
+  };
+  const claimFacets = new Map([
+    ["claim-1", [{ key: "title", label: "Title", materiality: "HIGH" as const }]],
+    ["claim-2", [{ key: "claim", label: "Claim", materiality: "LOW" as const }]],
+  ]);
+  assert.throws(
+    () => validateAdjudication(output, new Set(["ev-1", "ev-2"]), new Set(["claim-1", "claim-2"]), undefined, claimFacets),
+    /unknown facet/i,
+  );
+});
+
+test("supported facets require evidence and unresolved findings cannot cite edges", () => {
+  const claimFacets = new Map([
+    ["claim-1", [{ key: "title", label: "Title", materiality: "HIGH" as const }]],
+    ["claim-2", [{ key: "claim", label: "Claim", materiality: "LOW" as const }]],
+  ]);
+  const unsupported = structuredClone(baseOutput);
+  unsupported.findings[0] = { ...unsupported.findings[0]!, verdict: "CORROBORATED", supportingEvidenceIds: [], facetNotes: [{ facetKey: "title", status: "SUPPORTED", note: "No citation.", evidenceIds: [] }] };
+  assert.throws(() => validateAdjudication(unsupported, new Set(["ev-1", "ev-2"]), new Set(["claim-1", "claim-2"]), undefined, claimFacets), /without matching evidence/i);
+  const unresolved = structuredClone(baseOutput);
+  unresolved.findings[0] = { ...unresolved.findings[0]!, supportingEvidenceIds: ["ev-1"], facetNotes: [{ facetKey: "title", status: "SUPPORTED", note: "Title supported.", evidenceIds: ["ev-1"] }] };
+  unresolved.findings[1] = { ...unresolved.findings[1]!, supportingEvidenceIds: ["ev-1"] };
+  assert.throws(() => validateAdjudication(unresolved, new Set(["ev-1", "ev-2"]), new Set(["claim-1", "claim-2"]), undefined, claimFacets), /unresolved but cites/i);
+});
+
+test("context authority cannot be described as universal self-representation", () => {
+  const output = structuredClone(baseOutput);
+  output.summary.professionalTimelineSummary = "All captured evidence is self-representational.";
+  assert.throws(
+    () => validateAdjudication(output, new Set(["ev-1", "ev-2"]), new Set(["claim-1", "claim-2"]), undefined, undefined, undefined, { CONTEXT: 2, SELF_REPRESENTATION: 1 }),
+    /overstates source authority/i,
   );
 });

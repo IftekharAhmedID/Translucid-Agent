@@ -63,13 +63,13 @@ export function buildAdjudicationBundle(
   return {
     investigationId: frozen.investigationId,
     runId: frozen.runId,
-    claims: rows(frozen, "claims").map(({ id, category, normalizedClaim, materiality, validFrom, validTo, status }) => ({ id, category, normalizedClaim, materiality, validFrom, validTo, status })),
+    claims: rows(frozen, "claims").map(({ id, category, normalizedClaim, materiality, facets, validFrom, validTo, status }) => ({ id, category, normalizedClaim, materiality, facets, validFrom, validTo, status })),
     entities: rows(frozen, "entities").map(({ id, type, canonicalName }) => ({ id, type, canonicalName })),
     identifiers: rows(frozen, "identifiers").filter(({ evidenceId }) => typeof evidenceId === "string" && acceptedEvidenceIds.has(evidenceId)),
     links: rows(frozen, "links").filter(({ evidenceIds }) => Array.isArray(evidenceIds) && evidenceIds.some((id) => typeof id === "string" && acceptedEvidenceIds.has(id))),
     artifacts: rows(frozen, "artifacts")
       .filter(({ id }) => typeof id === "string" && artifactIds.has(id))
-      .map(({ id, kind, provider, sourceUrl, retrievedAt, sha256 }) => ({ id, kind, provider, sourceUrl, retrievedAt, sha256 })),
+      .map(({ id, kind, provider, sourceUrl, retrievedAt, sha256, sourceAuthority, independenceGroup }) => ({ id, kind, provider, sourceUrl, retrievedAt, sha256, sourceAuthority, independenceGroup })),
     observations: rows(frozen, "observations").filter(({ artifactId }) => typeof artifactId === "string" && artifactIds.has(artifactId)),
     evidence,
     researchQuestions: rows(frozen, "researchQuestions").map(({ id, claimIds, question, priority, status, selectedRoute, resolutionSummary }) => ({ id, claimIds, question, priority, status, selectedRoute, resolutionSummary })),
@@ -86,7 +86,7 @@ export function buildAdjudicationBundle(
 export async function buildFrozenEvidenceBundle(investigationId: string, runId: string): Promise<Record<string, unknown>> {
   const sql = getSql();
   const [claims, entities, identifiers, links, artifacts, observations, evidence, questions, extractionLimitations] = await Promise.all([
-    sql`SELECT id, category, normalized_claim AS "normalizedClaim", materiality, source_span AS "sourceSpan", valid_from AS "validFrom", valid_to AS "validTo", status FROM claims WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at`,
+    sql`SELECT id, category, normalized_claim AS "normalizedClaim", materiality, facets, source_span AS "sourceSpan", valid_from AS "validFrom", valid_to AS "validTo", status FROM claims WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at`,
     sql`SELECT id, type, canonical_name AS "canonicalName", metadata FROM entities WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at`,
     sql`SELECT id, entity_id AS "entityId", type, value, normalized_value AS "normalizedValue", confidence, evidence_id AS "evidenceId" FROM entity_identifiers WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at`,
     sql`SELECT id, from_entity_id AS "fromEntityId", to_entity_id AS "toEntityId", relationship, confidence, evidence_ids AS "evidenceIds" FROM entity_links WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at`,
@@ -109,6 +109,7 @@ export async function buildFrozenEvidenceBundle(investigationId: string, runId: 
     artifacts: [...artifacts].filter(({ id }) => artifactIds.has(String(id))),
     observations: [...observations].filter(({ artifactId }) => artifactIds.has(String(artifactId))),
     evidence: selectedEvidence,
+    allEvidence: [...evidence],
     researchQuestions: [...questions],
     extractionLimitations: [...extractionLimitations],
     evidenceSelection: { originalCount: evidence.length, selectedCount: selectedEvidence.length, supportsPerClaim: 4, contradictionsPerClaim: 2, contextPerClaim: 1 },

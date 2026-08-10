@@ -11,6 +11,10 @@ type CompactionPayload = {
   attemptedProviderRoutes: unknown[];
   knownDeadEnds: unknown[];
   strongestEvidence: unknown[];
+  claims?: unknown[];
+  evidenceIds?: unknown[];
+  artifactIds?: unknown[];
+  progressFingerprint?: string | null;
   deadlineAt: string | null;
   budgetCounters: Record<string, number>;
 };
@@ -27,7 +31,7 @@ export function serializeCompactionPayload(payload: CompactionPayload): string {
   let text = JSON.stringify(normalized);
   if (Buffer.byteLength(text) <= MAX_COMPACTION_BYTES) return text;
   const minimal = { ...normalized, truncated: true } as Record<string, unknown>;
-  const pruneOrder = ["attemptedProviderRoutes", "resolvedIdentifiers", "entityLinks", "rejectedIdentityAttempts", "strongestEvidence"];
+  const pruneOrder = ["attemptedProviderRoutes", "resolvedIdentifiers", "entityLinks", "rejectedIdentityAttempts", "strongestEvidence", "evidenceIds", "artifactIds"];
   for (const key of pruneOrder) {
     while (Buffer.byteLength(JSON.stringify(minimal)) > MAX_COMPACTION_BYTES && Array.isArray(minimal[key]) && (minimal[key] as unknown[]).length > 1) {
       (minimal[key] as unknown[]).pop();
@@ -40,14 +44,17 @@ export function serializeCompactionPayload(payload: CompactionPayload): string {
 
 export async function buildCompactionContext(investigationId: string, runId: string): Promise<string> {
   const sql = getSql();
-  const [runs, identifiers, links, rejected, questions, providerCalls, evidence] = await Promise.all([
+  const [runs, identifiers, links, rejected, questions, providerCalls, evidence, claims, artifacts, progress] = await Promise.all([
     sql<Array<{ rootEntityId: string | null; deadlineAt: Date | null; budgetCounters: Record<string, number> }>>`SELECT root_entity_id AS "rootEntityId", deadline_at AS "deadlineAt", budget_counters AS "budgetCounters" FROM runs WHERE id = ${runId} AND investigation_id = ${investigationId}`,
     sql`SELECT id, entity_id AS "entityId", type, normalized_value AS "normalizedValue", confidence, evidence_id AS "evidenceId" FROM entity_identifiers WHERE run_id = ${runId} ORDER BY confidence DESC, created_at LIMIT 60`,
     sql`SELECT id, from_entity_id AS "fromEntityId", to_entity_id AS "toEntityId", relationship, evidence_ids AS "evidenceIds" FROM entity_links WHERE run_id = ${runId} ORDER BY created_at LIMIT 40`,
     sql`SELECT id, payload FROM agent_events WHERE run_id = ${runId} AND event_type = 'IDENTITY_LINK_REJECTED' ORDER BY id DESC LIMIT 20`,
     sql`SELECT id, claim_ids AS "claimIds", status, selected_route AS "selectedRoute", left(COALESCE(resolution_summary, ''), 500) AS "resolutionSummary" FROM research_questions WHERE run_id = ${runId} ORDER BY created_at LIMIT 12`,
-    sql`SELECT provider_route AS "providerRoute", request_fingerprint AS "requestFingerprint", result_status AS "resultStatus" FROM provider_calls WHERE run_id = ${runId} AND provider_route IS NOT NULL ORDER BY created_at DESC LIMIT 120`,
-    sql`SELECT evidence.id, evidence.relation, evidence.claim_ids AS "claimIds", COALESCE(artifact.source_authority, 'CONTEXT') AS authority FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id WHERE evidence.run_id = ${runId} AND evidence.relation IN ('SUPPORTS','CONTRADICTS') ORDER BY CASE COALESCE(artifact.source_authority, 'CONTEXT') WHEN 'DIRECT_WORK' THEN 1 WHEN 'FIRST_PARTY_INSTITUTIONAL' THEN 2 WHEN 'INDEPENDENT_PROFESSIONAL' THEN 3 WHEN 'SELF_REPRESENTATION' THEN 4 ELSE 5 END, evidence.created_at LIMIT 40`,
+    sql`SELECT provider_route AS "providerRoute", request_fingerprint AS "requestFingerprint", result_status AS "resultStatus", artifact_ids AS "artifactIds" FROM provider_calls WHERE run_id = ${runId} AND provider_route IS NOT NULL ORDER BY created_at DESC LIMIT 120`,
+    sql`SELECT evidence.id, evidence.artifact_id AS "artifactId", evidence.relation, evidence.claim_ids AS "claimIds", COALESCE(artifact.source_authority, 'CONTEXT') AS authority FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id WHERE evidence.run_id = ${runId} ORDER BY CASE COALESCE(artifact.source_authority, 'CONTEXT') WHEN 'DIRECT_WORK' THEN 1 WHEN 'FIRST_PARTY_INSTITUTIONAL' THEN 2 WHEN 'INDEPENDENT_PROFESSIONAL' THEN 3 WHEN 'SELF_REPRESENTATION' THEN 4 ELSE 5 END, evidence.created_at LIMIT 80`,
+    sql`SELECT id, normalized_claim AS "normalizedClaim", facets, category, materiality, valid_from AS "validFrom", valid_to AS "validTo" FROM claims WHERE run_id = ${runId} ORDER BY created_at LIMIT 60`,
+    sql`SELECT id, kind, source_url AS "sourceUrl", source_authority AS "sourceAuthority", independence_group AS "independenceGroup" FROM artifacts WHERE run_id = ${runId} ORDER BY created_at LIMIT 120`,
+    sql<Array<{ progressFingerprint: string | null }>>`SELECT runtime_handle->'researchProgress'->>'fingerprint' AS "progressFingerprint" FROM runs WHERE id = ${runId} AND investigation_id = ${investigationId}`,
   ]);
   const run = runs[0];
   if (!run) throw new Error("Run not found while building compaction context.");
@@ -61,6 +68,10 @@ export async function buildCompactionContext(investigationId: string, runId: str
     attemptedProviderRoutes: [...providerCalls],
     knownDeadEnds: questionRows.filter(({ status }) => status === "EXHAUSTED" || status === "SKIPPED").map(({ id, claimIds, selectedRoute, resolutionSummary }) => ({ id, claimIds, selectedRoute, resolutionSummary })),
     strongestEvidence: [...evidence],
+    claims: [...claims],
+    evidenceIds: [...evidence].map(({ id, artifactId, relation, claimIds }) => ({ id, artifactId, relation, claimIds })),
+    artifactIds: [...artifacts],
+    progressFingerprint: progress[0]?.progressFingerprint ?? null,
     deadlineAt: run.deadlineAt?.toISOString() ?? null,
     budgetCounters: run.budgetCounters,
   };

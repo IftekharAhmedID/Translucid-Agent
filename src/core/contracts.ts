@@ -1,5 +1,26 @@
 import { z } from "zod";
 
+export const claimFacetSchema = z.object({
+  key: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
+  label: z.string().min(1).max(300),
+  materiality: z.enum(["HIGH", "MEDIUM", "LOW"]),
+}).strict();
+
+export const claimFacetsSchema = z.array(claimFacetSchema).min(1).max(12).superRefine((facets, context) => {
+  const keys = new Set<string>();
+  for (const facet of facets) {
+    if (keys.has(facet.key)) context.addIssue({ code: "custom", message: `Duplicate claim facet key ${facet.key}.` });
+    keys.add(facet.key);
+  }
+});
+
+export const facetNoteSchema = z.object({
+  facetKey: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
+  status: z.enum(["SUPPORTED", "CONTRADICTED", "UNRESOLVED"]),
+  note: z.string().min(1).max(2_000),
+  evidenceIds: z.array(z.string().min(1)).max(100),
+}).strict();
+
 export const investigationStatusSchema = z.enum([
   "QUEUED",
   "RUNNING",
@@ -75,6 +96,7 @@ export const findingOutputSchema = z
     explanation: z.string().min(1).max(8_000),
     supportingEvidenceIds: z.array(z.string().min(1)).max(100),
     contradictingEvidenceIds: z.array(z.string().min(1)).max(100),
+    facetNotes: z.array(facetNoteSchema).max(12),
     limitations: z.array(z.string().min(1).max(2_000)).max(100),
   })
   .strict();
@@ -95,6 +117,8 @@ export type ClaimVerdict = z.infer<typeof claimVerdictSchema>;
 export type InvestigationSummary = z.infer<typeof investigationSummarySchema>;
 export type FindingOutput = z.infer<typeof findingOutputSchema>;
 export type AdjudicationOutput = z.infer<typeof adjudicationOutputSchema>;
+export type ClaimFacet = z.infer<typeof claimFacetSchema>;
+export type FacetNote = z.infer<typeof facetNoteSchema>;
 export type ResearchWaveKind = "INITIAL" | "TARGETED";
 export type EscalationReason =
   | "MATERIAL_CONTRADICTION"

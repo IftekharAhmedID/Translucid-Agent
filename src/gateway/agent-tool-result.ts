@@ -1,9 +1,12 @@
 import type { ToolResult } from "../providers/contracts.ts";
 import { redactSecrets } from "../providers/http.ts";
 
-const MAX_AGENT_TOOL_RESULT_BYTES = 24 * 1024;
-const MAX_EXCERPT_CHARACTERS = 6_000;
-const MAX_TOTAL_EXCERPT_CHARACTERS = 14_000;
+export const MAX_AGENT_TOOL_RESULT_BYTES = 512 * 1024;
+export const MAX_TOTAL_EXCERPT_CHARACTERS = 300_000;
+export const MAX_EXCERPT_CHARACTERS = 80_000;
+const DEFAULT_AGENT_TOOL_RESULT_BYTES = 128 * 1024;
+const DEFAULT_EXCERPT_CHARACTERS = 60_000;
+const DEFAULT_SINGLE_EXCERPT_CHARACTERS = 20_000;
 
 type Excerpt = { path: string; text: string };
 
@@ -25,7 +28,7 @@ function collectExcerpts(value: unknown, path: string, excerpts: Excerpt[], rema
   if (remaining.characters <= 0 || depth > 8 || value === null || value === undefined) return;
   if (typeof value === "string") {
     if (!value.trim()) return;
-    const limit = Math.min(MAX_EXCERPT_CHARACTERS, remaining.characters);
+    const limit = Math.min(DEFAULT_SINGLE_EXCERPT_CHARACTERS, remaining.characters);
     const text = value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 24))}\n...[preview truncated]`;
     excerpts.push({ path, text });
     remaining.characters -= text.length;
@@ -53,13 +56,13 @@ function collectExcerpts(value: unknown, path: string, excerpts: Excerpt[], rema
 
 export function compactToolResultForAgent(result: ToolResult): AgentToolResult {
   const { data, ...metadata } = result;
-  const instruction = "Artifact IDs above are complete. Use them immediately. Never refetch or read OpenCode tool-output files to recover an artifact ID; if a required excerpt is unavailable, record the limitation and move to the next independent question.";
+  const instruction = "Artifact IDs above are complete. Use them immediately. Never refetch or read OpenCode tool-output files to recover an artifact ID. If the preview omits a field, use artifact.excerpts with the artifact ID to search the immutable stored response before recording a limitation; move to the next independent question only after that local search fails.";
   const sanitizedData = data === undefined ? undefined : redactSecrets(data);
   const complete: AgentToolResult = { ...metadata, data: sanitizedData, dataTruncated: false, instruction };
-  if (Buffer.byteLength(JSON.stringify(complete)) <= MAX_AGENT_TOOL_RESULT_BYTES) return complete;
+  if (Buffer.byteLength(JSON.stringify(complete)) <= DEFAULT_AGENT_TOOL_RESULT_BYTES) return complete;
 
   const excerpts: Excerpt[] = [];
-  collectExcerpts(sanitizedData, "data", excerpts, { characters: MAX_TOTAL_EXCERPT_CHARACTERS });
+  collectExcerpts(sanitizedData, "data", excerpts, { characters: DEFAULT_EXCERPT_CHARACTERS });
   const compact: AgentToolResult = {
     ...metadata,
     data: { excerpts, notice: "The immutable full provider response is stored in PostgreSQL; this is a bounded agent preview." },

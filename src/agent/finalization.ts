@@ -139,7 +139,7 @@ export function buildFindingBatchBundle(bundle: Record<string, unknown>, claimId
   };
 }
 
-export function buildSummaryBundle(bundle: Record<string, unknown>, findings: FindingOutput[]) {
+export function buildSummaryBundle(bundle: Record<string, unknown>, findings: FindingOutput[], auditStats?: unknown) {
   const critic = bundle.critic && typeof bundle.critic === "object" ? bundle.critic as Row : {};
   return {
     validatedFindings: findings,
@@ -150,6 +150,7 @@ export function buildSummaryBundle(bundle: Record<string, unknown>, findings: Fi
       links: rows(bundle, "links"),
     },
     observations: rows(bundle, "observations"),
+    auditStats,
     capabilityLimitations: [
       ...(Array.isArray(critic.limitations) ? critic.limitations : []),
       ...rows(bundle, "extractionLimitations").flatMap(({ publicRationale }) => typeof publicRationale === "string" ? [publicRationale] : []),

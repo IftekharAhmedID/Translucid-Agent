@@ -47,6 +47,17 @@ export async function generateInvestigationReport(investigationId: string): Prom
     if (limitations?.length) { document.font("Helvetica-Bold").fontSize(10).text("Limitations"); limitations.forEach(bullet); }
   } else paragraph("Final adjudication is not available. Captured state appears in the following sections.");
 
+  const auditStats = detail.auditStats as Row | undefined;
+  if (auditStats) {
+    heading("Deterministic audit statistics");
+    paragraph(`Claims ${text(auditStats.totalClaims)} · evidence rows ${text(auditStats.totalEvidenceRows)} · selected evidence ${text(auditStats.selectedEvidenceRows)} · research questions ${text(auditStats.researchQuestionCount)} · critic packets ${text(auditStats.criticPacketCount)} · claims processed ${text(auditStats.claimsProcessed)} · rejected edges ${text(auditStats.evidenceEdgesRejected)} · extraction truncated ${text(auditStats.extractionTruncated)}`);
+    const authorityCounts = auditStats.sourceAuthorityCounts as Record<string, unknown>;
+    Object.entries(authorityCounts ?? {}).forEach(([authority, count]) => bullet(`${authority}: ${text(count)}`));
+    const capabilityLimitations = auditStats.capabilityLimitations as string[];
+    capabilityLimitations?.forEach((limitation) => bullet(`Capability limitation: ${limitation}`));
+    if (Number(authorityCounts?.CONTEXT ?? 0) > 0) paragraph("Some captured sources remain conservatively classified as CONTEXT because the backend does not deterministically recognize their authority.");
+  }
+
   heading("Claim-level findings");
   const claimById = new Map((detail.claims as Row[]).map((claim) => [String(claim.id), claim]));
   const findings = detail.findings as Row[];
@@ -56,6 +67,14 @@ export async function generateInvestigationReport(investigationId: string): Prom
     document.font("Helvetica-Bold").fontSize(10).fillColor("#14213D").text(`${text(finding.verdict)} · ${text(finding.strength)}`);
     paragraph(claim?.normalizedClaim ?? finding.claimId);
     paragraph(finding.explanation);
+    const facetNotes = finding.facetNotes as Row[];
+    if (facetNotes?.length) {
+      document.font("Helvetica-Bold").fontSize(9.5).text("Facet assessment");
+      for (const facet of facetNotes) {
+        const evidenceIds = Array.isArray(facet.evidenceIds) ? facet.evidenceIds.join(", ") : "none";
+        bullet(`${text(facet.facetKey)} · ${text(facet.status)} — ${text(facet.note)} [evidence: ${evidenceIds}]`);
+      }
+    }
     const limitations = finding.limitations as string[];
     limitations?.forEach((item) => bullet(`Limitation: ${item}`));
   }

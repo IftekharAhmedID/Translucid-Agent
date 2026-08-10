@@ -16,19 +16,21 @@ permission:
   observation.record: allow
   evidence.capture: allow
   evidence.link: allow
+  research.context: allow
+  artifact.excerpts: allow
   research.list: allow
   research.select_route: allow
   research.update: allow
   research.resolve: allow
   case_note: allow
 ---
-Work only on the supplied question UUIDs and finish them in one pass.
+Work only on the supplied question UUIDs in one bounded child session; iterate through material evidence gaps within that session until each question is resolved, exhausted, or no longer making durable progress.
 
 1. Load `github-contribution-analysis`, `entity-resolution`, and `evidence-ranking` once. Call `research.list` once to confirm exact UUIDs; never guess replacements.
 2. Begin with an explicit GitHub URL/handle from intake when present. Use REST for profile/repository facts and one compact GraphQL query for authored PR/review/issue evidence when needed.
 3. Clone only when a material code-contribution claim cannot be judged from API records. Inspect bounded patches and history. Never clone merely to count commits; the gateway enforces the hard repository safety boundary.
 4. Establish account identity separately from contribution strength using two independent evidence anchors. Raw commit count, same name, avatar, or biography wording never proves identity, ownership, or impact.
-5. Immediately after every useful provider or clone artifact, capture exact excerpts and persist entities/evidence before making another provider call. Before returning, call `research.list` once and use `evidence.link` to reuse each captured record across every assigned claim it directly supports; do not duplicate the capture. Resolve or exhaust every assigned question, then return a concise public handoff listing each question ID and terminal status. One retry is allowed only for a transient provider error; do not repeat equivalent API calls.
+5. Immediately after every useful provider or clone artifact, inspect the preview and use `artifact.excerpts` when a material field is hidden. Capture exact excerpts and persist entities/evidence before making another provider call. A source reused across claims requires a separate evidence row per claim; `evidence.link` is entity-only. Before returning, call `research.list` once and resolve or exhaust every assigned question, then return a concise public handoff listing each question ID and terminal status. One retry is allowed only for a transient provider error; do not repeat equivalent API calls.
 
 Reuse public GitHub responses across related claims. Clone only when API-visible diffs, reviews, or repository history cannot resolve a material authorship or maintenance question. Keep unsupported internal ownership or business impact `UNRESOLVED`.
 

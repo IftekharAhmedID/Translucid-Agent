@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { researchCompletionAction, researchContinuationAllowed } from "./research-completion.ts";
+import { researchCompletionAction, researchContinuationAllowed, researchProgressFingerprint } from "./research-completion.ts";
 
 test("a terminal durable frontier finishes immediately even when OpenCode remains busy", () => {
   assert.equal(researchCompletionAction({ totalQuestionCount: 12, activeQuestionCount: 0, sessionStatus: "busy", readyForContinuation: false }), "ABORT_AND_FINISH");
@@ -22,8 +22,15 @@ test("an idle empty intake receives an orchestrator-controlled continuation oppo
   assert.equal(researchCompletionAction({ totalQuestionCount: 0, activeQuestionCount: 0, sessionStatus: "idle", readyForContinuation: true }), "CONTINUE");
 });
 
-test("active research receives at most one continuation without durable progress", () => {
+test("active research receives one final attempt after the first unchanged checkpoint", () => {
   assert.equal(researchContinuationAllowed({ continuationCount: 0, activeQuestionCount: 3, durableProgress: false }), true);
-  assert.equal(researchContinuationAllowed({ continuationCount: 1, activeQuestionCount: 3, durableProgress: false }), false);
+  assert.equal(researchContinuationAllowed({ continuationCount: 1, activeQuestionCount: 3, durableProgress: false }), true);
+  assert.equal(researchContinuationAllowed({ continuationCount: 2, activeQuestionCount: 3, durableProgress: false }), false);
   assert.equal(researchContinuationAllowed({ continuationCount: 0, activeQuestionCount: 0, durableProgress: true }), false);
+});
+
+test("research progress fingerprints are deterministic and include durable evidence state", () => {
+  const first = researchProgressFingerprint({ questionStates: [{ id: "q-2", status: "OPEN" }, { id: "q-1", status: "IN_PROGRESS" }], evidenceCount: 3, observationCount: 2, successfulProviderCallCount: 4, researchWave: 1 });
+  const second = researchProgressFingerprint({ questionStates: [{ id: "q-1", status: "IN_PROGRESS" }, { id: "q-2", status: "OPEN" }], evidenceCount: 3, observationCount: 2, successfulProviderCallCount: 4, researchWave: 1 });
+  assert.equal(first, second);
 });

@@ -137,7 +137,7 @@ function fixtureData(request: ParsedToolRequest): unknown {
     claimIds: common.claimIds,
     records: request.tool === "professional.profile"
       ? [{ fullName: "Synthetic Candidate", headline: "Principal Engineer", positions: [{ company: "Acme Synthetic Labs", title: "Principal Engineer", start: "2021", end: "2025" }] }]
-      : [{ title: "Synthetic fixture result", url: "https://example.test/synthetic-source", text: "Synthetic corroborating content for deterministic development tests." }],
+      : [{ title: "Synthetic fixture result", url: "https://example.test/synthetic-source", text: "Synthetic Candidate held the title Principal Engineer at Acme Synthetic Labs from 2021 through 2025. Synthetic corroborating content for deterministic development tests." }],
   };
 }
 
@@ -291,7 +291,6 @@ export class ProviderExecutor {
       type: request.arguments.mode,
       numResults: request.arguments.resultLimit,
       contents: {
-        text: { maxCharacters: 12_000 },
         highlights: { query: request.arguments.highlightQuery, maxCharacters: 4_000 },
       },
     };
@@ -307,7 +306,7 @@ export class ProviderExecutor {
         artifacts.push({
           kind: "SOURCE_CONTENT",
           sourceUrl: result.url,
-          content: { title: result.title, url: result.url, text: result.text, highlights: result.highlights, publishedDate: result.publishedDate, author: result.author },
+          content: { title: result.title, url: result.url, highlights: result.highlights, publishedDate: result.publishedDate, author: result.author },
           provenance: { captureMethod: "EXA_INLINE_CONTENTS" },
         });
       }

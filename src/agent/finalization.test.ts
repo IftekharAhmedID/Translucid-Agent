@@ -21,6 +21,7 @@ const finding = (claimId: string) => ({
   explanation: "The frozen evidence does not resolve this claim.",
   supportingEvidenceIds: [],
   contradictingEvidenceIds: [],
+  facetNotes: [],
   limitations: ["No accepted direct evidence was available."],
 });
 

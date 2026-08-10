@@ -1,11 +1,33 @@
 export type ResearchCompletionAction = "WAIT" | "CONTINUE" | "FINISH" | "ABORT_AND_FINISH";
 
+export type ResearchProgressInput = {
+  questionStates: Array<{ id: string; status: string }>;
+  evidenceCount: number;
+  observationCount: number;
+  successfulProviderCallCount: number;
+  researchWave: number;
+  fingerprintVersion?: number;
+};
+
+export function researchProgressFingerprint(input: ResearchProgressInput): string {
+  return JSON.stringify({
+    version: input.fingerprintVersion ?? 1,
+    questionStates: [...input.questionStates].sort((left, right) => left.id.localeCompare(right.id)),
+    evidenceCount: input.evidenceCount,
+    observationCount: input.observationCount,
+    successfulProviderCallCount: input.successfulProviderCallCount,
+    researchWave: input.researchWave,
+  });
+}
+
 export function researchContinuationAllowed(input: {
   continuationCount: number;
   activeQuestionCount: number;
   durableProgress: boolean;
+  unchangedCheckpointCount?: number;
 }): boolean {
-  return input.activeQuestionCount > 0 && input.continuationCount < 1 && (input.durableProgress || input.continuationCount === 0);
+  const unchanged = input.unchangedCheckpointCount ?? input.continuationCount;
+  return input.activeQuestionCount > 0 && unchanged < 2;
 }
 
 export function researchCompletionAction(input: {

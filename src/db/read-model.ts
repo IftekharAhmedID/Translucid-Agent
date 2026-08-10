@@ -37,6 +37,7 @@ export async function getInvestigationDetail(investigationId: string): Promise<R
       run.budget_counters AS "budgetCounters", run.runtime_manifest_hash AS "runtimeManifestHash",
       run.root_entity_id AS "rootEntityId", run.research_wave_count AS "researchWaveCount",
       run.research_wave_state AS "researchWaveState",
+      run.runtime_handle->'finalization'->'auditStats' AS "auditStats",
       run.error_code AS "errorCode", run.error_message AS "errorMessage",
       run.runtime_handle - 'gatewayScope' AS "runtimeHandle"
     FROM investigations AS investigation
@@ -45,7 +46,7 @@ export async function getInvestigationDetail(investigationId: string): Promise<R
   `;
   if (!investigation) return undefined;
   const [claims, entities, identifiers, links, artifacts, observations, evidenceRows, questions, findings, events, providerCalls] = await Promise.all([
-    sql`SELECT id, category, normalized_claim AS "normalizedClaim", materiality, source_span AS "sourceSpan", valid_from AS "validFrom", valid_to AS "validTo", status, created_at AS "createdAt" FROM claims WHERE investigation_id = ${investigationId} ORDER BY created_at`,
+    sql`SELECT id, category, normalized_claim AS "normalizedClaim", materiality, facets, source_span AS "sourceSpan", valid_from AS "validFrom", valid_to AS "validTo", status, created_at AS "createdAt" FROM claims WHERE investigation_id = ${investigationId} ORDER BY created_at`,
     sql`SELECT id, type, canonical_name AS "canonicalName", metadata, created_at AS "createdAt" FROM entities WHERE investigation_id = ${investigationId} ORDER BY created_at`,
     sql`SELECT id, entity_id AS "entityId", type, value, normalized_value AS "normalizedValue", confidence, evidence_id AS "evidenceId" FROM entity_identifiers WHERE investigation_id = ${investigationId} ORDER BY created_at`,
     sql`SELECT id, from_entity_id AS "fromEntityId", to_entity_id AS "toEntityId", relationship, confidence, evidence_ids AS "evidenceIds" FROM entity_links WHERE investigation_id = ${investigationId} ORDER BY created_at`,
@@ -53,7 +54,7 @@ export async function getInvestigationDetail(investigationId: string): Promise<R
     sql`SELECT id, artifact_id AS "artifactId", entity_id AS "entityId", field, value_json AS value, observed_at AS "observedAt", source_event_at AS "sourceEventAt", valid_from AS "validFrom", valid_to AS "validTo" FROM observations WHERE investigation_id = ${investigationId} ORDER BY valid_from NULLS LAST, observed_at`,
     sql`SELECT id, artifact_id AS "artifactId", exact_quote AS "exactQuote", source_location AS "sourceLocation", source_tier AS "sourceTier", relation, claim_ids AS "claimIds", entity_ids AS "entityIds", created_at AS "createdAt" FROM evidence WHERE investigation_id = ${investigationId} ORDER BY created_at`,
     sql`SELECT id, claim_ids AS "claimIds", question, priority, status, possible_routes AS "possibleRoutes", selected_route AS "selectedRoute", created_by_agent AS "createdByAgent", resolution_summary AS "resolutionSummary", resolved_at AS "resolvedAt", created_at AS "createdAt" FROM research_questions WHERE investigation_id = ${investigationId} ORDER BY CASE priority WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END, created_at`,
-    sql`SELECT id, claim_id AS "claimId", verdict, strength, explanation, supporting_evidence_ids AS "supportingEvidenceIds", contradicting_evidence_ids AS "contradictingEvidenceIds", limitations, created_at AS "createdAt" FROM findings WHERE investigation_id = ${investigationId} ORDER BY created_at`,
+    sql`SELECT id, claim_id AS "claimId", verdict, strength, explanation, supporting_evidence_ids AS "supportingEvidenceIds", contradicting_evidence_ids AS "contradictingEvidenceIds", facet_notes AS "facetNotes", limitations, created_at AS "createdAt" FROM findings WHERE investigation_id = ${investigationId} ORDER BY created_at`,
     sql`SELECT id, phase, agent, session_id AS "sessionId", event_type AS "eventType", tool, source, status, budget_delta AS "budgetDelta", public_rationale AS "publicRationale", payload, created_at AS "createdAt" FROM agent_events WHERE investigation_id = ${investigationId} ORDER BY id DESC LIMIT 300`,
     sql`SELECT id, capability, provider, semantic_tool AS "semanticTool", provider_route AS "providerRoute",
       request_metadata AS "requestMetadata", request_fingerprint AS "requestFingerprint",

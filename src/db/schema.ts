@@ -12,7 +12,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
-import type { InvestigationSummary } from "../core/contracts.ts";
+import type { ClaimFacet, FacetNote, InvestigationSummary } from "../core/contracts.ts";
 import type { CapabilityRegistry } from "../core/capabilities.ts";
 
 const bytea = customType<{ data: Buffer }>({
@@ -91,6 +91,7 @@ export const claims = pgTable(
     category: text("category").notNull(),
     normalizedClaim: text("normalized_claim").notNull(),
     materiality: text("materiality").notNull(),
+    facets: jsonb("facets").$type<ClaimFacet[]>().notNull().default([]),
     sourceSpan: jsonb("source_span").$type<Record<string, unknown>>(),
     validFrom: timestamp("valid_from", { withTimezone: true }),
     validTo: timestamp("valid_to", { withTimezone: true }),
@@ -243,6 +244,7 @@ export const findings = pgTable(
     explanation: text("explanation").notNull(),
     supportingEvidenceIds: uuid("supporting_evidence_ids").array().notNull(),
     contradictingEvidenceIds: uuid("contradicting_evidence_ids").array().notNull(),
+    facetNotes: jsonb("facet_notes").$type<FacetNote[]>().notNull().default([]),
     limitations: text("limitations").array().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },

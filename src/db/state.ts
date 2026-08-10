@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type postgres from "postgres";
 
-import type { EntityType, EscalationReason, ResearchQuestionStatus, ResearchWaveKind } from "../core/contracts.ts";
+import { claimFacetsSchema, type ClaimFacet, type EntityType, type EscalationReason, type ResearchQuestionStatus, type ResearchWaveKind } from "../core/contracts.ts";
 import { assessEntityLink, type IdentityAnchor } from "../core/identity.ts";
 import { sha256 } from "../core/input.ts";
 import { deriveArtifactTrust } from "../core/source-trust.ts";
@@ -9,12 +9,181 @@ import { evidenceQuoteHasClaimAnchor } from "../core/evidence-fit.ts";
 import { getSql } from "./client.ts";
 
 const MAX_CAPTURE_BYTES = 5 * 1024 * 1024;
+const DEFAULT_CONTEXT_BYTES = 128 * 1024;
+const MAX_CONTEXT_BYTES = 512 * 1024;
+const DEFAULT_EXCERPT_CHARACTERS = 60_000;
+const MAX_EXCERPT_CHARACTERS = 300_000;
+const DEFAULT_SINGLE_EXCERPT_CHARACTERS = 20_000;
+const MAX_SINGLE_EXCERPT_CHARACTERS = 80_000;
+const MAX_EXCERPT_COUNT = 12;
 
 type CaseIds = { investigationId: string; runId: string };
 type Priority = "HIGH" | "MEDIUM" | "LOW";
 
 function toJson(value: unknown): postgres.JSONValue {
   return JSON.parse(JSON.stringify(value)) as postgres.JSONValue;
+}
+
+export function boundedJson(value: Record<string, unknown>, maxBytes: number, sections: string[]): Record<string, unknown> {
+  const output: Record<string, unknown> = { ...value };
+  const truncatedSections: string[] = [];
+  const serializedSize = () => Buffer.byteLength(JSON.stringify(output));
+  // Callers provide sections from lowest to highest retention priority. Keep
+  // claims and assigned questions as long as possible; trim operational history
+  // and secondary context first.
+  const priorities = [...sections];
+  for (const section of priorities) {
+    const current = output[section];
+    if (serializedSize() <= maxBytes || !Array.isArray(current)) continue;
+    const values = [...current];
+    while (values.length > 0 && serializedSize() > maxBytes) {
+      values.pop();
+      output[section] = values;
+    }
+    if (values.length !== current.length) truncatedSections.push(section);
+  }
+  if (serializedSize() > maxBytes) {
+    for (const section of Object.keys(output)) {
+      if (serializedSize() <= maxBytes) break;
+      if (section === "truncated" || section === "truncatedSections") continue;
+      output[section] = "[section omitted at deterministic context limit]";
+      if (!truncatedSections.includes(section)) truncatedSections.push(section);
+    }
+  }
+  output.truncated = truncatedSections.length > 0;
+  if (truncatedSections.length > 0) output.truncatedSections = truncatedSections.sort();
+  return output;
+}
+
+export async function getResearchContext(
+  investigationId: string,
+  runId: string,
+  questionIds: string[],
+  maxBytes = DEFAULT_CONTEXT_BYTES,
+): Promise<Record<string, unknown>> {
+  if (questionIds.length < 1 || questionIds.length > 12) throw new Error("research.context requires between one and twelve question IDs.");
+  if (new Set(questionIds).size !== questionIds.length) throw new Error("research.context question IDs must be unique.");
+  const safeMaxBytes = Math.min(Math.max(maxBytes, DEFAULT_CONTEXT_BYTES), MAX_CONTEXT_BYTES);
+  const sql = getSql();
+  const [questions, claims, entities, identifiers, links, artifacts, observations, evidence, providerAttempts] = await Promise.all([
+    sql`SELECT id, claim_ids AS "claimIds", question, priority, status, possible_routes AS "possibleRoutes", selected_route AS "selectedRoute", resolution_summary AS "resolutionSummary" FROM research_questions WHERE investigation_id = ${investigationId} AND run_id = ${runId} AND id IN ${sql(questionIds)} ORDER BY created_at, id`,
+    sql`SELECT id, category, normalized_claim AS "normalizedClaim", facets, materiality, source_span AS "sourceSpan", valid_from AS "validFrom", valid_to AS "validTo", status FROM claims WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
+    sql`SELECT id, type, canonical_name AS "canonicalName" FROM entities WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
+    sql`SELECT id, entity_id AS "entityId", type, value, normalized_value AS "normalizedValue", confidence, evidence_id AS "evidenceId" FROM entity_identifiers WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
+    sql`SELECT id, from_entity_id AS "fromEntityId", to_entity_id AS "toEntityId", relationship, confidence, evidence_ids AS "evidenceIds" FROM entity_links WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
+    sql`SELECT id, kind, provider, source_url AS "sourceUrl", mime_type AS "mimeType", retrieved_at AS "retrievedAt", source_authority AS "sourceAuthority", independence_group AS "independenceGroup", canonical_source_url AS "canonicalSourceUrl" FROM artifacts WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
+    sql`SELECT id, artifact_id AS "artifactId", entity_id AS "entityId", field, value_json AS value, observed_at AS "observedAt", source_event_at AS "sourceEventAt", valid_from AS "validFrom", valid_to AS "validTo" FROM observations WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY valid_from NULLS LAST, observed_at, id`,
+    sql`SELECT evidence.id, evidence.artifact_id AS "artifactId", evidence.exact_quote AS "exactQuote", evidence.source_location AS "sourceLocation", evidence.relation, evidence.claim_ids AS "claimIds", evidence.entity_ids AS "entityIds", COALESCE(artifact.source_authority, evidence.source_tier, 'CONTEXT') AS "sourceAuthority", COALESCE(artifact.independence_group, 'LEGACY_ARTIFACT:' || artifact.id::text) AS "independenceGroup" FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id WHERE evidence.investigation_id = ${investigationId} AND evidence.run_id = ${runId} ORDER BY evidence.created_at, evidence.id`,
+    sql`SELECT id, capability, provider, semantic_tool AS "semanticTool", provider_route AS "providerRoute", result_status AS "resultStatus", artifact_ids AS "artifactIds", cost_source AS "costSource", created_at AS "createdAt" FROM provider_calls WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
+  ]);
+  if (questions.length !== new Set(questionIds).size) throw new Error("One or more research question IDs do not belong to this run.");
+  const exhaustedRoutes = [...questions].flatMap((question) => question.status === "EXHAUSTED" || question.status === "SKIPPED" ? [{ questionId: question.id, routes: question.possibleRoutes, selectedRoute: question.selectedRoute }] : []);
+  return boundedJson({
+    assignedResearchQuestions: [...questions],
+    claims: [...claims],
+    entities: [...entities],
+    identifiers: [...identifiers],
+    entityLinks: [...links],
+    artifacts: [...artifacts],
+    observations: [...observations],
+    evidence: [...evidence],
+    providerAttempts: [...providerAttempts],
+    knownExhaustedRoutes: exhaustedRoutes,
+  }, safeMaxBytes, ["providerAttempts", "evidence", "observations", "artifacts", "identifiers", "entityLinks", "entities", "claims"]);
+}
+
+type ArtifactScalar = { path: string; value: string | number | boolean; text: string };
+
+function flattenArtifactScalars(value: unknown, path: string, output: ArtifactScalar[], depth = 0): void {
+  if (depth > 12 || value === null || value === undefined) return;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const text = String(value);
+    if (text.trim()) output.push({ path, value, text });
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => flattenArtifactScalars(item, `${path}[${index}]`, output, depth + 1));
+    return;
+  }
+  if (typeof value === "object") {
+    for (const [key, item] of Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right))) {
+      flattenArtifactScalars(item, path ? `${path}.${key}` : key, output, depth + 1);
+    }
+  }
+}
+
+function boundedTextWindow(text: string, start: number, limit: number): { text: string; offsetStart: number; offsetEnd: number; lineStart: number; lineEnd: number } {
+  const half = Math.floor(limit / 2);
+  const offsetStart = Math.max(0, start - half);
+  const offsetEnd = Math.min(text.length, offsetStart + limit);
+  const window = text.slice(offsetStart, offsetEnd);
+  return {
+    text: window,
+    offsetStart,
+    offsetEnd,
+    lineStart: text.slice(0, offsetStart).split("\n").length,
+    lineEnd: text.slice(0, offsetEnd).split("\n").length,
+  };
+}
+
+export async function getArtifactExcerpts(
+  investigationId: string,
+  runId: string,
+  input: { artifactId: string; queries: string[]; maxExcerpts?: number; maxCharacters?: number },
+): Promise<Record<string, unknown>> {
+  if (input.queries.length < 1 || input.queries.length > 12) throw new Error("artifact.excerpts requires between one and twelve queries.");
+  const maxExcerpts = Math.min(Math.max(input.maxExcerpts ?? MAX_EXCERPT_COUNT, 1), MAX_EXCERPT_COUNT);
+  const maxCharacters = Math.min(Math.max(input.maxCharacters ?? DEFAULT_EXCERPT_CHARACTERS, 1), MAX_EXCERPT_CHARACTERS);
+  const singleCharacters = Math.min(input.maxCharacters ? maxCharacters : DEFAULT_SINGLE_EXCERPT_CHARACTERS, MAX_SINGLE_EXCERPT_CHARACTERS);
+  const [artifact] = await getSql()<Array<{ id: string; mimeType: string; contentBytes: Uint8Array; sha256: string; sourceUrl: string | null }>>`
+    SELECT id, mime_type AS "mimeType", content_bytes AS "contentBytes", sha256, source_url AS "sourceUrl"
+    FROM artifacts WHERE id = ${input.artifactId} AND investigation_id = ${investigationId} AND run_id = ${runId}
+  `;
+  if (!artifact) throw new Error("Artifact does not belong to this investigation run.");
+  const rawText = Buffer.from(artifact.contentBytes).toString("utf8");
+  const terms = input.queries.map((query) => query.trim().toLocaleLowerCase("en-US")).filter(Boolean);
+  const excerpts: Record<string, unknown>[] = [];
+  let matchCount = 0;
+  if (artifact.mimeType === "application/json" || artifact.mimeType.endsWith("+json")) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(rawText) as unknown; } catch { parsed = undefined; }
+    if (parsed !== undefined) {
+      const scalars: ArtifactScalar[] = [];
+      flattenArtifactScalars(parsed, "$", scalars);
+      const ranked = scalars
+        .map((item) => ({ item, score: terms.reduce((score, term) => score + (item.path.toLocaleLowerCase("en-US").includes(term) || item.text.toLocaleLowerCase("en-US").includes(term) ? 1 : 0), 0) }))
+        .filter(({ score }) => score > 0)
+        .sort((left, right) => right.score - left.score || left.item.path.localeCompare(right.item.path));
+      matchCount = ranked.length;
+      ranked.filter(({ item }) => item.text.length <= singleCharacters).slice(0, maxExcerpts)
+        .forEach(({ item }) => excerpts.push({ path: item.path, value: item.value, exactText: item.text }));
+    }
+  } else {
+    const lower = rawText.toLocaleLowerCase("en-US");
+    const starts = terms.flatMap((term) => {
+      const positions: number[] = [];
+      let from = 0;
+      while (from < lower.length) {
+        const position = lower.indexOf(term, from);
+        if (position < 0) break;
+        positions.push(position);
+        from = position + Math.max(term.length, 1);
+      }
+      return positions;
+    });
+    const uniqueStarts = [...new Set(starts)].sort((left, right) => left - right);
+    matchCount = uniqueStarts.length;
+    for (const start of uniqueStarts.slice(0, maxExcerpts)) excerpts.push({ query: terms.find((term) => lower.slice(start, start + term.length) === term) ?? terms[0], ...boundedTextWindow(rawText, start, singleCharacters) });
+  }
+  const beforeLimitCount = excerpts.length;
+  let totalCharacters = excerpts.reduce((total, excerpt) => total + String(excerpt.exactText ?? excerpt.text ?? "").length, 0);
+  while (totalCharacters > maxCharacters && excerpts.length > 0) {
+    const removed = excerpts.pop()!;
+    totalCharacters -= String(removed.exactText ?? removed.text ?? "").length;
+  }
+  const result = { artifactId: artifact.id, sourceUrl: artifact.sourceUrl, sha256: artifact.sha256, excerpts, truncated: matchCount > excerpts.length || excerpts.length < beforeLimitCount };
+  if (Buffer.byteLength(JSON.stringify(result)) > 512 * 1024) throw new Error("artifact.excerpts exceeded the hard serialized response limit.");
+  return result;
 }
 
 async function assertRowsBelongToCase(
@@ -38,6 +207,7 @@ export async function createClaim(
     category: string;
     normalizedClaim: string;
     materiality: Priority;
+    facets?: ClaimFacet[];
     sourceSpan?: Record<string, unknown>;
     validFrom?: Date;
     validTo?: Date;
@@ -46,6 +216,7 @@ export async function createClaim(
   },
 ): Promise<{ id: string }> {
   const id = randomUUID();
+  const facets = input.facets?.length ? claimFacetsSchema.parse(input.facets) : [{ key: "legacy_claim", label: input.normalizedClaim, materiality: input.materiality } satisfies ClaimFacet];
   const created = await getSql().begin(async (transaction) => {
     await transaction`SELECT id FROM runs WHERE id = ${input.runId} AND investigation_id = ${input.investigationId} FOR UPDATE`;
     const [count] = await transaction<Array<{ count: number }>>`
@@ -55,10 +226,11 @@ export async function createClaim(
     await transaction`
       INSERT INTO claims (
         id, investigation_id, run_id, category, normalized_claim, materiality,
-        source_span, valid_from, valid_to
+        facets, source_span, valid_from, valid_to
       ) VALUES (
         ${id}, ${input.investigationId}, ${input.runId}, ${input.category},
         ${input.normalizedClaim}, ${input.materiality},
+        ${getSql().json(toJson(facets))},
         ${input.sourceSpan ? transaction.json(toJson(input.sourceSpan)) : null},
         ${input.validFrom ?? null}, ${input.validTo ?? null}
       )
@@ -208,7 +380,10 @@ export async function captureEvidence(
     }
   }
 
-  if (input.claimIds.length) {
+  if (input.relation !== "CONTEXT" && input.claimIds.length !== 1) {
+    throw new Error(`${input.relation} evidence must reference exactly one claim.`);
+  }
+  if (input.relation !== "CONTEXT" && input.claimIds.length) {
     const claims = await getSql()<Array<{ id: string; normalizedClaim: string }>>`
       SELECT id, normalized_claim AS "normalizedClaim"
       FROM claims
@@ -247,6 +422,7 @@ export async function linkEvidence(input: CaseIds & {
   claimIds: string[];
   entityIds: string[];
 }): Promise<{ id: string; claimIds: string[]; entityIds: string[] }> {
+  if (input.claimIds.length > 0) throw new Error("evidence.link only associates entities; create a separate evidence row for each claim.");
   await Promise.all([
     assertRowsBelongToCase("evidence", [input.evidenceId], input.investigationId, input.runId),
     assertRowsBelongToCase("claims", input.claimIds, input.investigationId, input.runId),
