@@ -9,13 +9,20 @@ import {
 type Row = Record<string, unknown>;
 
 export const criticOutputSchema = z.object({
-  acceptedEvidenceIds: z.array(z.uuid()),
-  rejectedEvidence: z.array(z.object({ evidenceId: z.uuid(), reason: z.string().min(1).max(2_000) })),
-  claimConcerns: z.array(z.object({ claimId: z.uuid(), concerns: z.array(z.string().min(1).max(2_000)) })),
-  identityConcerns: z.array(z.string().min(1).max(2_000)),
-  chronologyConcerns: z.array(z.string().min(1).max(2_000)),
-  limitations: z.array(z.string().min(1).max(2_000)),
+  rejectedEvidence: z.array(z.object({ evidenceId: z.uuid(), reason: z.string().min(1).max(500) })).max(100),
+  claimConcerns: z.array(z.object({ claimId: z.uuid(), concerns: z.array(z.string().min(1).max(500)).max(5) })).max(60),
+  identityConcerns: z.array(z.string().min(1).max(500)).max(20),
+  chronologyConcerns: z.array(z.string().min(1).max(500)).max(20),
+  limitations: z.array(z.string().min(1).max(500)).max(20),
 }).strict();
+
+export const criticJsonExample = {
+  rejectedEvidence: [],
+  claimConcerns: [],
+  identityConcerns: [],
+  chronologyConcerns: [],
+  limitations: [],
+};
 
 export const findingBatchOutputSchema = z.object({
   findings: z.array(findingOutputSchema).max(5),

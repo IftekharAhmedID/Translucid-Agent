@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   buildFindingBatchBundle,
+  criticJsonExample,
+  criticOutputSchema,
   findingBatchOutputSchema,
   mergeFindingBatches,
   partitionClaims,
@@ -87,4 +89,9 @@ test("summary schema is focused and excludes findings", () => {
   };
   assert.deepEqual(summaryOutputSchema.parse(value), value);
   assert.throws(() => summaryOutputSchema.parse({ ...value, findings: [finding("claim-1")] }));
+});
+
+test("critic reports only exceptions instead of echoing every accepted evidence ID", () => {
+  assert.deepEqual(criticOutputSchema.parse(criticJsonExample), criticJsonExample);
+  assert.throws(() => criticOutputSchema.parse({ ...criticJsonExample, acceptedEvidenceIds: [] }));
 });

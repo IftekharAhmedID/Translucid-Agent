@@ -15,6 +15,7 @@ import { buildAdjudicationBundle, buildFrozenEvidenceBundle } from "./bundle.ts"
 import {
   buildFindingBatchBundle,
   buildSummaryBundle,
+  criticJsonExample,
   criticOutputSchema,
   findingBatchOutputSchema,
   mapWithConcurrency,
@@ -106,18 +107,19 @@ export class OpenCodeInvestigationController {
         phase: "CRITIC",
         prompt: `Audit this frozen durable bundle. Do not research. Return the required structured audit.\n${JSON.stringify(frozen)}`,
         schema: criticOutputSchema,
+        jsonExample: criticJsonExample,
       })).value;
       const frozenEvidence = frozen.evidence as Array<{ id: string; claimIds: string[] }>;
       const allEvidenceIds = new Set(frozenEvidence.map(({ id }) => id));
       const knownClaimIds = new Set((frozen.claims as Array<{ id: string }>).map(({ id }) => id));
-      for (const id of [...criticOutput.acceptedEvidenceIds, ...criticOutput.rejectedEvidence.map(({ evidenceId }) => evidenceId)]) {
+      for (const id of criticOutput.rejectedEvidence.map(({ evidenceId }) => evidenceId)) {
         if (!allEvidenceIds.has(id)) throw new Error(`Critic referenced unknown evidence ID ${id}.`);
       }
       for (const concern of criticOutput.claimConcerns) {
         if (!knownClaimIds.has(concern.claimId)) throw new Error(`Critic referenced unknown claim ID ${concern.claimId}.`);
       }
       const rejectedEvidenceIds = new Set(criticOutput.rejectedEvidence.map(({ evidenceId }) => evidenceId));
-      const acceptedEvidenceIds = new Set(criticOutput.acceptedEvidenceIds.filter((id) => !rejectedEvidenceIds.has(id)));
+      const acceptedEvidenceIds = new Set([...allEvidenceIds].filter((id) => !rejectedEvidenceIds.has(id)));
       const adjudicationBundle = buildAdjudicationBundle(frozen, acceptedEvidenceIds, criticOutput);
 
       const evidenceClaimIds = new Map(frozenEvidence.map(({ id, claimIds }) => [id, new Set(claimIds)]));
@@ -127,6 +129,17 @@ export class OpenCodeInvestigationController {
       const findingBatches = await mapWithConcurrency(claimBatches, 2, async (batch, index) => {
         const claimIds = batch.map(({ id }) => id);
         const batchBundle = buildFindingBatchBundle(adjudicationBundle, claimIds);
+        const batchJsonExample = {
+          findings: claimIds.map((claimId) => ({
+            claimId,
+            verdict: "UNRESOLVED",
+            strength: "WEAK",
+            explanation: "The eligible evidence is insufficient to resolve this claim.",
+            supportingEvidenceIds: [],
+            contradictingEvidenceIds: [],
+            limitations: ["Only evidence in this claim packet may be cited."],
+          })),
+        };
         const batchPrompt = `Adjudicate exactly these ${claimIds.length} claim packets. For each claim, cite only evidence IDs in that same packet's eligibleEvidenceIds. Evidence listed for another claim is ineligible even when its quote appears relevant. If the eligible evidence does not establish the claim, return UNRESOLVED with empty citation arrays. Return only the focused findings object.\n${JSON.stringify(batchBundle)}`;
         try {
           const adjudication = await this.promptStructured({
@@ -138,6 +151,7 @@ export class OpenCodeInvestigationController {
             phase: "ADJUDICATION",
             prompt: batchPrompt,
             schema: findingBatchOutputSchema,
+            jsonExample: batchJsonExample,
           });
           batchSessionIds[index] = adjudication.sessionId;
           try {
@@ -164,6 +178,7 @@ export class OpenCodeInvestigationController {
               phase: "ADJUDICATION",
               prompt: `${batchPrompt}\n\nThe previous independent response was rejected by deterministic validation: ${validationMessage}\nCorrect that exact defect. Do not cite an evidence ID outside the corresponding claim packet. This is the only correction attempt.`,
               schema: findingBatchOutputSchema,
+              jsonExample: batchJsonExample,
             });
             batchSessionIds[index] = correction.sessionId;
             return validateFindingBatch(correction.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds);
@@ -182,6 +197,16 @@ export class OpenCodeInvestigationController {
         phase: "ADJUDICATION",
         prompt: `Summarize only the validated findings, accepted evidence, entity resolution, observations and stated capability limitations. Return the focused non-ranking summary object.\n${JSON.stringify(buildSummaryBundle(adjudicationBundle, findings))}`,
         schema: summaryOutputSchema,
+        jsonExample: {
+          summary: {
+            professionalIdentity: { status: "AMBIGUOUS", summary: "Example JSON shape only.", evidenceIds: [] },
+            professionalTimelineSummary: "Example JSON shape only.",
+            strongestEvidenceIds: [],
+            materialInconsistencies: [],
+            unresolvedMaterialClaimIds: [],
+            investigationLimitations: ["Example JSON shape only."],
+          },
+        },
       });
       const summary = validateInvestigationSummary(summaryResult.value.summary, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds);
       await getSql()`UPDATE runs SET opencode_adjudicator_session_id = ${summaryResult.sessionId}, runtime_handle = COALESCE(runtime_handle, '{}'::jsonb) || ${getSql().json({ finalization: { provider: getConfig().finalizerOpenCodeProvider, batchSessionIds, summarySessionId: summaryResult.sessionId } })}::jsonb, updated_at = now() WHERE id = ${input.runId}`;
@@ -209,6 +234,7 @@ export class OpenCodeInvestigationController {
     phase,
     prompt,
     schema,
+    jsonExample,
   }: {
     client: ReturnType<typeof createOpencodeClient>;
     input: ControllerInput;
@@ -218,6 +244,7 @@ export class OpenCodeInvestigationController {
     phase: "CRITIC" | "ADJUDICATION";
     prompt: string;
     schema: z.ZodType<T>;
+    jsonExample: unknown;
   }): Promise<{ value: T; sessionId: string }> {
     const config = getConfig();
     const transport = finalizerOutputTransport(config.finalizerOpenCodeProvider, config.finalizerModel);
@@ -273,7 +300,7 @@ export class OpenCodeInvestigationController {
       variant: config.reasoningVariant,
       parts: [{
         type: "text",
-        text: `${prompt}\n\nReturn only one JSON object with no prose. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}`,
+        text: `${prompt}\n\nReturn only one complete JSON object with no prose. Do not echo source text. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}\nExample JSON shape (replace example values with case-grounded values):\n${JSON.stringify(jsonExample)}`,
       }],
     }, { signal: input.signal }), `${phase.toLowerCase()} JSON prompt`);
     try {
@@ -302,7 +329,7 @@ export class OpenCodeInvestigationController {
           variant: config.reasoningVariant,
           parts: [{
             type: "text",
-            text: `${prompt}\n\nThe previous independent response failed deterministic JSON/schema validation: ${second.slice(0, 1_000)}\nReturn one complete, compact JSON object with no prose and do not echo source text. Keep concern, explanation, and limitation strings concise. This is the only JSON retry. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}`,
+            text: `${prompt}\n\nThe previous independent response failed deterministic JSON/schema validation: ${second.slice(0, 1_000)}\nReturn one complete, compact JSON object with no prose and do not echo source text. Keep concern, explanation, and limitation strings concise. This is the only JSON retry. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}\nExample JSON shape (replace example values with case-grounded values):\n${JSON.stringify(jsonExample)}`,
           }],
         }, { signal: input.signal }), `${phase.toLowerCase()} JSON retry prompt`);
         try {

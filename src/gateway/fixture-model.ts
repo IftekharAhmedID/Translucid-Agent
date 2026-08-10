@@ -82,7 +82,6 @@ export async function fixtureCompletion(body: Record<string, unknown>, investiga
   }
   if (isCriticRequest) {
     const audit = {
-      acceptedEvidenceIds: evidence.map(({ id }) => id),
       rejectedEvidence: [],
       claimConcerns: [],
       identityConcerns: entities.length < 2 ? ["The synthetic fixture establishes a root person but no independently linked external account."] : [],

@@ -164,6 +164,20 @@ export function profileHasMaterialField(profile: Record<string, unknown>, field:
   return [profile.educations, profile.education].some(nonEmpty);
 }
 
+export function socialProfileUrl(platform: "X" | "INSTAGRAM" | "TIKTOK", rawHandle: string): string {
+  let handle = rawHandle.trim();
+  try {
+    const parsed = new URL(handle);
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    handle = segments[0] ?? "";
+  } catch { /* a bare handle is the normal input */ }
+  handle = handle.replace(/^@/, "");
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(handle)) throw new Error("Social profile handle is invalid.");
+  if (platform === "X") return `https://x.com/${handle}`;
+  if (platform === "INSTAGRAM") return `https://www.instagram.com/${handle}/`;
+  return `https://www.tiktok.com/@${handle}`;
+}
+
 export class ProviderExecutor {
   private readonly registry;
   private readonly pools: Map<ToolName, Semaphore>;
@@ -246,7 +260,7 @@ export class ProviderExecutor {
       case "professional.activity": return this.professionalActivity(request, context, capability);
       case "social.profile": {
         const datasetKey = `BRIGHTDATA_${request.arguments.platform}_PROFILE_DATASET_ID`;
-        return this.brightData(request, context, capability, this.required(datasetKey), { url: request.arguments.handle }, `brightdata.${request.arguments.platform.toLowerCase()}-profile`, `brightdata-${request.arguments.platform.toLowerCase()}`);
+        return this.brightData(request, context, capability, this.required(datasetKey), { url: socialProfileUrl(request.arguments.platform, request.arguments.handle) }, `brightdata.${request.arguments.platform.toLowerCase()}-profile`, `brightdata-${request.arguments.platform.toLowerCase()}`);
       }
       case "github.graphql": return this.call(request, context, capability, "github", "github.graphql", { query: request.arguments.query, variables: request.arguments.variables }, async (signal, onAttempt) => ({
         data: await apiFetch("https://api.github.com/graphql", { method: "POST", headers: { ...authHeaders(this.required("GITHUB_TOKEN")), "content-type": "application/json", "user-agent": this.publicUserAgent() }, body: JSON.stringify({ query: request.arguments.query, variables: request.arguments.variables }), signal }, onAttempt),

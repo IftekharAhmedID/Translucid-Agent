@@ -20,5 +20,9 @@ export function prepareFinalizerUpstreamBody(
 ): Record<string, unknown> {
   if (!input.agent || !finalizerAgents.has(input.agent)) return body;
   if (finalizerOutputTransport(input.provider, input.model) !== "JSON_OBJECT") return body;
-  return { ...body, response_format: { type: "json_object" } };
+  const requestedTokens = Number(body.max_tokens ?? body.max_completion_tokens);
+  const maxTokens = Number.isFinite(requestedTokens) && requestedTokens > 0
+    ? Math.max(requestedTokens, 16_384)
+    : 16_384;
+  return { ...body, max_tokens: maxTokens, response_format: { type: "json_object" } };
 }

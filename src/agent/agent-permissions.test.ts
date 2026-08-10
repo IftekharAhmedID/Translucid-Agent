@@ -68,6 +68,12 @@ test("fresh adjudicator is restricted to evidence linked inside each claim packe
   assert.match(source, /UNRESOLVED with empty citation arrays/i);
 });
 
+test("evidence critic reports exceptions without echoing accepted evidence", async () => {
+  const source = await readFile(new URL("../../runtime/opencode/agents/evidence-critic.md", import.meta.url), "utf8");
+  assert.match(source, /accepts every selected evidence row by default/i);
+  assert.match(source, /never echo an accepted-evidence list/i);
+});
+
 for (const agent of ["lead-investigator", ...researchAgents]) {
   test(`${agent} never refetches or probes saved tool output to recover artifact IDs`, async () => {
     const source = await readFile(new URL(`../../runtime/opencode/agents/${agent}.md`, import.meta.url), "utf8");
