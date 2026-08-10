@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
+import { buildCompactionContext } from "../agent/compaction.ts";
 import { getConfig } from "../core/config.ts";
 import { getSql } from "../db/client.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
@@ -82,19 +83,8 @@ async function handleCompaction(request: IncomingMessage, response: ServerRespon
   const declaredRunId = header(request, "x-run-id");
   const runId = await authorizeCaseToken(bearer(request), { kind: "tool", name: "state.compaction", investigationId });
   if (runId !== declaredRunId) throw new Error("Run scope mismatch.");
-  const [run, questions] = await Promise.all([
-    getSql()<Array<{ deadlineAt: Date | null; budgetCounters: Record<string, number> }>>`SELECT deadline_at AS "deadlineAt", budget_counters AS "budgetCounters" FROM runs WHERE id = ${runId}`,
-    getSql()<Array<{ id: string; question: string; status: string; selectedRoute: string | null }>>`SELECT id, question, status, selected_route AS "selectedRoute" FROM research_questions WHERE investigation_id = ${investigationId} AND status IN ('OPEN','IN_PROGRESS') ORDER BY created_at`,
-  ]);
   response.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-  response.end([
-    "Durable state survives compaction; do not reconstruct it from memory.",
-    `Investigation ID: ${investigationId}`,
-    `Run ID: ${runId}`,
-    `Phase deadline: ${run[0]?.deadlineAt?.toISOString() ?? "not-set"}`,
-    `Budget counters: ${JSON.stringify(run[0]?.budgetCounters ?? {})}`,
-    `Unresolved research questions: ${JSON.stringify(questions)}`,
-  ].join("\n"));
+  response.end(await buildCompactionContext(investigationId, runId));
 }
 
 async function handleModel(request: IncomingMessage, response: ServerResponse): Promise<void> {

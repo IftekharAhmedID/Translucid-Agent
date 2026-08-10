@@ -7,6 +7,16 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS research_wave_state jsonb NOT NULL DEF
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS source_authority text;
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS independence_group text;
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS canonical_source_url text;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'artifacts_new_source_trust_check') THEN
+    ALTER TABLE artifacts ADD CONSTRAINT artifacts_new_source_trust_check CHECK (
+      source_authority IN ('DIRECT_WORK','FIRST_PARTY_INSTITUTIONAL','INDEPENDENT_PROFESSIONAL','SELF_REPRESENTATION','CONTEXT','DISCOVERY_ONLY')
+      AND independence_group IS NOT NULL
+      AND canonical_source_url IS NOT NULL
+    ) NOT VALID;
+  END IF;
+END $$;
 -- statement-breakpoint
 ALTER TABLE provider_calls ADD COLUMN IF NOT EXISTS semantic_tool text;
 ALTER TABLE provider_calls ADD COLUMN IF NOT EXISTS provider_route text;

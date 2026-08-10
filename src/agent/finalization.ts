@@ -81,7 +81,10 @@ export function buildSummaryBundle(bundle: Record<string, unknown>, findings: Fi
       links: rows(bundle, "links"),
     },
     observations: rows(bundle, "observations"),
-    capabilityLimitations: Array.isArray(critic.limitations) ? critic.limitations : [],
+    capabilityLimitations: [
+      ...(Array.isArray(critic.limitations) ? critic.limitations : []),
+      ...rows(bundle, "extractionLimitations").flatMap(({ publicRationale }) => typeof publicRationale === "string" ? [publicRationale] : []),
+    ],
   };
 }
 

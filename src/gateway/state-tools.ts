@@ -5,8 +5,11 @@ import { insertAgentEvent } from "../db/investigations.ts";
 import { toolNames } from "../providers/contracts.ts";
 import {
   addEntityIdentifier,
+  authorizeResearchTask,
+  beginResearchWave,
   captureEvidence,
   createClaim,
+  completeResearchTask,
   getEntityGraph,
   linkEntities,
   linkEvidence,
@@ -23,7 +26,8 @@ import {
 export const stateToolNames = [
   "claim.create", "entity.upsert", "entity.add_identifier", "entity.link", "entity.get_graph",
   "observation.record", "observation.list_timeline", "research.open", "research.select_route",
-  "research.update", "research.resolve", "research.list", "evidence.capture", "evidence.link", "case_note", "capabilities.list",
+  "research.update", "research.resolve", "research.list", "research.begin_wave", "research.authorize_task", "research.complete_task",
+  "evidence.capture", "evidence.link", "case_note", "capabilities.list",
 ] as const;
 
 export type StateToolName = (typeof stateToolNames)[number];
@@ -31,9 +35,9 @@ export type StateToolName = (typeof stateToolNames)[number];
 const uuid = z.uuid();
 const schemas: Record<StateToolName, z.ZodType> = {
   "claim.create": z.object({ category: z.string().min(1).max(100), normalizedClaim: z.string().min(1).max(4_000), materiality: z.enum(["HIGH", "MEDIUM", "LOW"]), sourceSpan: z.record(z.string(), z.unknown()).optional() }).strict(),
-  "entity.upsert": z.object({ type: z.enum(["PERSON", "ORGANIZATION", "ACCOUNT", "WEBSITE", "PUBLICATION", "PATENT", "PACKAGE"]), canonicalName: z.string().min(1).max(500), metadata: z.record(z.string(), z.unknown()).optional() }).strict(),
+  "entity.upsert": z.object({ type: z.enum(["PERSON", "ORGANIZATION", "ACCOUNT", "WEBSITE", "PUBLICATION", "PATENT", "PACKAGE"]), canonicalName: z.string().min(1).max(500), role: z.enum(["CANDIDATE_ROOT", "EXTERNAL"]), metadata: z.record(z.string(), z.unknown()).optional() }).strict(),
   "entity.add_identifier": z.object({ entityId: uuid, type: z.string().min(1).max(100), value: z.string().min(1).max(1_000), confidence: z.number().min(0).max(1), evidenceId: uuid }).strict(),
-  "entity.link": z.object({ fromEntityId: uuid, toEntityId: uuid, relationship: z.string().min(1).max(100), anchors: z.array(z.object({ type: z.enum(["EMPLOYER_OVERLAP", "VERIFIED_DOMAIN", "CROSS_LINKED_ACCOUNT", "LOCATION_HISTORY", "REPOSITORY_IDENTITY", "AUTHORED_PAGE"]), evidenceId: uuid, sourceKey: z.string().min(1) }).strict()).min(2).max(20) }).strict(),
+  "entity.link": z.object({ fromEntityId: uuid, toEntityId: uuid, relationship: z.string().min(1).max(100), anchors: z.array(z.object({ type: z.enum(["EMPLOYER_OVERLAP", "VERIFIED_DOMAIN", "CROSS_LINKED_ACCOUNT", "LOCATION_HISTORY", "REPOSITORY_IDENTITY", "AUTHORED_PAGE"]), evidenceId: uuid }).strict()).min(2).max(20) }).strict(),
   "entity.get_graph": z.object({}).strict(),
   "observation.record": z.object({ artifactId: uuid, entityId: uuid, field: z.string().min(1).max(200), valueJson: z.unknown(), sourceEventAt: z.iso.datetime().optional(), validFrom: z.iso.datetime().optional(), validTo: z.iso.datetime().optional() }).strict(),
   "observation.list_timeline": z.object({ entityId: uuid.optional() }).strict(),
@@ -42,7 +46,10 @@ const schemas: Record<StateToolName, z.ZodType> = {
   "research.update": z.object({ questionId: uuid, priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(), possibleRoutes: z.array(z.enum(toolNames)).min(1).max(20).optional(), status: z.enum(["OPEN", "IN_PROGRESS"]).optional(), publicRationale: z.string().min(10).max(500) }).strict().refine((value) => Boolean(value.priority || value.possibleRoutes || value.status), "A research question update is required."),
   "research.resolve": z.object({ questionId: uuid, status: z.enum(["RESOLVED", "EXHAUSTED", "SKIPPED"]), resolutionSummary: z.string().min(5).max(2_000) }).strict(),
   "research.list": z.object({}).strict(),
-  "evidence.capture": z.object({ artifactId: uuid, exactQuote: z.string().min(1).max(12_000), sourceLocation: z.record(z.string(), z.unknown()).optional(), sourceTier: z.string().min(1).max(100), relation: z.enum(["SUPPORTS", "CONTRADICTS", "CONTEXT"]), claimIds: z.array(uuid).max(100), entityIds: z.array(uuid).max(100) }).strict(),
+  "research.begin_wave": z.object({ waveKind: z.enum(["INITIAL", "TARGETED"]), questionIds: z.array(uuid).min(1).max(12), escalationReason: z.enum(["MATERIAL_CONTRADICTION", "IDENTITY_AMBIGUITY", "CHRONOLOGY_CONFLICT", "NEW_EVIDENCE_FAMILY", "MATERIAL_UNCERTAINTY"]).optional(), publicRationale: z.string().min(10).max(500) }).strict().refine((value) => value.waveKind === "INITIAL" || Boolean(value.escalationReason), "A targeted wave requires an escalation reason."),
+  "research.authorize_task": z.object({ role: z.enum(["professional-investigator", "github-investigator", "web-records-investigator", "social-investigator"]) }).strict(),
+  "research.complete_task": z.object({ role: z.enum(["professional-investigator", "github-investigator", "web-records-investigator", "social-investigator"]) }).strict(),
+  "evidence.capture": z.object({ artifactId: uuid, exactQuote: z.string().min(1).max(12_000), sourceLocation: z.record(z.string(), z.unknown()).optional(), relation: z.enum(["SUPPORTS", "CONTRADICTS", "CONTEXT"]), claimIds: z.array(uuid).max(100), entityIds: z.array(uuid).max(100) }).strict(),
   "evidence.link": z.object({ evidenceId: uuid, claimIds: z.array(uuid).max(100), entityIds: z.array(uuid).max(100) }).strict().refine((value) => value.claimIds.length > 0 || value.entityIds.length > 0, "A claim or entity link is required."),
   "case_note": z.object({ phase: z.string().min(1).max(100), status: z.string().min(1).max(100), publicRationale: z.string().min(10).max(500) }).strict(),
   "capabilities.list": z.object({}).strict(),
@@ -63,13 +70,13 @@ export async function executeStateTool(name: StateToolName, raw: unknown, contex
   const base = { investigationId: context.investigationId, runId: context.runId };
   switch (name) {
     case "claim.create":
-      return createClaim({ ...base, category: String(args.category), normalizedClaim: String(args.normalizedClaim), materiality: args.materiality as "HIGH" | "MEDIUM" | "LOW", sourceSpan: args.sourceSpan as Record<string, unknown> | undefined });
+      return createClaim({ ...base, category: String(args.category), normalizedClaim: String(args.normalizedClaim), materiality: args.materiality as "HIGH" | "MEDIUM" | "LOW", sourceSpan: args.sourceSpan as Record<string, unknown> | undefined, agent: context.agent, sessionId: context.sessionId });
     case "entity.upsert":
-      return upsertEntity({ ...base, type: args.type as "PERSON" | "ORGANIZATION" | "ACCOUNT" | "WEBSITE" | "PUBLICATION" | "PATENT" | "PACKAGE", canonicalName: String(args.canonicalName), metadata: args.metadata as Record<string, unknown> | undefined });
+      return upsertEntity({ ...base, type: args.type as "PERSON" | "ORGANIZATION" | "ACCOUNT" | "WEBSITE" | "PUBLICATION" | "PATENT" | "PACKAGE", canonicalName: String(args.canonicalName), role: args.role as "CANDIDATE_ROOT" | "EXTERNAL", agent: context.agent, metadata: args.metadata as Record<string, unknown> | undefined });
     case "entity.add_identifier":
       return addEntityIdentifier({ ...base, entityId: String(args.entityId), type: String(args.type), value: String(args.value), confidence: Number(args.confidence), evidenceId: String(args.evidenceId) });
     case "entity.link":
-      return linkEntities({ ...base, fromEntityId: String(args.fromEntityId), toEntityId: String(args.toEntityId), relationship: String(args.relationship), anchors: args.anchors as Array<{ type: "EMPLOYER_OVERLAP" | "VERIFIED_DOMAIN" | "CROSS_LINKED_ACCOUNT" | "LOCATION_HISTORY" | "REPOSITORY_IDENTITY" | "AUTHORED_PAGE"; evidenceId: string; sourceKey: string }> });
+      return linkEntities({ ...base, fromEntityId: String(args.fromEntityId), toEntityId: String(args.toEntityId), relationship: String(args.relationship), anchors: args.anchors as Array<{ type: "EMPLOYER_OVERLAP" | "VERIFIED_DOMAIN" | "CROSS_LINKED_ACCOUNT" | "LOCATION_HISTORY" | "REPOSITORY_IDENTITY" | "AUTHORED_PAGE"; evidenceId: string }>, agent: context.agent, sessionId: context.sessionId });
     case "entity.get_graph":
       return getEntityGraph(context.investigationId, context.runId);
     case "observation.record":
@@ -94,8 +101,17 @@ export async function executeStateTool(name: StateToolName, raw: unknown, contex
     }
     case "research.list":
       return listResearchQuestions(context.investigationId, context.runId);
+    case "research.begin_wave": {
+      const result = await beginResearchWave({ ...base, kind: args.waveKind as "INITIAL" | "TARGETED", questionIds: args.questionIds as string[], escalationReason: args.escalationReason as "MATERIAL_CONTRADICTION" | "IDENTITY_AMBIGUITY" | "CHRONOLOGY_CONFLICT" | "NEW_EVIDENCE_FAMILY" | "MATERIAL_UNCERTAINTY" | undefined, publicRationale: String(args.publicRationale), agent: context.agent, sessionId: context.sessionId });
+      await insertAgentEvent({ ...base, phase: "RESEARCH", agent: context.agent, sessionId: context.sessionId, eventType: "RESEARCH_WAVE_STARTED", status: "IN_PROGRESS", publicRationale: String(args.publicRationale), payload: result });
+      return result;
+    }
+    case "research.authorize_task":
+      return authorizeResearchTask({ ...base, role: args.role as "professional-investigator" | "github-investigator" | "web-records-investigator" | "social-investigator", agent: context.agent, sessionId: context.sessionId });
+    case "research.complete_task":
+      return completeResearchTask({ ...base, role: args.role as "professional-investigator" | "github-investigator" | "web-records-investigator" | "social-investigator", agent: context.agent, sessionId: context.sessionId });
     case "evidence.capture":
-      return captureEvidence({ ...base, artifactId: String(args.artifactId), exactQuote: String(args.exactQuote), sourceLocation: args.sourceLocation as Record<string, unknown> | undefined, sourceTier: String(args.sourceTier), relation: args.relation as "SUPPORTS" | "CONTRADICTS" | "CONTEXT", claimIds: args.claimIds as string[], entityIds: args.entityIds as string[] });
+      return captureEvidence({ ...base, artifactId: String(args.artifactId), exactQuote: String(args.exactQuote), sourceLocation: args.sourceLocation as Record<string, unknown> | undefined, relation: args.relation as "SUPPORTS" | "CONTRADICTS" | "CONTEXT", claimIds: args.claimIds as string[], entityIds: args.entityIds as string[] });
     case "evidence.link":
       return linkEvidence({ ...base, evidenceId: String(args.evidenceId), claimIds: args.claimIds as string[], entityIds: args.entityIds as string[] });
     case "case_note":

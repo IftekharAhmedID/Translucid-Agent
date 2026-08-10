@@ -7,9 +7,12 @@ import { closeDatabase } from "./client.ts";
 import { createInvestigation } from "./investigations.ts";
 import {
   addEntityIdentifier,
+  authorizeResearchTask,
+  beginResearchWave,
   captureArtifact,
   captureEvidence,
   createClaim,
+  completeResearchTask,
   linkEntities,
   linkEvidence,
   listTimeline,
@@ -73,7 +76,7 @@ test("entity graph requires independent evidence-backed anchors", async () => {
     ...ids,
     kind: "CAPTURED_PAGE",
     provider: "fixture-personal-site",
-    sourceUrl: "https://synthetic.example.test/about",
+    sourceUrl: "https://synthetic.dev/about",
     mimeType: "text/plain",
     content: "My account is synthetic-ada-dev and I work at Acme.",
   });
@@ -95,6 +98,8 @@ test("entity graph requires independent evidence-backed anchors", async () => {
     claimIds: [claim.id],
     entityIds: [person.id, account.id],
   });
+  const [derived] = await sql<Array<{ sourceTier: string }>>`SELECT source_tier AS "sourceTier" FROM evidence WHERE id = ${evidenceA.id}`;
+  assert.equal(derived?.sourceTier, "CONTEXT");
   const linkedEvidence = await linkEvidence({ ...ids, evidenceId: evidenceA.id, claimIds: [], entityIds: [account.id] });
   assert.ok(linkedEvidence.entityIds.includes(account.id));
 
@@ -106,11 +111,7 @@ test("entity graph requires independent evidence-backed anchors", async () => {
         toEntityId: account.id,
         relationship: "GITHUB_ACCOUNT",
         anchors: [
-          {
-            type: "EMPLOYER_OVERLAP",
-            evidenceId: evidenceA.id,
-            sourceKey: "fixture-linkedin",
-          },
+          { type: "EMPLOYER_OVERLAP", evidenceId: evidenceA.id },
         ],
       }),
     /two independent/i,
@@ -122,16 +123,8 @@ test("entity graph requires independent evidence-backed anchors", async () => {
     toEntityId: account.id,
     relationship: "GITHUB_ACCOUNT",
     anchors: [
-      {
-        type: "EMPLOYER_OVERLAP",
-        evidenceId: evidenceA.id,
-        sourceKey: "fixture-linkedin",
-      },
-      {
-        type: "CROSS_LINKED_ACCOUNT",
-        evidenceId: evidenceB.id,
-        sourceKey: "fixture-personal-site",
-      },
+      { type: "EMPLOYER_OVERLAP", evidenceId: evidenceA.id },
+      { type: "CROSS_LINKED_ACCOUNT", evidenceId: evidenceB.id },
     ],
   });
   assert.ok(link.confidence >= 0.7);
@@ -145,6 +138,19 @@ test("entity graph requires independent evidence-backed anchors", async () => {
     evidenceId: evidenceB.id,
   });
   assert.equal(identifier.normalizedValue, "synthetic-ada-dev");
+});
+
+test("same-lineage evidence cannot be promoted into independent identity anchors", async () => {
+  const ids = await createInvestigation({ submission: "Synthetic same-lineage profile.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
+  const person = await upsertEntity({ ...ids, type: "PERSON", canonicalName: "Synthetic Ada" });
+  const account = await upsertEntity({ ...ids, type: "ACCOUNT", canonicalName: "ada-dev" });
+  const first = await captureArtifact({ ...ids, kind: "PROVIDER_RESPONSE", provider: "linkdapi", sourceUrl: "https://www.linkedin.com/in/ada", mimeType: "text/plain", content: "Ada works at Acme.", provenance: { providerRoute: "linkdapi.profile" } });
+  const second = await captureArtifact({ ...ids, kind: "PROVIDER_RESPONSE", provider: "brightdata-linkedin-profile", sourceUrl: "https://linkedin.com/in/Ada/#about", mimeType: "text/plain", content: "Ada links to ada-dev.", provenance: { providerRoute: "brightdata.linkedin-profile" } });
+  const evidenceA = await captureEvidence({ ...ids, artifactId: first.id, exactQuote: "Ada works at Acme.", relation: "SUPPORTS", claimIds: [], entityIds: [person.id] });
+  const evidenceB = await captureEvidence({ ...ids, artifactId: second.id, exactQuote: "Ada links to ada-dev.", relation: "SUPPORTS", claimIds: [], entityIds: [account.id] });
+  await assert.rejects(() => linkEntities({ ...ids, fromEntityId: person.id, toEntityId: account.id, relationship: "LINKEDIN_ACCOUNT", agent: "professional-investigator", sessionId: "same-lineage", anchors: [{ type: "EMPLOYER_OVERLAP", evidenceId: evidenceA.id }, { type: "CROSS_LINKED_ACCOUNT", evidenceId: evidenceB.id }] }), /two independent/i);
+  const [event] = await sql<Array<{ eventType: string }>>`SELECT event_type AS "eventType" FROM agent_events WHERE run_id = ${ids.runId} ORDER BY id DESC LIMIT 1`;
+  assert.equal(event?.eventType, "IDENTITY_LINK_REJECTED");
 });
 
 test("search snippets cannot become evidence and temporal observations remain separate", async () => {
@@ -282,4 +288,32 @@ test("frontier reconciliation makes every active question terminal before critic
     WHERE run_id = ${ids.runId} ORDER BY id DESC LIMIT 1
   `;
   assert.equal(event?.eventType, "RESEARCH_FRONTIER_RECONCILED");
+});
+
+test("one targeted second research wave is allowed while duplicate roles and a third wave are rejected", async () => {
+  const ids = await createInvestigation({ submission: "Synthetic adaptive research.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
+  const claim = await createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Ada worked at Acme.", materiality: "HIGH" });
+  const question = await openResearchQuestion({ ...ids, claimIds: [claim.id], question: "What was Ada's Acme title?", priority: "HIGH", possibleRoutes: ["web.search"], createdByAgent: "lead-investigator" });
+  const initial = await beginResearchWave({ ...ids, kind: "INITIAL", questionIds: [question.id], publicRationale: "Starting one broad route for the active material title question.", agent: "lead-investigator" });
+  assert.equal(initial.waveNumber, 1);
+  await authorizeResearchTask({ ...ids, role: "professional-investigator", agent: "lead-investigator" });
+  await assert.rejects(() => authorizeResearchTask({ ...ids, role: "professional-investigator", agent: "lead-investigator" }), /already been delegated/i);
+  await completeResearchTask({ ...ids, role: "professional-investigator", agent: "lead-investigator" });
+  const targeted = await beginResearchWave({ ...ids, kind: "TARGETED", questionIds: [question.id], escalationReason: "CHRONOLOGY_CONFLICT", publicRationale: "A material chronology conflict requires one targeted archive pass.", agent: "lead-investigator" });
+  assert.equal(targeted.waveNumber, 2);
+  await authorizeResearchTask({ ...ids, role: "web-records-investigator", agent: "lead-investigator" });
+  await assert.rejects(() => beginResearchWave({ ...ids, kind: "TARGETED", questionIds: [question.id], escalationReason: "MATERIAL_UNCERTAINTY", publicRationale: "Attempting an impermissible third research wave.", agent: "lead-investigator" }), /third research wave/i);
+});
+
+test("claim 61 is rejected and preserves a visible truncation limitation", async () => {
+  const ids = await createInvestigation({ submission: "Synthetic high-density intake.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
+  for (let index = 1; index <= 60; index += 1) {
+    await createClaim({ ...ids, category: "REPORTABLE", normalizedClaim: `Reportable synthetic fact ${index}.`, materiality: "LOW", agent: "lead-investigator" });
+  }
+  await assert.rejects(() => createClaim({ ...ids, category: "REPORTABLE", normalizedClaim: "Reportable synthetic fact 61.", materiality: "LOW", agent: "lead-investigator" }), /CLAIM_EXTRACTION_TRUNCATED/);
+  const [counts] = await sql<Array<{ claims: number; events: number }>>`
+    SELECT (SELECT count(*)::integer FROM claims WHERE run_id = ${ids.runId}) AS claims,
+      (SELECT count(*)::integer FROM agent_events WHERE run_id = ${ids.runId} AND event_type = 'CLAIM_EXTRACTION_TRUNCATED') AS events
+  `;
+  assert.deepEqual(counts, { claims: 60, events: 1 });
 });

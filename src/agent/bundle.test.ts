@@ -3,11 +3,12 @@ import test from "node:test";
 
 import { buildAdjudicationBundle, selectEvidenceForCritic } from "./bundle.ts";
 
-test("critic evidence selection caps each relation while preferring distinct artifacts", () => {
+test("critic evidence selection caps each relation while admitting only one artifact per source family", () => {
   const evidence = [
     ...Array.from({ length: 6 }, (_, index) => ({
       id: `support-${index}`,
       artifactId: index < 4 ? "artifact-repeated" : `artifact-${index}`,
+      independenceGroup: index < 4 ? "same-family" : `family-${index}`,
       sourceTier: index === 5 ? "Primary - official employer page" : "PRIMARY_SELF_AUTHORED",
       relation: "SUPPORTS",
       claimIds: ["claim-1"],
@@ -17,7 +18,7 @@ test("critic evidence selection caps each relation while preferring distinct art
   ];
 
   const selected = selectEvidenceForCritic(evidence);
-  assert.equal(selected.filter(({ relation }) => relation === "SUPPORTS").length, 4);
+  assert.equal(selected.filter(({ relation }) => relation === "SUPPORTS").length, 3);
   assert.equal(selected.filter(({ relation }) => relation === "CONTEXT").length, 1);
   assert.equal(selected.filter(({ relation }) => relation === "CONTRADICTS").length, 2);
   assert.equal(selected.some(({ id }) => id === "support-5"), true);

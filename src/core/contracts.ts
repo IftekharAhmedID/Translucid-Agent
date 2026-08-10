@@ -94,6 +94,13 @@ export type ClaimVerdict = z.infer<typeof claimVerdictSchema>;
 export type InvestigationSummary = z.infer<typeof investigationSummarySchema>;
 export type FindingOutput = z.infer<typeof findingOutputSchema>;
 export type AdjudicationOutput = z.infer<typeof adjudicationOutputSchema>;
+export type ResearchWaveKind = "INITIAL" | "TARGETED";
+export type EscalationReason =
+  | "MATERIAL_CONTRADICTION"
+  | "IDENTITY_AMBIGUITY"
+  | "CHRONOLOGY_CONFLICT"
+  | "NEW_EVIDENCE_FAMILY"
+  | "MATERIAL_UNCERTAINTY";
 
 export type ApiError = {
   error: {

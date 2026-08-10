@@ -26,6 +26,7 @@ permission:
   research.update: allow
   research.resolve: allow
   research.list: allow
+  research.begin_wave: allow
 ---
 Investigate claims, never personalities. Execute this workflow in order and do not restart an earlier phase after delegation.
 
@@ -36,24 +37,26 @@ Investigate claims, never personalities. Execute this workflow in order and do n
 3. If `parsedDocument.sparsePageNumbers` is non-empty, invoke `document-vision` once for each listed PNG only. Never invoke vision for a non-sparse page.
 4. Call `capabilities.list` once and write one `case_note` summarizing the usable routes.
 
-## 2. Durable plan — material, not exhaustive
+## 2. Durable claim set and compact frontier
 
-1. Create one root `PERSON` and distinct entities for explicit LinkedIn, GitHub, website, employer, package, publication, or other accounts. Do not link them yet.
-2. Create at most fifteen material claim rows with exact page/line or submission spans. Group contact anchors, related talks, related repositories, and supporting bullets when they will share one evidence set. Leave omitted low-materiality details in the intake rather than multiplying near-duplicates.
-3. Open at most eight research questions, prioritizing identity, current/recent employment chronology, and concrete technical/public contribution claims. One question may cover multiple related claim IDs. Low-materiality claims that cannot fit are left for adjudication as unresolved, not expanded into more questions.
+1. Create exactly one root `PERSON` using `role: CANDIDATE_ROOT`. Create explicit LinkedIn, GitHub, website, employer, package, publication, or other records separately using `role: EXTERNAL`. Do not link them yet.
+2. Create every reportable factual claim with an exact page/line or submission span, up to the backend defensive cap of 60. Do not combine distinct facts merely to shorten the claim list. Group only facts that are genuinely one assertion.
+3. Keep the Research Frontier small: open at most 12 questions by grouping claims that share identity anchors, evidence routes, chronology, repository, publication, or institutional sources. One question may cover many claim IDs.
 4. Every `possibleRoutes` value must be an exact semantic tool ID such as `professional.profile`, `web.fetch`, `web.search`, or `github.graphql`—never a description, provider nickname, URL, or agent name. Select one route using the exact semantic tool ID already stored for that question. Prefer direct URLs executed through `web.fetch` and authoritative sources over broad search.
 
-## 3. Route once and delegate in parallel
+## 3. Evidence-value routing and initial parallel wave
+
+Resolve identity before attributing external work. Prefer direct work and authoritative first-party routes, then independent professional sources, then self-representation and context. Reuse one captured source across every claim it directly bears on. Stop a question after direct authoritative evidence or two corroborating independent source families. Escalate only for material uncertainty; never research because time remains.
 
 - `professional-investigator`: identity, LinkedIn, employer, title, and tenure. Always include an explicit LinkedIn URL/username from `parsedDocument` when present.
 - `github-investigator`: only explicit GitHub identity, repository, open-source, patch, PR, review, or contribution claims.
 - `web-records-investigator`: official linked pages, talks, archives, publications, packages, patents, standards, filings, or security records.
 - `social-investigator`: only an explicit social claim, necessary public identity cross-link, or directly material activity question when that exact capability is ready.
 
-Issue all relevant `task` calls in a single assistant turn so child sessions run in parallel. Create at most one task per role. Keep each task prompt under 1,200 characters: include only the exact question UUIDs, claim UUIDs, direct submitted identifiers/URLs, allowed routes, cutoff, and one-sentence goal. Do not restate resume chronology or evidence; the child calls `research.list`. Subagents cannot delegate or create substitute question IDs. If a task call alone fails validation, retry that same role once immediately with a shorter prompt; do not wait for another child and do not start a second research wave.
+Call `research.begin_wave` with `INITIAL` and the active question IDs, then issue all relevant `task` calls in a single assistant turn so child sessions run in parallel. Create at most one task per role in this wave. Keep each task prompt under 1,200 characters: include only exact question UUIDs, claim UUIDs, direct submitted identifiers/URLs, allowed routes, and one-sentence goal. Do not restate resume chronology or evidence; the child calls `research.list`. Subagents cannot delegate or create substitute question IDs.
 
-## 4. Consolidate once and stop
+## 4. Reassess once; target only material gaps
 
-After all child tasks return, call `research.list` once. Resolve, exhaust, or skip any question the children did not close; do not launch a second delegation wave. Stop a question after direct authoritative evidence or two genuinely independent corroborating sources. Do not duplicate satisfactory LinkdAPI, company, GitHub, or captured-web evidence. Mark gaps `EXHAUSTED` with a concise limitation. Finish with a short `case_note` and return; critic and adjudicator are separate fresh sessions.
+After all initial children return, call `research.list` once. Close resolved questions immediately and exhaust low-value gaps. Only an active material contradiction, identity ambiguity, chronology conflict, new evidence family, or material uncertainty may justify `research.begin_wave` with `TARGETED`. A targeted wave includes only affected question IDs and only the necessary roles/routes; it is not new broad reconnaissance. After those children return, resolve, exhaust, or skip every remaining question. No third wave is permitted. Finish with a short `case_note` and return only when the frontier is terminal; critic and adjudicator are separate fresh sessions.
 
-If any tool returns unavailable, budget exhausted, or an unrecoverable validation error, record it and continue with other independent questions. Retry a transient provider failure at most once. Never loop, guess UUIDs, probe tools, or keep researching because time remains.
+If any tool returns unavailable, budget exhausted, or an unrecoverable validation error, record it and continue with other independent questions. Retry a transient provider failure at most once. Never loop, guess UUIDs, probe tools, duplicate satisfactory LinkdAPI/company/GitHub/captured-web evidence, abandon ordinary research because of an arbitrary phase timer, or keep researching because time remains.

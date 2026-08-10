@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type postgres from "postgres";
 
-import type { EntityType, ResearchQuestionStatus } from "../core/contracts.ts";
+import type { EntityType, EscalationReason, ResearchQuestionStatus, ResearchWaveKind } from "../core/contracts.ts";
 import { assessEntityLink, type IdentityAnchor } from "../core/identity.ts";
 import { sha256 } from "../core/input.ts";
+import { deriveArtifactTrust } from "../core/source-trust.ts";
 import { getSql } from "./client.ts";
 
 const MAX_CAPTURE_BYTES = 5 * 1024 * 1024;
@@ -39,20 +40,44 @@ export async function createClaim(
     sourceSpan?: Record<string, unknown>;
     validFrom?: Date;
     validTo?: Date;
+    agent?: string;
+    sessionId?: string;
   },
 ): Promise<{ id: string }> {
   const id = randomUUID();
-  await getSql()`
-    INSERT INTO claims (
-      id, investigation_id, run_id, category, normalized_claim, materiality,
-      source_span, valid_from, valid_to
-    ) VALUES (
-      ${id}, ${input.investigationId}, ${input.runId}, ${input.category},
-      ${input.normalizedClaim}, ${input.materiality},
-      ${input.sourceSpan ? getSql().json(toJson(input.sourceSpan)) : null},
-      ${input.validFrom ?? null}, ${input.validTo ?? null}
-    )
-  `;
+  const created = await getSql().begin(async (transaction) => {
+    await transaction`SELECT id FROM runs WHERE id = ${input.runId} AND investigation_id = ${input.investigationId} FOR UPDATE`;
+    const [count] = await transaction<Array<{ count: number }>>`
+      SELECT count(*)::integer AS count FROM claims WHERE run_id = ${input.runId}
+    `;
+    if ((count?.count ?? 0) >= 60) return false;
+    await transaction`
+      INSERT INTO claims (
+        id, investigation_id, run_id, category, normalized_claim, materiality,
+        source_span, valid_from, valid_to
+      ) VALUES (
+        ${id}, ${input.investigationId}, ${input.runId}, ${input.category},
+        ${input.normalizedClaim}, ${input.materiality},
+        ${input.sourceSpan ? transaction.json(toJson(input.sourceSpan)) : null},
+        ${input.validFrom ?? null}, ${input.validTo ?? null}
+      )
+    `;
+    return true;
+  });
+  if (!created) {
+    await getSql()`
+      INSERT INTO agent_events (
+        investigation_id, run_id, phase, agent, session_id, event_type,
+        status, budget_delta, public_rationale, payload
+      ) VALUES (
+        ${input.investigationId}, ${input.runId}, 'INTAKE', ${input.agent ?? "gateway"},
+        ${input.sessionId ?? null}, 'CLAIM_EXTRACTION_TRUNCATED', 'TRUNCATED', '{}'::jsonb,
+        'The defensive 60-claim persistence cap was reached; additional reportable intake facts remain an explicit limitation.',
+        ${getSql().json(toJson({ maximumClaims: 60 }))}
+      )
+    `;
+    throw new Error("CLAIM_EXTRACTION_TRUNCATED: the 60-claim defensive cap was reached.");
+  }
   return { id };
 }
 
@@ -61,6 +86,8 @@ export async function upsertEntity(
     type: EntityType;
     canonicalName: string;
     metadata?: Record<string, unknown>;
+    role?: "CANDIDATE_ROOT" | "EXTERNAL";
+    agent?: string;
   },
 ): Promise<{ id: string; canonicalName: string; type: EntityType }> {
   const canonicalName = input.canonicalName.trim();
@@ -82,6 +109,18 @@ export async function upsertEntity(
     RETURNING id, canonical_name AS "canonicalName", type
   `;
   if (!row) throw new Error("Failed to upsert entity.");
+  if (input.role === "CANDIDATE_ROOT") {
+    if (input.agent !== "lead-investigator" || input.type !== "PERSON") {
+      throw new Error("Only the lead investigator may establish the candidate root PERSON.");
+    }
+    const [run] = await getSql()<Array<{ id: string }>>`
+      UPDATE runs SET root_entity_id = ${row.id}, updated_at = now()
+      WHERE id = ${input.runId} AND investigation_id = ${input.investigationId}
+        AND (root_entity_id IS NULL OR root_entity_id = ${row.id})
+      RETURNING id
+    `;
+    if (!run) throw new Error("A different candidate root is already established for this run.");
+  }
   return row;
 }
 
@@ -110,16 +149,25 @@ export async function captureArtifact(
 
   const id = randomUUID();
   const digest = sha256(content);
+  const provenance = input.provenance ?? {};
+  let parsedContent: unknown = content.toString("utf8");
+  if (input.mimeType === "application/json") {
+    try { parsedContent = JSON.parse(String(parsedContent)) as unknown; }
+    catch { /* retain the captured text for conservative lineage derivation */ }
+  }
+  const trust = deriveArtifactTrust({ kind: input.kind, provider: input.provider, sourceUrl: input.sourceUrl, provenance, content: parsedContent });
   await getSql()`
     INSERT INTO artifacts (
       id, investigation_id, run_id, kind, provider, source_url, mime_type,
-      file_name, http_metadata, sha256, byte_length, content_bytes, provenance
+      file_name, http_metadata, sha256, byte_length, content_bytes, provenance,
+      source_authority, independence_group, canonical_source_url
     ) VALUES (
       ${id}, ${input.investigationId}, ${input.runId}, ${input.kind},
       ${input.provider}, ${input.sourceUrl ?? null}, ${input.mimeType},
       ${input.fileName ?? null}, ${getSql().json(toJson(input.httpMetadata ?? {}))},
       ${digest}, ${content.byteLength}, ${content},
-      ${getSql().json(toJson(input.provenance ?? {}))}
+      ${getSql().json(toJson(provenance))}, ${trust.sourceAuthority},
+      ${trust.independenceGroup}, ${trust.canonicalSourceUrl}
     )
   `;
   return { id, sha256: digest, byteLength: content.byteLength };
@@ -130,16 +178,17 @@ export async function captureEvidence(
     artifactId: string;
     exactQuote: string;
     sourceLocation?: Record<string, unknown>;
-    sourceTier: string;
+    sourceTier?: string;
     relation: "SUPPORTS" | "CONTRADICTS" | "CONTEXT";
     claimIds: string[];
     entityIds: string[];
   },
 ): Promise<{ id: string }> {
   const [artifact] = await getSql()<
-    { contentBytes: Uint8Array; provenance: Record<string, unknown>; mimeType: string }[]
+    { contentBytes: Uint8Array; provenance: Record<string, unknown>; mimeType: string; sourceAuthority: string | null }[]
   >`
-    SELECT content_bytes AS "contentBytes", provenance, mime_type AS "mimeType"
+    SELECT content_bytes AS "contentBytes", provenance, mime_type AS "mimeType",
+      source_authority AS "sourceAuthority"
     FROM artifacts
     WHERE id = ${input.artifactId} AND investigation_id = ${input.investigationId}
       AND run_id = ${input.runId}
@@ -170,7 +219,7 @@ export async function captureEvidence(
     ) VALUES (
       ${id}, ${input.investigationId}, ${input.runId}, ${input.artifactId},
       ${quote}, ${getSql().json(toJson(input.sourceLocation ?? {}))},
-      ${input.sourceTier}, ${input.relation}, ${input.claimIds}::uuid[],
+      ${artifact.sourceAuthority ?? "CONTEXT"}, ${input.relation}, ${input.claimIds}::uuid[],
       ${input.entityIds}::uuid[]
     )
   `;
@@ -243,7 +292,9 @@ export async function linkEntities(
     fromEntityId: string;
     toEntityId: string;
     relationship: string;
-    anchors: IdentityAnchor[];
+    anchors: Array<Pick<IdentityAnchor, "type" | "evidenceId">>;
+    agent?: string;
+    sessionId?: string;
   },
 ): Promise<{ id: string; confidence: number }> {
   await Promise.all([
@@ -260,8 +311,30 @@ export async function linkEntities(
       input.runId,
     ),
   ]);
-  const assessment = assessEntityLink(input.anchors);
+  const evidenceRows = await getSql()<Array<{ evidenceId: string; sourceKey: string }>>`
+    SELECT evidence.id AS "evidenceId",
+      COALESCE(artifact.independence_group, 'LEGACY_ARTIFACT:' || artifact.id::text) AS "sourceKey"
+    FROM evidence
+    JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id
+    WHERE evidence.id IN ${getSql()(input.anchors.map(({ evidenceId }) => evidenceId))}
+      AND evidence.investigation_id = ${input.investigationId}
+      AND evidence.run_id = ${input.runId}
+  `;
+  const sourceKeys = new Map(evidenceRows.map(({ evidenceId, sourceKey }) => [evidenceId, sourceKey]));
+  const backendAnchors = input.anchors.map((anchor) => ({ ...anchor, sourceKey: sourceKeys.get(anchor.evidenceId) ?? `MISSING:${anchor.evidenceId}` }));
+  const assessment = assessEntityLink(backendAnchors);
   if (!assessment.allowed) {
+    await getSql()`
+      INSERT INTO agent_events (
+        investigation_id, run_id, phase, agent, session_id, event_type,
+        status, budget_delta, public_rationale, payload
+      ) VALUES (
+        ${input.investigationId}, ${input.runId}, 'IDENTITY', ${input.agent ?? "gateway"},
+        ${input.sessionId ?? null}, 'IDENTITY_LINK_REJECTED', 'REJECTED', '{}'::jsonb,
+        'The proposed identity link lacked two evidence-backed anchor types from independent source families.',
+        ${getSql().json(toJson({ fromEntityId: input.fromEntityId, toEntityId: input.toEntityId, evidenceIds: input.anchors.map(({ evidenceId }) => evidenceId), reason: assessment.reason }))}
+      )
+    `;
     throw new Error("Two independent evidence-backed identity anchors are required.");
   }
 
@@ -273,7 +346,7 @@ export async function linkEntities(
     ) VALUES (
       ${id}, ${input.investigationId}, ${input.runId}, ${input.fromEntityId},
       ${input.toEntityId}, ${input.relationship}, ${assessment.confidence},
-      ${input.anchors.map((anchor) => anchor.evidenceId)}::uuid[]
+      ${backendAnchors.map((anchor) => anchor.evidenceId)}::uuid[]
     )
   `;
   return { id, confidence: assessment.confidence };
@@ -377,18 +450,122 @@ export async function openResearchQuestion(
 ): Promise<{ id: string; status: "OPEN" }> {
   await assertRowsBelongToCase("claims", input.claimIds, input.investigationId, input.runId);
   const id = randomUUID();
-  await getSql()`
-    INSERT INTO research_questions (
-      id, investigation_id, run_id, claim_ids, question, priority,
-      status, possible_routes, created_by_agent, created_by_session
-    ) VALUES (
-      ${id}, ${input.investigationId}, ${input.runId}, ${input.claimIds}::uuid[],
-      ${input.question}, ${input.priority}, 'OPEN',
-      ${getSql().json(toJson(input.possibleRoutes))}, ${input.createdByAgent},
-      ${input.createdBySession ?? null}
-    )
-  `;
+  const opened = await getSql().begin(async (transaction) => {
+    await transaction`SELECT id FROM runs WHERE id = ${input.runId} AND investigation_id = ${input.investigationId} FOR UPDATE`;
+    const [count] = await transaction<Array<{ count: number }>>`
+      SELECT count(*)::integer AS count FROM research_questions WHERE run_id = ${input.runId}
+    `;
+    if ((count?.count ?? 0) >= 12) return false;
+    await transaction`
+      INSERT INTO research_questions (
+        id, investigation_id, run_id, claim_ids, question, priority,
+        status, possible_routes, created_by_agent, created_by_session
+      ) VALUES (
+        ${id}, ${input.investigationId}, ${input.runId}, ${input.claimIds}::uuid[],
+        ${input.question}, ${input.priority}, 'OPEN',
+        ${transaction.json(toJson(input.possibleRoutes))}, ${input.createdByAgent},
+        ${input.createdBySession ?? null}
+      )
+    `;
+    return true;
+  });
+  if (!opened) throw new Error("The durable Research Frontier is limited to 12 grouped questions.");
   return { id, status: "OPEN" };
+}
+
+const researchRoles = ["professional-investigator", "github-investigator", "web-records-investigator", "social-investigator"] as const;
+type ResearchRole = (typeof researchRoles)[number];
+
+export async function beginResearchWave(input: CaseIds & {
+  kind: ResearchWaveKind;
+  questionIds: string[];
+  escalationReason?: EscalationReason;
+  publicRationale: string;
+  agent: string;
+  sessionId?: string;
+}): Promise<{ waveNumber: 1 | 2; kind: ResearchWaveKind; questionIds: string[] }> {
+  if (input.agent !== "lead-investigator") throw new Error("Only the lead investigator may begin a research wave.");
+  return getSql().begin(async (transaction) => {
+    const [run] = await transaction<Array<{ waveCount: number; waveState: Record<string, unknown> }>>`
+      SELECT research_wave_count AS "waveCount", research_wave_state AS "waveState"
+      FROM runs WHERE id = ${input.runId} AND investigation_id = ${input.investigationId} FOR UPDATE
+    `;
+    if (!run) throw new Error("Run not found while beginning research wave.");
+    if (run.waveCount >= 2) throw new Error("A third research wave is not permitted.");
+    if (input.kind === "INITIAL" && run.waveCount !== 0) throw new Error("The initial research wave has already begun.");
+    if (input.kind === "TARGETED" && (run.waveCount !== 1 || !input.escalationReason)) throw new Error("A targeted second wave requires one completed initial wave and an allowed escalation reason.");
+    if (input.kind === "TARGETED") {
+      const current = run.waveState.current;
+      const roles = current && typeof current === "object" && Array.isArray((current as { roles?: unknown }).roles) ? (current as { roles: unknown[] }).roles.map(String) : [];
+      const completedRoles = current && typeof current === "object" && Array.isArray((current as { completedRoles?: unknown }).completedRoles) ? (current as { completedRoles: unknown[] }).completedRoles.map(String) : [];
+      if (roles.some((role) => !completedRoles.includes(role))) throw new Error("The initial research tasks must finish before a targeted second wave begins.");
+    }
+    const active = await transaction<Array<{ id: string }>>`
+      SELECT id FROM research_questions WHERE investigation_id = ${input.investigationId}
+        AND run_id = ${input.runId} AND id IN ${transaction(input.questionIds)} AND status IN ('OPEN','IN_PROGRESS')
+    `;
+    if (active.length !== new Set(input.questionIds).size) throw new Error("Every research-wave question must be active in this run.");
+    const waveNumber = (run.waveCount + 1) as 1 | 2;
+    const priorWaves = Array.isArray(run.waveState.waves) ? run.waveState.waves : [];
+    const wave = { waveNumber, kind: input.kind, questionIds: [...new Set(input.questionIds)], escalationReason: input.escalationReason ?? null, roles: [], completedRoles: [], publicRationale: input.publicRationale, startedAt: new Date().toISOString() };
+    await transaction`
+      UPDATE runs SET research_wave_count = ${waveNumber},
+        research_wave_state = ${transaction.json(toJson({ waves: [...priorWaves, wave], current: wave }))},
+        updated_at = now() WHERE id = ${input.runId}
+    `;
+    return { waveNumber, kind: input.kind, questionIds: wave.questionIds };
+  });
+}
+
+export async function authorizeResearchTask(input: CaseIds & {
+  role: ResearchRole;
+  agent: string;
+  sessionId?: string;
+}): Promise<{ waveNumber: number; role: ResearchRole }> {
+  if (input.agent !== "lead-investigator" || !researchRoles.includes(input.role)) throw new Error("Research task delegation is not authorized for this agent or role.");
+  return getSql().begin(async (transaction) => {
+    const [run] = await transaction<Array<{ waveCount: number; waveState: Record<string, unknown> }>>`
+      SELECT research_wave_count AS "waveCount", research_wave_state AS "waveState"
+      FROM runs WHERE id = ${input.runId} AND investigation_id = ${input.investigationId} FOR UPDATE
+    `;
+    if (!run || run.waveCount < 1 || run.waveCount > 2) throw new Error("Begin a durable research wave before delegating tasks.");
+    const current = run.waveState.current;
+    if (!current || typeof current !== "object") throw new Error("The current research wave is missing.");
+    const roles = Array.isArray((current as { roles?: unknown }).roles) ? (current as { roles: unknown[] }).roles.map(String) : [];
+    if (roles.includes(input.role)) throw new Error(`The ${input.role} role has already been delegated in this wave.`);
+    const updatedCurrent = { ...(current as Record<string, unknown>), roles: [...roles, input.role] };
+    const waves = Array.isArray(run.waveState.waves) ? [...run.waveState.waves] : [];
+    waves[run.waveCount - 1] = updatedCurrent;
+    await transaction`
+      UPDATE runs SET research_wave_state = ${transaction.json(toJson({ waves, current: updatedCurrent }))},
+        updated_at = now() WHERE id = ${input.runId}
+    `;
+    return { waveNumber: run.waveCount, role: input.role };
+  });
+}
+
+export async function completeResearchTask(input: CaseIds & {
+  role: ResearchRole;
+  agent: string;
+  sessionId?: string;
+}): Promise<{ waveNumber: number; role: ResearchRole; completed: true }> {
+  if (input.agent !== "lead-investigator" || !researchRoles.includes(input.role)) throw new Error("Research task completion is not authorized for this agent or role.");
+  return getSql().begin(async (transaction) => {
+    const [run] = await transaction<Array<{ waveCount: number; waveState: Record<string, unknown> }>>`
+      SELECT research_wave_count AS "waveCount", research_wave_state AS "waveState"
+      FROM runs WHERE id = ${input.runId} AND investigation_id = ${input.investigationId} FOR UPDATE
+    `;
+    const current = run?.waveState.current;
+    if (!run || !current || typeof current !== "object") throw new Error("The current research wave is missing.");
+    const roles = Array.isArray((current as { roles?: unknown }).roles) ? (current as { roles: unknown[] }).roles.map(String) : [];
+    if (!roles.includes(input.role)) throw new Error(`The ${input.role} role was not authorized in this wave.`);
+    const completed = Array.isArray((current as { completedRoles?: unknown }).completedRoles) ? (current as { completedRoles: unknown[] }).completedRoles.map(String) : [];
+    const updatedCurrent = { ...(current as Record<string, unknown>), completedRoles: [...new Set([...completed, input.role])] };
+    const waves = Array.isArray(run.waveState.waves) ? [...run.waveState.waves] : [];
+    waves[run.waveCount - 1] = updatedCurrent;
+    await transaction`UPDATE runs SET research_wave_state = ${transaction.json(toJson({ waves, current: updatedCurrent }))}, updated_at = now() WHERE id = ${input.runId}`;
+    return { waveNumber: run.waveCount, role: input.role, completed: true };
+  });
 }
 
 export async function resolveResearchQuestion(

@@ -94,12 +94,15 @@ export async function createInvestigation(input: CreateInvestigationInput): Prom
       await transaction`
         INSERT INTO artifacts (
           id, investigation_id, run_id, kind, mime_type, file_name,
-          http_metadata, sha256, byte_length, content_bytes, provenance
+          http_metadata, sha256, byte_length, content_bytes, provenance,
+          source_authority, independence_group, canonical_source_url
         ) VALUES (
           ${artifactId}, ${investigationId}, ${runId}, 'INPUT_PDF',
           'application/pdf', ${input.resume.fileName}, ${transaction.json({})},
           ${sha256(bytes)}, ${bytes.byteLength}, ${bytes},
-          ${transaction.json({ source: "SUBMISSION", immutable: true })}
+          ${transaction.json({ source: "SUBMISSION", immutable: true })},
+          'SELF_REPRESENTATION', 'candidate-submission',
+          ${`urn:translucid:submission:${artifactId}`}
         )
       `;
       await transaction`

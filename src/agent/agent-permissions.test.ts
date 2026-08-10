@@ -22,13 +22,14 @@ test("lead investigator is explicitly bounded and receives structured text rathe
 
   assert.match(source, /claim-decomposition/);
   assert.match(source, /document-analysis/);
-  assert.match(source, /at most eight/i);
-  assert.match(source, /at most fifteen/i);
+  assert.match(source, /at most 12 questions/i);
+  assert.match(source, /defensive cap of 60/i);
   assert.match(source, /parsedDocument/);
   assert.match(source, /never (?:open|request|read).*raw PDF/i);
   assert.match(source, /single assistant turn/i);
   assert.match(source, /under 1,200 characters/i);
-  assert.match(source, /retry that same role once/i);
+  assert.match(source, /research\.begin_wave/);
+  assert.match(source, /No third wave/i);
   assert.match(source, /exact semantic tool ID/i);
 });
 
@@ -47,7 +48,8 @@ test("professional investigator starts with an explicit LinkedIn URL before broa
   const source = await readFile(new URL("../../runtime/opencode/agents/professional-investigator.md", import.meta.url), "utf8");
 
   assert.match(source, /explicit LinkedIn URL/i);
-  assert.match(source, /professional\.profile.*first/i);
-  assert.match(source, /one profile call/i);
+  assert.match(source, /professional\.profile/i);
+  assert.match(source, /exact material field/i);
+  assert.match(source, /single conditional Bright Data fallback/i);
   assert.match(source, /one retry/i);
 });

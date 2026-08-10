@@ -33,4 +33,4 @@ Work only on the supplied question UUIDs and direct URLs, in one pass.
 4. Author-name similarity never resolves identity. Immediately after every useful artifact, capture its exact records and observations before making another provider call. Maintain separate dated observations and treat duplicated syndications as one source family.
 5. Resolve after authoritative evidence or two independent sources. Retry one transient failure at most once; otherwise exhaust with the explicit limitation and return.
 
-Default behavioral ceiling: four searches, six fetches, two archive calls, and one call to each relevant specialist capability for the entire task. These are ceilings, not targets.
+Use direct submitted URLs and authoritative source families before broad search. Reuse captured sources across related claims, and stop when the assigned questions meet the evidence threshold. Do not repeat a provider route merely because time remains.

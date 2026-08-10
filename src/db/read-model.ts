@@ -1,4 +1,5 @@
 import { getSql } from "./client.ts";
+import { providerCostCompleteness } from "../providers/cost-completeness.ts";
 
 export async function listInvestigations(cursor?: string, limit = 30): Promise<{ items: unknown[]; nextCursor: string | null }> {
   const safeLimit = Math.min(Math.max(limit, 1), 100);
@@ -34,6 +35,8 @@ export async function getInvestigationDetail(investigationId: string): Promise<R
       run.id AS "runId", run.status AS "runStatus", run.started_at AS "startedAt", run.finished_at AS "finishedAt",
       run.deadline_at AS "deadlineAt", run.cleanup_status AS "cleanupStatus", run.capability_snapshot AS "capabilitySnapshot",
       run.budget_counters AS "budgetCounters", run.runtime_manifest_hash AS "runtimeManifestHash",
+      run.root_entity_id AS "rootEntityId", run.research_wave_count AS "researchWaveCount",
+      run.research_wave_state AS "researchWaveState",
       run.error_code AS "errorCode", run.error_message AS "errorMessage",
       run.runtime_handle - 'gatewayScope' AS "runtimeHandle"
     FROM investigations AS investigation
@@ -46,15 +49,20 @@ export async function getInvestigationDetail(investigationId: string): Promise<R
     sql`SELECT id, type, canonical_name AS "canonicalName", metadata, created_at AS "createdAt" FROM entities WHERE investigation_id = ${investigationId} ORDER BY created_at`,
     sql`SELECT id, entity_id AS "entityId", type, value, normalized_value AS "normalizedValue", confidence, evidence_id AS "evidenceId" FROM entity_identifiers WHERE investigation_id = ${investigationId} ORDER BY created_at`,
     sql`SELECT id, from_entity_id AS "fromEntityId", to_entity_id AS "toEntityId", relationship, confidence, evidence_ids AS "evidenceIds" FROM entity_links WHERE investigation_id = ${investigationId} ORDER BY created_at`,
-    sql`SELECT id, kind, provider, source_url AS "sourceUrl", mime_type AS "mimeType", file_name AS "fileName", retrieved_at AS "retrievedAt", sha256, byte_length AS "byteLength", provenance FROM artifacts WHERE investigation_id = ${investigationId} ORDER BY created_at`,
+    sql`SELECT id, kind, provider, source_url AS "sourceUrl", mime_type AS "mimeType", file_name AS "fileName", retrieved_at AS "retrievedAt", sha256, byte_length AS "byteLength", provenance, COALESCE(source_authority, 'CONTEXT') AS "sourceAuthority", COALESCE(independence_group, 'LEGACY_ARTIFACT:' || id::text) AS "independenceGroup", canonical_source_url AS "canonicalSourceUrl" FROM artifacts WHERE investigation_id = ${investigationId} ORDER BY created_at`,
     sql`SELECT id, artifact_id AS "artifactId", entity_id AS "entityId", field, value_json AS value, observed_at AS "observedAt", source_event_at AS "sourceEventAt", valid_from AS "validFrom", valid_to AS "validTo" FROM observations WHERE investigation_id = ${investigationId} ORDER BY valid_from NULLS LAST, observed_at`,
     sql`SELECT id, artifact_id AS "artifactId", exact_quote AS "exactQuote", source_location AS "sourceLocation", source_tier AS "sourceTier", relation, claim_ids AS "claimIds", entity_ids AS "entityIds", created_at AS "createdAt" FROM evidence WHERE investigation_id = ${investigationId} ORDER BY created_at`,
     sql`SELECT id, claim_ids AS "claimIds", question, priority, status, possible_routes AS "possibleRoutes", selected_route AS "selectedRoute", created_by_agent AS "createdByAgent", resolution_summary AS "resolutionSummary", resolved_at AS "resolvedAt", created_at AS "createdAt" FROM research_questions WHERE investigation_id = ${investigationId} ORDER BY CASE priority WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END, created_at`,
     sql`SELECT id, claim_id AS "claimId", verdict, strength, explanation, supporting_evidence_ids AS "supportingEvidenceIds", contradicting_evidence_ids AS "contradictingEvidenceIds", limitations, created_at AS "createdAt" FROM findings WHERE investigation_id = ${investigationId} ORDER BY created_at`,
     sql`SELECT id, phase, agent, session_id AS "sessionId", event_type AS "eventType", tool, source, status, budget_delta AS "budgetDelta", public_rationale AS "publicRationale", payload, created_at AS "createdAt" FROM agent_events WHERE investigation_id = ${investigationId} ORDER BY id DESC LIMIT 300`,
-    sql`SELECT id, capability, provider, request_metadata AS "requestMetadata", latency_ms AS "latencyMs", result_status AS "resultStatus", cost_usd AS "costUsd", retry_after_ms AS "retryAfterMs", artifact_ids AS "artifactIds", created_at AS "createdAt" FROM provider_calls WHERE investigation_id = ${investigationId} ORDER BY created_at`,
+    sql`SELECT id, capability, provider, semantic_tool AS "semanticTool", provider_route AS "providerRoute",
+      request_metadata AS "requestMetadata", request_fingerprint AS "requestFingerprint",
+      latency_ms AS "latencyMs", result_status AS "resultStatus", cost_source AS "costSource",
+      attempt_count AS "attemptCount", reused_from_call_id AS "reusedFromCallId",
+      cost_usd AS "costUsd", retry_after_ms AS "retryAfterMs", artifact_ids AS "artifactIds",
+      created_at AS "createdAt" FROM provider_calls WHERE investigation_id = ${investigationId} ORDER BY created_at`,
   ]);
-  return { ...investigation, claims: [...claims], entities: [...entities], identifiers: [...identifiers], links: [...links], artifacts: [...artifacts], observations: [...observations], evidence: [...evidenceRows], researchQuestions: [...questions], findings: [...findings], events: [...events].reverse(), providerCalls: [...providerCalls] };
+  return { ...investigation, claims: [...claims], entities: [...entities], identifiers: [...identifiers], links: [...links], artifacts: [...artifacts], observations: [...observations], evidence: [...evidenceRows], researchQuestions: [...questions], findings: [...findings], events: [...events].reverse(), providerCalls: [...providerCalls], providerCostCompleteness: providerCostCompleteness(providerCalls as Array<{ costSource?: "REPORTED" | "CONFIGURED" | "FREE_PUBLIC" | "UNKNOWN" | null }>) };
 }
 
 export async function getArtifact(investigationId: string, artifactId: string): Promise<{

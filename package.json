@@ -36,6 +36,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "server-only": "0.0.1",
+    "tldts": "7.4.10",
     "zod": "4.4.3"
   },
   "devDependencies": {

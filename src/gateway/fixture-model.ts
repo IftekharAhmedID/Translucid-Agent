@@ -31,7 +31,7 @@ export async function fixtureCompletion(body: Record<string, unknown>, investiga
   const isSummaryRequest = userText.includes("Summarize only the validated findings");
   const isProfessionalFixture = userText.includes("Investigate the synthetic Acme chronology question");
   if (names.has("claim.create") && !isStructured && !isProfessionalFixture) {
-    const [claims, entities, questions, providerCalls, evidence, observations, artifacts] = await Promise.all([
+    const [claims, entities, questions, providerCalls, evidence, observations, artifacts, runs] = await Promise.all([
       sql<Array<{ id: string }>>`SELECT id FROM claims WHERE run_id = ${runId} ORDER BY created_at`,
       sql<Array<{ id: string }>>`SELECT id FROM entities WHERE run_id = ${runId} ORDER BY created_at`,
       sql<Array<{ id: string; status: string; selectedRoute: string | null }>>`SELECT id, status, selected_route AS "selectedRoute" FROM research_questions WHERE run_id = ${runId} ORDER BY created_at`,
@@ -39,16 +39,18 @@ export async function fixtureCompletion(body: Record<string, unknown>, investiga
       sql<Array<{ id: string }>>`SELECT id FROM evidence WHERE run_id = ${runId} ORDER BY created_at`,
       sql<Array<{ id: string }>>`SELECT id FROM observations WHERE run_id = ${runId} ORDER BY created_at`,
       sql<Array<{ id: string; provenance: Record<string, unknown> }>>`SELECT id, provenance FROM artifacts WHERE investigation_id = ${investigationId} ORDER BY created_at`,
+      sql<Array<{ researchWaveCount: number }>>`SELECT research_wave_count AS "researchWaveCount" FROM runs WHERE id = ${runId}`,
     ]);
     if (!claims.length) return { toolCall: { name: "claim.create", arguments: { category: "EMPLOYMENT", normalizedClaim: "Synthetic Candidate held the title Principal Engineer at Acme Synthetic Labs from 2021 through 2025.", materiality: "HIGH", sourceSpan: { source: "synthetic fixture intake" } } } };
-    if (!entities.length) return { toolCall: { name: "entity.upsert", arguments: { type: "PERSON", canonicalName: "Synthetic Candidate", metadata: { source: "synthetic fixture" } } } };
+    if (!entities.length) return { toolCall: { name: "entity.upsert", arguments: { type: "PERSON", canonicalName: "Synthetic Candidate", role: "CANDIDATE_ROOT", metadata: { source: "synthetic fixture" } } } };
     if (!questions.length) return { toolCall: { name: "research.open", arguments: { claimIds: [claims[0]!.id], question: "Does synthetic public evidence corroborate the claimed Acme title chronology?", priority: "HIGH", possibleRoutes: ["web.search", "web.fetch"] } } };
     const question = questions[0]!;
     if (!question.selectedRoute) return { toolCall: { name: "research.select_route", arguments: { questionId: question.id, route: "web.search", publicRationale: "Starting with a low-cost public-web discovery route for the material chronology claim." } } };
+    if ((runs[0]?.researchWaveCount ?? 0) === 0) return { toolCall: { name: "research.begin_wave", arguments: { waveKind: "INITIAL", questionIds: [question.id], publicRationale: "Beginning the single broad research wave for the active synthetic chronology question." } } };
     if (!providerCalls.length) return { toolCall: { name: "task", arguments: { description: "Check synthetic chronology", prompt: "Investigate the synthetic Acme chronology question. Use the selected web route, capture citable evidence and one temporal observation, resolve or exhaust the durable question, then return a concise public summary.", subagent_type: "professional-investigator", background: false } } };
     const citableArtifact = artifacts.find((artifact) => artifact.provenance.isSearchSnippet !== true && artifact.provenance.tool === "web.fetch");
     if (!citableArtifact) return { toolCall: { name: "web.fetch", arguments: { questionId: question.id, claimIds: [claims[0]!.id], publicRationale: "Capturing the discovered synthetic page before citing it.", url: "https://example.test/synthetic-source" } } };
-    if (!evidence.length) return { toolCall: { name: "evidence.capture", arguments: { artifactId: citableArtifact.id, exactQuote: "Synthetic corroborating content for deterministic development tests.", sourceLocation: { jsonPath: "$.records[0].text" }, sourceTier: "SYNTHETIC_FIXTURE", relation: "SUPPORTS", claimIds: [claims[0]!.id], entityIds: [entities[0]!.id] } } };
+    if (!evidence.length) return { toolCall: { name: "evidence.capture", arguments: { artifactId: citableArtifact.id, exactQuote: "Synthetic corroborating content for deterministic development tests.", sourceLocation: { jsonPath: "$.records[0].text" }, relation: "SUPPORTS", claimIds: [claims[0]!.id], entityIds: [entities[0]!.id] } } };
     if (!observations.length) return { toolCall: { name: "observation.record", arguments: { artifactId: citableArtifact.id, entityId: entities[0]!.id, field: "employment", valueJson: { organization: "Acme Synthetic Labs", title: "Principal Engineer" }, validFrom: "2021-01-01T00:00:00.000Z", validTo: "2025-12-31T23:59:59.000Z" } } };
     if (question.status !== "RESOLVED") return { toolCall: { name: "research.resolve", arguments: { questionId: question.id, status: "RESOLVED", resolutionSummary: "The deterministic synthetic artifact corroborates the fixture chronology claim." } } };
     return { content: "The synthetic fixture frontier is complete. Durable claims, entity state, evidence, and observations are ready for frozen review." };
@@ -73,7 +75,7 @@ export async function fixtureCompletion(body: Record<string, unknown>, investiga
     if (!providerCalls.length) return { toolCall: { name: "web.search", arguments: { questionId: question.id, claimIds: [claim.id], publicRationale: "Discovering a synthetic source for the material chronology claim.", query: "Synthetic Candidate Acme Synthetic Labs Principal Engineer", mode: "fast" } } };
     const citableArtifact = artifacts.find((artifact) => artifact.provenance.isSearchSnippet !== true && artifact.provenance.tool === "web.fetch");
     if (!citableArtifact) return { toolCall: { name: "web.fetch", arguments: { questionId: question.id, claimIds: [claim.id], publicRationale: "Capturing the discovered synthetic page before citing it.", url: "https://example.test/synthetic-source" } } };
-    if (!evidence.length) return { toolCall: { name: "evidence.capture", arguments: { artifactId: citableArtifact.id, exactQuote: "Synthetic corroborating content for deterministic development tests.", sourceLocation: { jsonPath: "$.records[0].text" }, sourceTier: "SYNTHETIC_FIXTURE", relation: "SUPPORTS", claimIds: [claim.id], entityIds: [entity.id] } } };
+    if (!evidence.length) return { toolCall: { name: "evidence.capture", arguments: { artifactId: citableArtifact.id, exactQuote: "Synthetic corroborating content for deterministic development tests.", sourceLocation: { jsonPath: "$.records[0].text" }, relation: "SUPPORTS", claimIds: [claim.id], entityIds: [entity.id] } } };
     if (!observations.length) return { toolCall: { name: "observation.record", arguments: { artifactId: citableArtifact.id, entityId: entity.id, field: "employment", valueJson: { organization: "Acme Synthetic Labs", title: "Principal Engineer" }, validFrom: "2021-01-01T00:00:00.000Z", validTo: "2025-12-31T23:59:59.000Z" } } };
     if (question.status !== "RESOLVED") return { toolCall: { name: "research.resolve", arguments: { questionId: question.id, status: "RESOLVED", resolutionSummary: "The deterministic synthetic artifact corroborates the fixture chronology claim." } } };
     return { content: "The synthetic chronology route is complete with captured evidence and a temporal observation." };
