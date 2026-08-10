@@ -87,7 +87,7 @@ export class OpenCodeInvestigationController {
       await getSql()`UPDATE runs SET opencode_primary_session_id = ${lead.id}, updated_at = now() WHERE id = ${input.runId}`;
       const researchDeadline = forcedFinalizationAt(input.deadlineAt, getConfig().finalizationReserveMs);
       await client.session.promptAsync({ sessionID: lead.id, directory, agent: "lead-investigator", model: { providerID: "translucid", modelID: getConfig().researchModel }, variant: getConfig().reasoningVariant, parts: [{ type: "text", text: `Begin the authorized investigation from /workspace/case/input/manifest.json. The raw PDF has already been parsed and removed; use only the manifest's structured text/JSON paths and sparse-page images. Obey the declared classification and your ordered workflow. Persist durable state through semantic tools. Return as soon as every durable research question is terminal; never continue merely because time remains. Emergency finalization begins at ${researchDeadline.toISOString()} and the hard case deadline is ${input.deadlineAt.toISOString()}. Do not write a final adjudication.` }] }, { signal: input.signal });
-      const researchFinished = await this.waitForIdle(client, lead.id, input, researchDeadline);
+      const researchFinished = await this.waitForResearchCompletion(client, lead.id, input, researchDeadline);
       if (!researchFinished) {
         await abortAll();
         await insertAgentEvent({ investigationId: input.investigationId, runId: input.runId, phase: "RESEARCH", agent: "runner", eventType: "FORCED_FINALIZATION", status: "EXHAUSTED", publicRationale: "The emergency finalization reserve began, so unfinished research stopped and durable state was preserved for review.", payload: { forcedFinalizationAt: researchDeadline.toISOString() } });
@@ -244,8 +244,7 @@ export class OpenCodeInvestigationController {
       const statuses = unwrap(await client.session.status({ directory }), "session status");
       const status = statuses[sessionId];
       if (status?.type === "busy" || status?.type === "retry") observedBusy = true;
-      if (observedBusy && (!status || status.type === "idle")) return true;
-      if (!observedBusy && Date.now() - startedAt >= 3_000 && (!status || status.type === "idle")) {
+      if ((observedBusy || Date.now() - startedAt >= 3_000) && (!status || status.type === "idle")) {
         const messages = unwrap(await client.session.messages({ sessionID: sessionId, directory, limit: 2 }), "session messages");
         const latest = messages.at(-1);
         if (latest?.info.role === "assistant") {
@@ -254,6 +253,38 @@ export class OpenCodeInvestigationController {
         }
       }
       await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    return false;
+  }
+
+  private async waitForResearchCompletion(client: ReturnType<typeof createOpencodeClient>, sessionId: string, input: ControllerInput, phaseDeadline: Date): Promise<boolean> {
+    while (Date.now() < phaseDeadline.getTime()) {
+      if (!await this.waitForIdle(client, sessionId, input, phaseDeadline)) return false;
+      const [frontier] = await getSql()<Array<{ activeCount: number }>>`
+        SELECT count(*)::integer AS "activeCount" FROM research_questions
+        WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}
+          AND status IN ('OPEN', 'IN_PROGRESS')
+      `;
+      if ((frontier?.activeCount ?? 0) === 0) return true;
+      await insertAgentEvent({
+        investigationId: input.investigationId,
+        runId: input.runId,
+        phase: "RESEARCH",
+        agent: "runner",
+        sessionId,
+        eventType: "RESEARCH_FRONTIER_CONTINUATION",
+        status: "IN_PROGRESS",
+        publicRationale: "The lead became idle while durable research questions remained active, so the same session was asked to finish or exhaust them before review.",
+        payload: { activeQuestionCount: frontier!.activeCount },
+      });
+      await client.session.promptAsync({
+        sessionID: sessionId,
+        directory,
+        agent: "lead-investigator",
+        model: { providerID: "translucid", modelID: getConfig().researchModel },
+        variant: getConfig().reasoningVariant,
+        parts: [{ type: "text", text: `The durable Research Frontier still has ${frontier!.activeCount} active question(s). Continue only the evidence-justified work needed to resolve, exhaust, or skip each one. Do not start a third wave. Return as soon as the frontier is terminal.` }],
+      }, { signal: input.signal });
     }
     return false;
   }

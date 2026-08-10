@@ -49,6 +49,17 @@ test("legacy OPENCODE_PROVIDER remains a research-provider alias only", () => {
   assert.equal(config.finalizerOpenCodeProvider, "GO");
 });
 
+test("blank provider cost mappings remain unknown instead of configured zero", () => {
+  const config = loadConfig({
+    DATABASE_URL: "postgres://example.test/translucid",
+    LINKDAPI_COST_USD_PER_CALL: "",
+    BRIGHTDATA_COST_USD_PER_RECORD: "   ",
+  });
+
+  assert.equal(config.providerUnitCosts.LINKDAPI, undefined);
+  assert.equal(config.providerUnitCosts.BRIGHTDATA, undefined);
+});
+
 test("the finalization reserve must fit inside the investigation deadline", () => {
   assert.throws(() => loadConfig({
     DATABASE_URL: "postgres://example.test/translucid",

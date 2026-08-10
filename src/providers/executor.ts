@@ -98,6 +98,12 @@ function positiveNumber(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function nonNegativeNumber(value: string | undefined, fallback: number): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 async function readResponse(response: Response): Promise<unknown> {
   const text = await response.text();
   if (Buffer.byteLength(text) > 5 * 1024 * 1024) throw new Error("Provider response exceeds capture limit.");
@@ -291,8 +297,7 @@ export class ProviderExecutor {
           provenance: { captureMethod: "EXA_INLINE_CONTENTS" },
         });
       }
-      const costUsd = this.exaCost(data);
-      return { data, sourceUrl: "https://api.exa.ai/search", costUsd, costSource: costUsd > 0 ? "REPORTED" : "UNKNOWN", artifacts };
+      return { data, sourceUrl: "https://api.exa.ai/search", ...this.exaCost(data), artifacts };
     });
   }
 
@@ -301,8 +306,7 @@ export class ProviderExecutor {
     if (this.environment.EXA_API_KEY) {
       return this.call(request, context, capability, "exa", "exa.contents", { urls: [url], text: true }, async (signal, onAttempt) => {
         const data = await apiFetch("https://api.exa.ai/contents", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.environment.EXA_API_KEY! }, body: JSON.stringify({ urls: [url], text: true }), signal }, onAttempt);
-        const costUsd = this.exaCost(data);
-        return { data, sourceUrl: url, costUsd, costSource: costUsd > 0 ? "REPORTED" : "UNKNOWN", artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: data, provenance: { captureMethod: "EXA_CONTENTS" } }] };
+        return { data, sourceUrl: url, ...this.exaCost(data), artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: data, provenance: { captureMethod: "EXA_CONTENTS" } }] };
       });
     }
     return this.call(request, context, capability, "public-fetch", "public-fetch", { url }, async (signal) => {
@@ -319,11 +323,12 @@ export class ProviderExecutor {
     if (this.environment.LINKDAPI_API_KEY) {
       try {
         const url = `https://linkdapi.com/api/v1/profile/full?username=${encodeURIComponent(username)}`;
+        const knownCost = this.configuredCost("LINKDAPI_COST_USD_PER_CALL");
         linkd = await this.call(request, context, capability, "linkdapi", "linkdapi.profile", { username }, async (signal, onAttempt) => ({
           data: await apiFetch(url, { headers: { "X-linkdapi-apikey": this.environment.LINKDAPI_API_KEY! }, signal }, onAttempt),
           sourceUrl: `https://www.linkedin.com/in/${encodeURIComponent(username)}`,
-          ...this.configuredCost("LINKDAPI_COST_USD_PER_CALL"),
-        }));
+          ...knownCost,
+        }), knownCost);
         const profile = unwrapLinkdProfileResponse(linkd.data);
         if (profile && profileHasMaterialField(profile, request.arguments.requiredMaterialField)) return { ...linkd, data: profile };
       } catch (error) {
@@ -359,22 +364,24 @@ export class ProviderExecutor {
     if (this.environment.LINKDAPI_API_KEY) {
       try {
         const url = `https://linkdapi.com/api/v1/profile/posts?username=${encodeURIComponent(username)}`;
+        const knownCost = this.configuredCost("LINKDAPI_COST_USD_PER_CALL");
         return await this.call(request, context, capability, "linkdapi", "linkdapi.activity", { username }, async (signal, onAttempt) => ({
           data: await apiFetch(url, { headers: { "X-linkdapi-apikey": this.environment.LINKDAPI_API_KEY! }, signal }, onAttempt),
           sourceUrl: `https://www.linkedin.com/in/${encodeURIComponent(username)}/recent-activity/all/`,
-          ...this.configuredCost("LINKDAPI_COST_USD_PER_CALL"),
-        }));
+          ...knownCost,
+        }), knownCost);
       } catch { /* the single configured fallback is handled below */ }
     }
     return this.brightData(request, context, capability, this.required("BRIGHTDATA_LINKEDIN_POSTS_DATASET_ID"), { url: `https://www.linkedin.com/in/${username}/recent-activity/all/` }, "brightdata.linkedin-posts", "brightdata-linkedin-posts");
   }
 
   private async brightData(request: ParsedToolRequest, context: ExecuteContext, capability: Capability, datasetId: string, payload: Record<string, unknown>, providerRoute: string, provider: string): Promise<ConcreteProviderResult> {
+    const knownCost = this.configuredCost("BRIGHTDATA_COST_USD_PER_RECORD");
     return this.brightDataPool.use(() => this.call(request, context, capability, provider, providerRoute, { datasetId, ...payload }, async (signal, onAttempt) => {
       const url = `https://api.brightdata.com/datasets/v3/scrape?dataset_id=${encodeURIComponent(datasetId)}&format=json`;
       const data = await apiFetch(url, { method: "POST", headers: { ...authHeaders(this.required("BRIGHTDATA_API_KEY")), "content-type": "application/json" }, body: JSON.stringify([payload]), signal }, onAttempt);
       return { data, sourceUrl: String(payload.url ?? "https://api.brightdata.com/datasets/v3/scrape"), ...this.configuredCost("BRIGHTDATA_COST_USD_PER_RECORD", Array.isArray(data) ? Math.max(1, data.length) : 1) };
-    }));
+    }, knownCost));
   }
 
   private async archives(request: Extract<ParsedToolRequest, { tool: "archives.search" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
@@ -467,7 +474,7 @@ export class ProviderExecutor {
     }));
   }
 
-  private call(request: ParsedToolRequest, context: ExecuteContext, capability: Capability, provider: string, providerRoute: string, networkArguments: Record<string, unknown>, run: (signal: AbortSignal, onAttempt: (attempt: number) => void) => Promise<ProviderNetworkResult>): Promise<ConcreteProviderResult> {
+  private call(request: ParsedToolRequest, context: ExecuteContext, capability: Capability, provider: string, providerRoute: string, networkArguments: Record<string, unknown>, run: (signal: AbortSignal, onAttempt: (attempt: number) => void) => Promise<ProviderNetworkResult>, knownCost?: Pick<ProviderNetworkResult, "costUsd" | "costSource">): Promise<ConcreteProviderResult> {
     return executeConcreteProviderCall({
       context,
       capability,
@@ -477,7 +484,8 @@ export class ProviderExecutor {
       networkArguments,
       publicRationale: request.arguments.publicRationale,
       countCeiling: this.toolCeiling(request.tool),
-      providerBudgetUsd: positiveNumber(this.environment.PROVIDER_BUDGET_USD, 10),
+      providerBudgetUsd: nonNegativeNumber(this.environment.PROVIDER_BUDGET_USD, 10),
+      knownCost,
       run,
     });
   }
@@ -502,16 +510,20 @@ export class ProviderExecutor {
   }
 
   private configuredCost(name: string, units = 1): Pick<ProviderNetworkResult, "costUsd" | "costSource"> {
-    const configured = Number(this.environment[name]);
+    const value = this.environment[name];
+    if (value === undefined || value.trim() === "") return { costUsd: 0, costSource: "UNKNOWN" };
+    const configured = Number(value);
     return Number.isFinite(configured) && configured >= 0
       ? { costUsd: configured * units, costSource: "CONFIGURED" }
       : { costUsd: 0, costSource: "UNKNOWN" };
   }
 
-  private exaCost(value: unknown): number {
-    if (!value || typeof value !== "object") return 0;
+  private exaCost(value: unknown): Pick<ProviderNetworkResult, "costUsd" | "costSource"> {
+    if (!value || typeof value !== "object") return { costUsd: 0, costSource: "UNKNOWN" };
     const cost = (value as { costDollars?: { total?: unknown } }).costDollars?.total;
-    return typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : 0;
+    return typeof cost === "number" && Number.isFinite(cost) && cost >= 0
+      ? { costUsd: cost, costSource: "REPORTED" }
+      : { costUsd: 0, costSource: "UNKNOWN" };
   }
 
   private firstRecord(value: unknown): Record<string, unknown> | undefined {

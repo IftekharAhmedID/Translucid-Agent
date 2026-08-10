@@ -38,8 +38,25 @@ test.beforeEach(async () => {
 });
 
 test.after(async () => {
+  await sql.unsafe(`
+    TRUNCATE provider_calls, agent_events, findings, research_questions,
+      evidence, observations, artifacts, entity_links, entity_identifiers,
+      entities, claims, runs, investigations RESTART IDENTITY CASCADE
+  `);
   await closeDatabase();
   await sql.end();
+});
+
+test("candidate-root authorization is atomic and cannot leave ghost entities", async () => {
+  const ids = await createInvestigation({ submission: "Synthetic root authorization.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
+  await assert.rejects(() => upsertEntity({ ...ids, type: "PERSON", canonicalName: "Unauthorized Root", role: "CANDIDATE_ROOT", agent: "professional-investigator" }), /only the lead/i);
+  const root = await upsertEntity({ ...ids, type: "PERSON", canonicalName: "Authorized Root", role: "CANDIDATE_ROOT", agent: "lead-investigator" });
+  await assert.rejects(() => upsertEntity({ ...ids, type: "PERSON", canonicalName: "Conflicting Root", role: "CANDIDATE_ROOT", agent: "lead-investigator" }), /different candidate root/i);
+  const [state] = await sql<Array<{ entityCount: number; rootEntityId: string | null }>>`
+    SELECT (SELECT count(*)::integer FROM entities WHERE run_id = ${ids.runId}) AS "entityCount",
+      root_entity_id AS "rootEntityId" FROM runs WHERE id = ${ids.runId}
+  `;
+  assert.deepEqual(state, { entityCount: 1, rootEntityId: root.id });
 });
 
 test("entity graph requires independent evidence-backed anchors", async () => {
@@ -84,7 +101,6 @@ test("entity graph requires independent evidence-backed anchors", async () => {
     ...ids,
     artifactId: artifactA.id,
     exactQuote: "Synthetic Ada — Acme — Principal Engineer",
-    sourceTier: "PROFESSIONAL_PROFILE",
     relation: "SUPPORTS",
     claimIds: [claim.id],
     entityIds: [person.id],
@@ -93,7 +109,6 @@ test("entity graph requires independent evidence-backed anchors", async () => {
     ...ids,
     artifactId: artifactB.id,
     exactQuote: "My account is synthetic-ada-dev and I work at Acme.",
-    sourceTier: "FIRST_PARTY",
     relation: "SUPPORTS",
     claimIds: [claim.id],
     entityIds: [person.id, account.id],
@@ -175,7 +190,6 @@ test("search snippets cannot become evidence and temporal observations remain se
         ...ids,
         artifactId: snippet.id,
         exactQuote: "Principal Engineer",
-        sourceTier: "SEARCH",
         relation: "SUPPORTS",
         claimIds: [],
         entityIds: [entity.id],

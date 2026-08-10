@@ -6,6 +6,11 @@ const positiveInteger = (fallback: number) =>
 const nonNegativeNumber = (fallback: number) =>
   z.coerce.number().nonnegative().default(fallback);
 
+const optionalNonNegativeNumber = z.preprocess(
+  (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+  z.coerce.number().nonnegative().optional(),
+);
+
 const environmentSchema = z
   .object({
     DATABASE_URL: z.string().min(1),
@@ -51,8 +56,8 @@ const environmentSchema = z
     SCHOLARLY_CEILING: positiveInteger(100),
     PACKAGES_CEILING: positiveInteger(100),
     SECURITY_RECORDS_CEILING: positiveInteger(100),
-    LINKDAPI_COST_USD_PER_CALL: z.coerce.number().nonnegative().optional(),
-    BRIGHTDATA_COST_USD_PER_RECORD: z.coerce.number().nonnegative().optional(),
+    LINKDAPI_COST_USD_PER_CALL: optionalNonNegativeNumber,
+    BRIGHTDATA_COST_USD_PER_RECORD: optionalNonNegativeNumber,
     MODEL_BUDGET_USD: nonNegativeNumber(5),
     PROVIDER_BUDGET_USD: nonNegativeNumber(10),
   })

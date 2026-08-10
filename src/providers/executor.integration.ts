@@ -27,6 +27,11 @@ test.beforeEach(async () => {
 
 test.after(async () => {
   globalThis.fetch = originalFetch;
+  await sql.unsafe(`
+    TRUNCATE provider_calls, agent_events, findings, research_questions,
+      evidence, observations, artifacts, entity_links, entity_identifiers,
+      entities, claims, runs, investigations RESTART IDENTITY CASCADE
+  `);
   await closeDatabase();
   await sql.end();
 });
@@ -184,6 +189,38 @@ test("Exa search stores discovery separately from evidence-eligible source conte
   const artifacts = await sql<Array<{ id: string; kind: string }>>`SELECT id, kind FROM artifacts WHERE id IN ${sql(result.artifactIds)} ORDER BY kind`;
   assert.deepEqual(artifacts.map(({ kind }) => kind), ["SEARCH_DISCOVERY", "SOURCE_CONTENT"]);
   assert.equal(artifacts.find(({ kind }) => kind === "SOURCE_CONTENT")?.id, result.evidenceEligibleArtifactIds[0]);
+});
+
+test("an explicit zero Exa cost is reported while an empty configured provider cost stays unknown", async () => {
+  const ids = await activeQuestion();
+  globalThis.fetch = async () => Response.json({ results: [], costDollars: { total: 0 } });
+  const result = await new ProviderExecutor({ PROVIDER_MODE: "live", EXA_API_KEY: "test-exa" }).execute({
+    tool: "web.search",
+    arguments: { questionId: ids.questionId, claimIds: [ids.claimId], publicRationale: "Recording the provider-reported zero cost without fabricating a configured price.", query: "Synthetic Candidate zero cost" },
+  }, operational(ids));
+  assert.equal(result.status, "OK");
+  assert.equal(result.costUsd, 0);
+  assert.equal(result.costSource, "REPORTED");
+});
+
+test("a zero provider budget is enforced instead of replaced by the default", async () => {
+  const ids = await activeQuestion();
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return Response.json({ success: true, data: { username: "diegor", fullName: "Diego Russo" } });
+  };
+  const result = await new ProviderExecutor({
+    PROVIDER_MODE: "live",
+    LINKDAPI_API_KEY: "test-linkd",
+    LINKDAPI_COST_USD_PER_CALL: "0.01",
+    PROVIDER_BUDGET_USD: "0",
+  }).execute({
+    tool: "professional.profile",
+    arguments: { questionId: ids.questionId, claimIds: [ids.claimId], publicRationale: "Verifying that an explicitly closed paid-provider budget is authoritative.", username: "diegor", requiredMaterialField: "IDENTITY" },
+  }, operational(ids));
+  assert.equal(result.status, "BUDGET_EXHAUSTED");
+  assert.equal(fetchCalls, 0);
 });
 
 test("search and fetch telemetry remain distinct at both semantic-tool and provider-route levels", async () => {

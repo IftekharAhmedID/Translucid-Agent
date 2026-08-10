@@ -13,7 +13,14 @@ before(() => {
 });
 
 after(async () => {
-  if (databaseUrl) await closeDatabase();
+  if (databaseUrl) {
+    await getSql().unsafe(`
+      TRUNCATE provider_calls, agent_events, findings, research_questions,
+        evidence, observations, artifacts, entity_links, entity_identifiers,
+        entities, claims, runs, investigations RESTART IDENTITY CASCADE
+    `);
+    await closeDatabase();
+  }
 });
 
 test("case tokens store only a digest and enforce run, tool, model, and expiry scope", { skip: !databaseUrl }, async () => {

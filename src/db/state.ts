@@ -92,36 +92,38 @@ export async function upsertEntity(
 ): Promise<{ id: string; canonicalName: string; type: EntityType }> {
   const canonicalName = input.canonicalName.trim();
   if (!canonicalName) throw new Error("Entity canonical name is required.");
-
-  const [row] = await getSql()<
-    { id: string; canonicalName: string; type: EntityType }[]
-  >`
-    INSERT INTO entities (
-      id, investigation_id, run_id, type, canonical_name, metadata
-    ) VALUES (
-      ${randomUUID()}, ${input.investigationId}, ${input.runId}, ${input.type},
-      ${canonicalName}, ${getSql().json(toJson(input.metadata ?? {}))}
-    )
-    ON CONFLICT (investigation_id, type, lower(canonical_name))
-    DO UPDATE SET
-      metadata = entities.metadata || EXCLUDED.metadata,
-      updated_at = now()
-    RETURNING id, canonical_name AS "canonicalName", type
-  `;
-  if (!row) throw new Error("Failed to upsert entity.");
-  if (input.role === "CANDIDATE_ROOT") {
-    if (input.agent !== "lead-investigator" || input.type !== "PERSON") {
-      throw new Error("Only the lead investigator may establish the candidate root PERSON.");
-    }
-    const [run] = await getSql()<Array<{ id: string }>>`
-      UPDATE runs SET root_entity_id = ${row.id}, updated_at = now()
-      WHERE id = ${input.runId} AND investigation_id = ${input.investigationId}
-        AND (root_entity_id IS NULL OR root_entity_id = ${row.id})
-      RETURNING id
-    `;
-    if (!run) throw new Error("A different candidate root is already established for this run.");
+  if (input.role === "CANDIDATE_ROOT" && (input.agent !== "lead-investigator" || input.type !== "PERSON")) {
+    throw new Error("Only the lead investigator may establish the candidate root PERSON.");
   }
-  return row;
+
+  return getSql().begin(async (transaction) => {
+    const [row] = await transaction<
+      { id: string; canonicalName: string; type: EntityType }[]
+    >`
+      INSERT INTO entities (
+        id, investigation_id, run_id, type, canonical_name, metadata
+      ) VALUES (
+        ${randomUUID()}, ${input.investigationId}, ${input.runId}, ${input.type},
+        ${canonicalName}, ${transaction.json(toJson(input.metadata ?? {}))}
+      )
+      ON CONFLICT (investigation_id, type, lower(canonical_name))
+      DO UPDATE SET
+        metadata = entities.metadata || EXCLUDED.metadata,
+        updated_at = now()
+      RETURNING id, canonical_name AS "canonicalName", type
+    `;
+    if (!row) throw new Error("Failed to upsert entity.");
+    if (input.role === "CANDIDATE_ROOT") {
+      const [run] = await transaction<Array<{ id: string }>>`
+        UPDATE runs SET root_entity_id = ${row.id}, updated_at = now()
+        WHERE id = ${input.runId} AND investigation_id = ${input.investigationId}
+          AND (root_entity_id IS NULL OR root_entity_id = ${row.id})
+        RETURNING id
+      `;
+      if (!run) throw new Error("A different candidate root is already established for this run.");
+    }
+    return row;
+  });
 }
 
 export async function captureArtifact(
@@ -178,7 +180,6 @@ export async function captureEvidence(
     artifactId: string;
     exactQuote: string;
     sourceLocation?: Record<string, unknown>;
-    sourceTier?: string;
     relation: "SUPPORTS" | "CONTRADICTS" | "CONTEXT";
     claimIds: string[];
     entityIds: string[];

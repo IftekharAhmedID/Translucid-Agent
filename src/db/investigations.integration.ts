@@ -28,6 +28,11 @@ test.beforeEach(async () => {
 });
 
 test.after(async () => {
+  await sql.unsafe(`
+    TRUNCATE provider_calls, agent_events, findings, research_questions,
+      evidence, observations, artifacts, entity_links, entity_identifiers,
+      entities, claims, runs, investigations RESTART IDENTITY CASCADE
+  `);
   await closeDatabase();
   await sql.end();
 });

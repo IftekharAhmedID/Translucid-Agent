@@ -15,7 +15,7 @@ Translucid is a synthetic-data development system for evidence-bounded candidate
 
 ## Safety invariants
 
-This development build refuses any `DATA_CLASSIFICATION` except `SYNTHETIC`. Names alone never resolve identity; an entity link needs two independent, evidence-backed anchors. Search snippets cannot become evidence. Missing evidence remains `UNRESOLVED`, and all adjudicator evidence and claim IDs are checked against saved state. Candidate scores, rankings, hiring recommendations, fraud probabilities, protected-trait analysis, and absence-as-deception language are rejected.
+This development build accepts `SYNTHETIC` and the explicitly scoped `PUBLIC_PROFESSIONAL` classification; all other classifications are rejected. Names alone never resolve identity; an entity link needs two independent, evidence-backed anchors. Search snippets cannot become evidence. Missing evidence remains `UNRESOLVED`, and all adjudicator evidence and claim IDs are checked against saved state. Candidate scores, rankings, hiring recommendations, fraud probabilities, protected-trait analysis, and absence-as-deception language are rejected.
 
 All credentials previously pasted into a chat must be treated as compromised and rotated before live testing. Never copy those values into this repository.
 
@@ -88,7 +88,7 @@ npm audit --audit-level=high
 docker build -t translucid-investigator:1.18.15 .
 ```
 
-The synthetic acceptance path also verifies four simultaneous local runtimes, native child-session trace events, a separate adjudicator session, saved artifacts/findings, deterministic PDF output, and zero remaining case containers after cleanup.
+The synthetic acceptance path should also verify four simultaneous local runtimes, native child-session trace events, a separate adjudicator session, saved artifacts/findings, deterministic PDF output, and zero remaining case containers after cleanup.
 
 ## Primary implementation references
 

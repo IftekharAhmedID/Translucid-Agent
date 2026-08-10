@@ -175,6 +175,7 @@ export async function executeConcreteProviderCall(input: {
   publicRationale: string;
   countCeiling: number;
   providerBudgetUsd: number;
+  knownCost?: Pick<ProviderNetworkResult, "costUsd" | "costSource">;
   run: (signal: AbortSignal, onAttempt: (attempt: number) => void) => Promise<ProviderNetworkResult>;
 }): Promise<ConcreteProviderResult> {
   const sql = getSql();
@@ -254,13 +255,23 @@ export async function executeConcreteProviderCall(input: {
         increment: 1,
         ceiling: input.countCeiling,
       });
-      const requestMs = providerDeadlineMs(input.providerRoute, caseDeadlineAt);
-      const result = await input.run(AbortSignal.timeout(requestMs), (attempt) => { attemptCount = Math.max(attemptCount, attempt); });
-      if (result.costUsd > 0 && ["REPORTED", "CONFIGURED"].includes(result.costSource)) {
+      const reservedCostUsd = input.knownCost?.costSource === "CONFIGURED" ? input.knownCost.costUsd : 0;
+      if (reservedCostUsd > 0) {
         await consumeBudget({
           runId: input.context.runId,
           counter: "providerUsd",
-          increment: result.costUsd,
+          increment: reservedCostUsd,
+          ceiling: input.providerBudgetUsd,
+        });
+      }
+      const requestMs = providerDeadlineMs(input.providerRoute, caseDeadlineAt);
+      const result = await input.run(AbortSignal.timeout(requestMs), (attempt) => { attemptCount = Math.max(attemptCount, attempt); });
+      const unreservedCostUsd = Math.max(0, result.costUsd - reservedCostUsd);
+      if (unreservedCostUsd > 0 && ["REPORTED", "CONFIGURED"].includes(result.costSource)) {
+        await consumeBudget({
+          runId: input.context.runId,
+          counter: "providerUsd",
+          increment: unreservedCostUsd,
           ceiling: input.providerBudgetUsd,
         });
       }
