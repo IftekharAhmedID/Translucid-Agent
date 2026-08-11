@@ -175,9 +175,19 @@ export function buildSummaryBundle(bundle: Record<string, unknown>, findings: Fi
   const critic = bundle.critic && typeof bundle.critic === "object" ? bundle.critic as Row : {};
   const evidence = rows(bundle, "evidence").filter(({ relation }) => relation !== "CONTEXT");
   const claims = rows(bundle, "claims");
+  const identityClaimCandidates = claims
+    .filter(({ category }) => category === "identity" || category === "employment")
+    .map(({ id }) => id)
+    .filter((id): id is string => typeof id === "string");
+  const timelineClaimCandidates = claims
+    .filter(({ category }) => category === "employment" || category === "affiliation")
+    .map(({ id }) => id)
+    .filter((id): id is string => typeof id === "string");
   return {
     validatedFindings: findings,
     claims: claims.map(({ id, category, normalizedClaim, facets, materiality }) => ({ id, category, normalizedClaim, facets, materiality })),
+    identityClaimCandidates,
+    timelineClaimCandidates,
     evidenceByClaim: claims.map((claim) => ({
       claimId: claim.id,
       facets: claim.facets,

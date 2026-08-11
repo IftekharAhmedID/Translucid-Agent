@@ -206,7 +206,7 @@ export class OpenCodeInvestigationController {
             limitations: ["Only evidence in this claim packet may be cited."],
           })),
         };
-        const batchPrompt = `Adjudicate exactly these ${claimIds.length} claim packets. Each claim already declares its facets; do not invent, merge, or omit facets. Return exactly one facetNote for every declared facet. A facet may cite only evidence IDs listed in that facet's eligibleEvidenceIds. Evidence listed for another claim or another facet is ineligible even when its quote appears relevant. A SUPPORTED facet must cite supporting evidence, a CONTRADICTED facet must cite contradicting evidence, and an UNRESOLVED facet must cite nothing. Apply the deterministic overall verdict implied by the facet statuses, with HIGH/MEDIUM contradiction taking precedence over partial support. If the eligible evidence does not establish a facet, return UNRESOLVED. Return only the focused findings object.\n${JSON.stringify(batchBundle)}`;
+        const batchPrompt = `Adjudicate exactly these ${claimIds.length} claim packets. Each claim already declares its facets; do not invent, merge, or omit facets. Return exactly one facetNote for every declared facet. A facet may cite only evidence IDs listed in that facet's eligibleEvidenceIds. Evidence listed for another claim or another facet is ineligible even when its quote appears relevant. Copy evidence IDs verbatim as complete UUID strings from the packet; never abbreviate, truncate, reformat, or invent an ID. A non-rejected SUPPORTS edge in eligibleEvidenceIds is sufficient to mark that facet SUPPORTED even when its source authority is SELF_REPRESENTATION; source authority affects explanation and strength, not whether the deterministic edge exists. A non-rejected CONTRADICTS edge in eligibleEvidenceIds is sufficient to mark that facet CONTRADICTED, subject to the materiality precedence rule. Never return UNRESOLVED for a facet with an eligible support or contradiction edge. A SUPPORTED facet must cite supporting evidence, a CONTRADICTED facet must cite contradicting evidence, and an UNRESOLVED facet must cite nothing. Apply the deterministic overall verdict implied by the facet statuses, with HIGH/MEDIUM contradiction taking precedence over partial support. If neither relation has eligible evidence for a facet, return UNRESOLVED. Return only the focused findings object.\n${JSON.stringify(batchBundle)}`;
         try {
           const adjudication = await this.promptStructured({
             client,
@@ -242,7 +242,7 @@ export class OpenCodeInvestigationController {
               title: `Fresh finding adjudication ${index + 1} correction`,
               agent: "fresh-adjudicator",
               phase: "ADJUDICATION",
-              prompt: `${batchPrompt}\n\nThe previous independent response was rejected by deterministic validation: ${validationMessage}\nCorrect that exact defect. Do not cite an evidence ID outside the corresponding claim packet. This is the only correction attempt.`,
+              prompt: `${batchPrompt}\n\nThe previous independent response was rejected by deterministic validation: ${validationMessage}\nCorrect that exact defect. Do not cite an evidence ID outside the corresponding claim packet, and copy every cited UUID verbatim from the packet. This is the only correction attempt.`,
               schema: findingBatchOutputSchema,
               jsonExample: batchJsonExample,
             });
@@ -254,14 +254,15 @@ export class OpenCodeInvestigationController {
         }
       });
       const findings = mergeFindingBatches(findingBatches, claims.map(({ id }) => id));
-      const summaryResult = await this.promptStructured({
+      const summaryPrompt = `Summarize only the validated findings, accepted evidence, entity resolution, observations and stated capability limitations. Backend audit statistics below are authoritative; do not infer or restate counts that are not present. Treat CONTEXT as conservative unknown authority, not self-representation. professionalIdentityClaimIds and professionalTimelineClaimIds are deterministic claim mappings, not free-form categories: use only the claim IDs listed in the corresponding identityClaimCandidates and timelineClaimCandidates arrays. Every professionalIdentity.evidenceIds item must belong to at least one identityClaimCandidate; every professionalTimelineEvidenceIds item must belong to at least one timelineClaimCandidate. Populate strongestEvidenceByClaim with only evidence IDs and facet keys belonging to its declared claim; never reuse evidence across summary sections unless its claim mapping authorizes it. CONTEXT is never citation-eligible. Return the focused non-ranking summary object.\n${JSON.stringify(buildSummaryBundle(adjudicationBundle, findings, auditStats))}`;
+      let summaryResult = await this.promptStructured({
         client,
         input,
         knownSessions,
         title: "Fresh investigation summary",
         agent: "fresh-adjudicator",
         phase: "ADJUDICATION",
-        prompt: `Summarize only the validated findings, accepted evidence, entity resolution, observations and stated capability limitations. Backend audit statistics below are authoritative; do not infer or restate counts that are not present. Treat CONTEXT as conservative unknown authority, not self-representation. Populate professionalIdentityClaimIds and professionalTimelineClaimIds from the claim-scoped evidence map. Populate strongestEvidenceByClaim with only evidence IDs and facet keys belonging to its declared claim; never reuse evidence across summary sections unless its claim mapping authorizes it. CONTEXT is never citation-eligible. Return the focused non-ranking summary object.\n${JSON.stringify(buildSummaryBundle(adjudicationBundle, findings, auditStats))}`,
+        prompt: summaryPrompt,
         schema: summaryOutputSchema,
         jsonExample: {
           summary: {
@@ -278,7 +279,48 @@ export class OpenCodeInvestigationController {
           },
         },
       });
-      let summary = validateInvestigationSummary(summaryResult.value.summary, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds, auditStats.sourceAuthorityCounts, evidenceRelations, evidenceFacetKeys, claimFacets);
+      let summary: AdjudicationOutput["summary"];
+      try {
+        summary = validateInvestigationSummary(summaryResult.value.summary, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds, auditStats.sourceAuthorityCounts, evidenceRelations, evidenceFacetKeys, claimFacets);
+      } catch (validationError) {
+        const validationMessage = validationError instanceof Error ? validationError.message : String(validationError);
+        await insertAgentEvent({
+          investigationId: input.investigationId,
+          runId: input.runId,
+          phase: "ADJUDICATION",
+          agent: "fresh-adjudicator",
+          sessionId: summaryResult.sessionId,
+          eventType: "ADJUDICATION_SUMMARY_CORRECTION",
+          status: "RETRYING",
+          publicRationale: "The summary cited evidence outside a declared claim-scoped section, so one fresh bounded correction was requested.",
+          payload: { validationError: validationMessage },
+        });
+        summaryResult = await this.promptStructured({
+          client,
+          input,
+          knownSessions,
+          title: "Fresh investigation summary correction",
+          agent: "fresh-adjudicator",
+          phase: "ADJUDICATION",
+          prompt: `${summaryPrompt}\n\nThe previous independent summary was rejected by deterministic validation: ${validationMessage}\nCorrect only that mapping defect. Do not cite an evidence ID in the identity or timeline section unless its claim ID appears in the corresponding candidate array. This is the only correction attempt.`,
+          schema: summaryOutputSchema,
+          jsonExample: {
+            summary: {
+              professionalIdentity: { status: "AMBIGUOUS", summary: "Example JSON shape only.", evidenceIds: [] },
+              professionalTimelineSummary: "Example JSON shape only.",
+              professionalTimelineEvidenceIds: [],
+              professionalIdentityClaimIds: [],
+              professionalTimelineClaimIds: [],
+              strongestEvidenceIds: [],
+              strongestEvidenceByClaim: [],
+              materialInconsistencies: [],
+              unresolvedMaterialClaimIds: [],
+              investigationLimitations: ["Example JSON shape only."],
+            },
+          },
+        });
+        summary = validateInvestigationSummary(summaryResult.value.summary, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds, auditStats.sourceAuthorityCounts, evidenceRelations, evidenceFacetKeys, claimFacets);
+      }
       if ((auditStats.sourceAuthorityCounts.CONTEXT ?? 0) > 0 && !summary.investigationLimitations.some((limitation) => limitation.includes("conservatively classified as CONTEXT"))) {
         summary = { ...summary, investigationLimitations: [...summary.investigationLimitations.slice(0, 99), "Some captured sources remain conservatively classified as CONTEXT because the backend does not deterministically recognize their authority."] };
       }

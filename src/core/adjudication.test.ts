@@ -168,6 +168,38 @@ test("supported facets require evidence and unresolved findings cannot cite edge
   assert.throws(() => validateAdjudication(unresolved, new Set(["ev-1", "ev-2"]), new Set(["claim-1", "claim-2"]), undefined, claimFacets), /unresolved but cites/i);
 });
 
+test("unresolved facets cannot discard an accepted facet-aligned edge", () => {
+  const claimFacets = new Map([
+    ["claim-1", [{ key: "title", label: "Title", materiality: "HIGH" as const }]],
+    ["claim-2", [{ key: "claim", label: "Claim", materiality: "LOW" as const }]],
+  ]);
+  const evidenceClaimIds = new Map([
+    ["ev-1", new Set(["claim-1"])],
+    ["ev-2", new Set(["claim-2"])],
+  ]);
+  const evidenceRelations = new Map([
+    ["ev-1", "SUPPORTS" as const],
+    ["ev-2", "CONTEXT" as const],
+  ]);
+  const evidenceFacetKeys = new Map([
+    ["ev-1", new Set(["title"])],
+    ["ev-2", new Set<string>()],
+  ]);
+  const unresolved = structuredClone(baseOutput);
+  unresolved.summary.professionalIdentity.evidenceIds = ["ev-1"];
+  unresolved.summary.strongestEvidenceByClaim = [{ claimId: "claim-1", facetKeys: ["title"], evidenceIds: ["ev-1"] }];
+  unresolved.findings[0] = {
+    ...unresolved.findings[0]!,
+    verdict: "UNRESOLVED",
+    supportingEvidenceIds: [],
+    facetNotes: [{ facetKey: "title", status: "UNRESOLVED", note: "The source was self-representational.", evidenceIds: [] }],
+  };
+  assert.throws(
+    () => validateAdjudication(unresolved, new Set(["ev-1", "ev-2"]), new Set(["claim-1", "claim-2"]), evidenceClaimIds, claimFacets, evidenceRelations, undefined, evidenceFacetKeys),
+    /eligible evidence/i,
+  );
+});
+
 test("context authority cannot be described as universal self-representation", () => {
   const output = structuredClone(baseOutput);
   output.summary.professionalTimelineSummary = "All captured evidence is self-representational.";

@@ -123,6 +123,13 @@ function validateFacetVerdict(
       }
     }
     if (note.status === "UNRESOLVED" && note.evidenceIds.length > 0) throw new Error(`Unresolved facet ${note.facetKey} cannot cite supporting or contradicting evidence.`);
+    if (note.status === "UNRESOLVED" && [...knownEvidenceIds].some((evidenceId) => (
+      evidenceClaimIds?.get(evidenceId)?.has(finding.claimId)
+      && (evidenceRelations?.get(evidenceId) === "SUPPORTS" || evidenceRelations?.get(evidenceId) === "CONTRADICTS")
+      && evidenceFacetKeys?.get(evidenceId)?.has(note.facetKey)
+    ))) {
+      throw new Error(`Facet ${note.facetKey} is unresolved despite eligible evidence.`);
+    }
   }
   const materialContradiction = finding.facetNotes.some((note) => note.status === "CONTRADICTED" && facetByKey.get(note.facetKey)?.materiality !== "LOW");
   const allSupported = finding.facetNotes.every((note) => note.status === "SUPPORTED");
