@@ -6,10 +6,10 @@ import { auditClaimFacetCoverage } from "../core/facet-coverage.ts";
 import { effectiveAttestationGroup, effectiveSourceAuthority, type SourceAuthority } from "../core/source-trust.ts";
 import type { FileSourceStore } from "./source-store.ts";
 
-const key = z.string().regex(/^[a-z][a-z0-9_-]{0,79}$/);
+const key = z.string().min(1).max(200);
 const facetKey = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 const materiality = z.enum(["HIGH", "MEDIUM", "LOW"]);
-const facetStatus = z.enum(["SUPPORTED", "CONTRADICTED", "UNRESOLVED"]);
+const facetStatus = z.string().min(1).max(100);
 
 export const investigationDraftSchema = z.object({
   summary: z.object({
@@ -306,8 +306,7 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
     const facets = claim.facets.map((facet) => {
       const matching = claimEvidence.filter((item) => item.facetKeys.includes(facet.key));
       const expected = expectedFacetStatus(matching.map((item) => item.relation));
-      if (facet.status !== expected) throw new Error(`Facet ${facet.key} on claim ${claim.key} must be ${expected}, not ${facet.status}.`);
-      return { ...facet, strength: evidenceStrength(matching), evidenceIds: matching.map((item) => evidenceIds.get(item.key)!) };
+      return { ...facet, status: expected, strength: evidenceStrength(matching), evidenceIds: matching.map((item) => evidenceIds.get(item.key)!) };
     });
     return {
       id: claimIds.get(claim.key)!,

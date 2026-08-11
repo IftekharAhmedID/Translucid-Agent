@@ -275,16 +275,25 @@ test("rejects summary evidence that crosses claim boundaries", async () => {
   }
 });
 
-test("rejects an unresolved facet when eligible evidence already exists", async () => {
+test("derives facet status and accepts opaque semantic keys without spending the repair", async () => {
   const directory = await mkdtemp(join(tmpdir(), "translucid-result-unresolved-"));
   try {
     const { store, sourceRef } = await directWorkStore(directory);
-    const invalid = draft(sourceRef);
-    invalid.claims[0]!.facets[0]!.status = "UNRESOLVED";
-    await assert.rejects(
-      canonicalizeInvestigationResult(invalid, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
-      /facet employer_team.*must be SUPPORTED/i,
-    );
+    const loose = draft(sourceRef);
+    loose.claims[0]!.facets[0]!.status = "PARTIALLY_SUPPORTED" as never;
+    loose.evidence[0]!.key = "employment:title#1";
+    loose.summary.professionalIdentity.evidenceKeys[0] = "employment:title#1";
+    loose.summary.timelineEvidenceKeys[0] = "employment:title#1";
+    loose.summary.strongestEvidenceByClaim[0]!.evidenceKeys[0] = "employment:title#1";
+    loose.timeline[0]!.evidenceKeys[0] = "employment:title#1";
+    const finalized = await finalizeWithSingleRepair<InvestigationDraft, Awaited<ReturnType<typeof canonicalizeInvestigationResult>>>({
+      compile: async () => investigationDraftSchema.parse(loose),
+      validate: (value) => canonicalizeInvestigationResult(value, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+      audit: async () => ({ status: "PASSED", defects: [] }),
+    });
+
+    assert.equal(finalized.compilerAttempts, 1);
+    assert.equal(finalized.result.claims[0]!.facets[0]!.status, "SUPPORTED");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
