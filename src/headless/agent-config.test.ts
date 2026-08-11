@@ -92,3 +92,9 @@ test("lead uses a bounded checklist and the three default specialists with condi
   assert.match(lead, /professional.*GitHub.*web records.*in parallel/is);
   assert.match(lead, /social.*only/is);
 });
+
+test("headless research uses the async OpenCode prompt without rebuilding memos from session messages", async () => {
+  const controller = await readFile(join(process.cwd(), "src", "headless", "controller.ts"), "utf8");
+  assert.match(controller, /client\.session\.promptAsync\(/);
+  assert.doesNotMatch(controller, /client\.session\.messages\(/);
+});

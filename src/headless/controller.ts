@@ -2,7 +2,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
-import type { Session } from "@opencode-ai/sdk/v2/client";
+import type { GlobalEvent, Session } from "@opencode-ai/sdk/v2/client";
 import { z } from "zod";
 
 import { extractStructuredOutput } from "../agent/structured-output.ts";
@@ -56,12 +56,6 @@ export type HeadlessControllerOutput = {
 function unwrap<T>(result: { data?: T; error?: unknown }, action: string): T {
   if (result.error || result.data === undefined) throw new Error(`${action} failed: ${JSON.stringify(result.error ?? "missing data")}`);
   return result.data;
-}
-
-function assistantText(message: { info: { role: string; error?: { name?: string } }; parts: Array<{ type: string; text?: string }> }): string {
-  if (message.info.role !== "assistant") return "";
-  if (message.info.error) throw new Error(`OpenCode message failed: ${message.info.error.name ?? "UnknownError"}.`);
-  return message.parts.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("").trim();
 }
 
 function citedSourceRefs(text: string): string[] {
@@ -132,25 +126,66 @@ export function resultForAudit(result: InvestigationResult, sourceRefs: Set<stri
   };
 }
 
+export async function waitForResearchIdle(input: {
+  readStatus: () => Promise<"busy" | "retry" | undefined>;
+  deadlineAt: number;
+  signal: AbortSignal;
+  intervalMs?: number;
+}): Promise<void> {
+  let observedBusy = false;
+  const startedAt = Date.now();
+  while (Date.now() < input.deadlineAt) {
+    input.signal.throwIfAborted();
+    const status = await input.readStatus();
+    if (status === "busy" || status === "retry") observedBusy = true;
+    else if (observedBusy || Date.now() - startedAt >= 3_000) return;
+    const interval = input.intervalMs ?? 500;
+    if (interval > 0) await new Promise((resolve) => setTimeout(resolve, interval));
+  }
+  throw new DOMException("Finalization reserve began.", "TimeoutError");
+}
+
+function eventSessionId(event: GlobalEvent): string | undefined {
+  if (!("properties" in event.payload)) return undefined;
+  const properties = event.payload.properties as Record<string, unknown>;
+  if (typeof properties.sessionID === "string") return properties.sessionID;
+  const part = properties.part;
+  return part && typeof part === "object" && typeof (part as { sessionID?: unknown }).sessionID === "string"
+    ? String((part as { sessionID: string }).sessionID)
+    : undefined;
+}
+
 export class HeadlessInvestigationController {
   async run(input: Input): Promise<HeadlessControllerOutput> {
     const client = createOpencodeClient({ baseUrl: input.handle.openCodeUrl, headers: input.handle.accessHeaders, throwOnError: false });
     const compactions = new Map<string, number>();
+    const messageRoles = new Map<string, string>();
+    const textParts = new Map<string, { sessionId: string; messageId: string; text: string; sequence: number }>();
+    let eventSequence = 0;
     const eventAbort = new AbortController();
+    const eventConnection = await client.global.event({ signal: eventAbort.signal });
     const relay = (async () => {
-      const events = await client.global.event({ signal: eventAbort.signal });
-      for await (const event of events.stream) {
-        if (event.directory !== directory || event.payload.type !== "session.compacted") continue;
-        const sessionId = event.payload.properties.sessionID;
-        compactions.set(sessionId, (compactions.get(sessionId) ?? 0) + 1);
+      for await (const event of eventConnection.stream) {
+        if (event.directory !== directory) continue;
+        if (event.payload.type === "session.compacted") {
+          const sessionId = event.payload.properties.sessionID;
+          compactions.set(sessionId, (compactions.get(sessionId) ?? 0) + 1);
+        } else if (event.payload.type === "message.updated") {
+          messageRoles.set(event.payload.properties.info.id, event.payload.properties.info.role);
+        } else if (event.payload.type === "message.part.updated" && event.payload.properties.part.type === "text") {
+          const part = event.payload.properties.part;
+          const sessionId = eventSessionId(event);
+          if (sessionId && part.text.trim()) textParts.set(part.id, { sessionId, messageId: part.messageID, text: part.text.trim(), sequence: eventSequence++ });
+        }
       }
     })().catch(() => undefined);
 
     let lead: Session | undefined;
     try {
       lead = unwrap(await client.session.create({ directory, title: "Headless lead research", agent: "lead-researcher", model: { id: input.researchModel, providerID: "translucid", variant: "medium" } }, { signal: input.signal }), "lead session creation");
-      await input.onLeadStarted?.(lead.id);
-      input.onProgress?.(`Lead research session ${lead.id} started.`);
+      const leadId = lead.id;
+      await input.onLeadStarted?.(leadId);
+      input.onProgress?.(`Lead research session ${leadId} started.`);
       const researchDeadline = input.deadlineAt.getTime() - input.finalizationReserveMs;
       const researchAbort = new AbortController();
       const timeout = setTimeout(() => researchAbort.abort(new DOMException("Finalization reserve began.", "TimeoutError")), Math.max(1, researchDeadline - Date.now()));
@@ -159,19 +194,32 @@ export class HeadlessInvestigationController {
       let leadMemo = "";
       const warnings: string[] = [];
       try {
-        const message = unwrap(await client.session.prompt({
-          sessionID: lead.id,
+        const launch = await client.session.promptAsync({
+          sessionID: leadId,
           directory,
           agent: "lead-researcher",
           model: { providerID: "translucid", modelID: input.researchModel },
           variant: "medium",
           parts: [{ type: "text", text: `Begin the headless investigation from /workspace/case/input/manifest.json. Complete one initial specialist wave and at most one exact-gap targeted wave. Return a consolidated natural-language research memo with exact [S#] citations. The research deadline is ${new Date(researchDeadline).toISOString()}; reserve finalization time and stop when material gaps are resolved or honestly exhausted.` }],
-        }, { signal: researchAbort.signal }), "lead research prompt");
-        leadMemo = assistantText(message);
+        }, { signal: researchAbort.signal });
+        if (launch.error) throw new Error(`lead research prompt failed: ${JSON.stringify(launch.error)}`);
+        await waitForResearchIdle({
+          readStatus: async () => {
+            const statuses = unwrap(await client.session.status({ directory }, { signal: researchAbort.signal }), "session status");
+            const status = statuses[leadId]?.type;
+            return status === "busy" || status === "retry" ? status : undefined;
+          },
+          deadlineAt: researchDeadline,
+          signal: researchAbort.signal,
+        });
+        leadMemo = [...textParts.values()]
+          .filter((part) => part.sessionId === leadId && messageRoles.get(part.messageId) === "assistant")
+          .sort((left, right) => left.sequence - right.sequence)
+          .at(-1)?.text ?? "";
       } catch (error) {
         if (input.signal.aborted) throw error;
         warnings.push(`Research stopped before lead consolidation: ${error instanceof Error ? error.message : String(error)}`);
-        await client.session.abort({ sessionID: lead.id, directory }).catch(() => undefined);
+        await client.session.abort({ sessionID: leadId, directory }).catch(() => undefined);
       } finally {
         clearTimeout(timeout);
         input.signal.removeEventListener("abort", abort);

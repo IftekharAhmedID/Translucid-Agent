@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { buildFinalizerContext, readCompletedResearchMemos, resultForAudit } from "./controller.ts";
+import { buildFinalizerContext, readCompletedResearchMemos, resultForAudit, waitForResearchIdle } from "./controller.ts";
 import type { InvestigationResult } from "./result-contract.ts";
 import { FileSourceStore } from "./source-store.ts";
 
@@ -39,6 +39,20 @@ test("fails the research handoff when no specialist memo completed", async () =>
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("waits for an asynchronously prompted research session to become idle", async () => {
+  const statuses = ["busy", "busy", undefined] as const;
+  let index = 0;
+
+  await waitForResearchIdle({
+    readStatus: async () => statuses[Math.min(index++, statuses.length - 1)],
+    deadlineAt: Date.now() + 1_000,
+    signal: new AbortController().signal,
+    intervalMs: 0,
+  });
+
+  assert.equal(index, 3);
 });
 
 test("builds finalizer context from parsed JSON and memo-cited source metadata without stored bodies", async () => {
