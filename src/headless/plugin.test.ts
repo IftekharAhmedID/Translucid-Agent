@@ -45,3 +45,20 @@ test("compaction context is bounded and contains only the session's encountered 
     globalThis.fetch = originalFetch;
   }
 });
+
+test("specialist tasks are forced to complete before their memo handoff", async () => {
+  const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
+  const hooks = await plugin({} as Parameters<typeof plugin>[0]);
+  const before = hooks["tool.execute.before"]!;
+  const output = {
+    args: {
+      subagent_type: "professional-researcher",
+      prompt: "WAVE: INITIAL\nVerify the candidate's employment chronology.",
+      background: true,
+    },
+  };
+
+  await before({ tool: "task", sessionID: "lead-session", callID: "task-call-1" }, output);
+
+  assert.equal(output.args.background, false);
+});

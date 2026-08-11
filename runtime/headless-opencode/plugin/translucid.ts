@@ -133,6 +133,7 @@ const plugin: Plugin = async () => {
       roleCounts.set(role, (roleCounts.get(role) ?? 0) + 1);
       totalChildren += 1;
       taskWave.set(input.callID, wave);
+      output.args.background = false;
       const memoRule = "\n\nReturn a public Markdown research memo with exact quotes and [S#] references. Do not return JSON, claim IDs, facet keys, verdicts, or source-authority labels.";
       if (typeof output.args?.prompt === "string") output.args.prompt += memoRule;
       else if (typeof output.args?.description === "string") output.args.description += memoRule;
