@@ -1,0 +1,47 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+process.env.CASE_GATEWAY_URL = "http://gateway.test";
+process.env.CASE_TOKEN = "test-token";
+process.env.RUN_ID = "test-run";
+process.env.CASE_DEADLINE_AT = "2026-08-11T20:00:00.000Z";
+
+test("compaction context is bounded and contains only the session's encountered source refs", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { operational: { sessionId: string } };
+    return new Response(JSON.stringify({
+      sourceRefs: body.operational.sessionId === "session-one" ? ["S1", "S3"] : ["S2"],
+      evidenceEligibleSourceRefs: body.operational.sessionId === "session-one" ? ["S3"] : [],
+    }));
+  };
+
+  try {
+    const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
+    const hooks = await plugin({} as Parameters<typeof plugin>[0]);
+    const chat = hooks["chat.message"]!;
+    const compact = hooks["experimental.session.compacting"]!;
+    const search = hooks.tool!["web.search"]!;
+
+    await chat({ sessionID: "session-one" }, { message: {} as never, parts: [{ type: "text", text: "Investigate one ".repeat(1_000) }] as never });
+    await chat({ sessionID: "session-two" }, { message: {} as never, parts: [{ type: "text", text: "Investigate two" }] as never });
+    await search.execute({ query: "first query", mode: "fast", resultLimit: 5 }, { sessionID: "session-one", agent: "professional-researcher", abort: new AbortController().signal } as never);
+    await search.execute({ query: "second query", mode: "fast", resultLimit: 5 }, { sessionID: "session-two", agent: "web-records-researcher", abort: new AbortController().signal } as never);
+
+    const first = { context: [] as string[] };
+    const second = { context: [] as string[] };
+    await compact({ sessionID: "session-one" }, first);
+    await compact({ sessionID: "session-two" }, second);
+    const firstText = first.context.join("\n");
+    const secondText = second.context.join("\n");
+
+    assert.ok(Buffer.byteLength(firstText, "utf8") <= 8 * 1024);
+    assert.match(firstText, /S1/);
+    assert.match(firstText, /S3/);
+    assert.doesNotMatch(firstText, /S2/);
+    assert.match(secondText, /S2/);
+    assert.doesNotMatch(secondText, /S1|S3/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
