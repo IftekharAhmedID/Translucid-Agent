@@ -93,6 +93,25 @@ test("lead uses a bounded checklist and the three default specialists with condi
   assert.match(lead, /social.*only/is);
 });
 
+test("every headless agent uses OpenCode's native steps limit as an emergency circuit breaker", async () => {
+  const expected = new Map<string, number>([
+    ["lead-researcher.md", 16],
+    ["professional-researcher.md", 24],
+    ["github-researcher.md", 24],
+    ["web-records-researcher.md", 24],
+    ["social-researcher.md", 16],
+    ["evidence-compiler.md", 8],
+    ["evidence-auditor.md", 8],
+    ["document-vision.md", 4],
+  ]);
+
+  for (const [file, steps] of expected) {
+    const source = await readFile(join(root, "agents", file), "utf8");
+    assert.match(source, new RegExp(`^steps: ${steps}$`, "m"), file);
+    assert.doesNotMatch(source, /^maxSteps:/m, file);
+  }
+});
+
 test("headless research uses the async OpenCode prompt without rebuilding memos from session messages", async () => {
   const controller = await readFile(join(process.cwd(), "src", "headless", "controller.ts"), "utf8");
   assert.match(controller, /client\.session\.promptAsync\(/);

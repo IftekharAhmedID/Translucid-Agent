@@ -2,6 +2,7 @@
 description: Transcribes one authorized sparse PDF page render.
 mode: subagent
 model: translucid/mimo-v2.5-free
+steps: 4
 permission:
   "*": deny
 ---

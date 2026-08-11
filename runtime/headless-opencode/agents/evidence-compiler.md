@@ -3,6 +3,7 @@ description: Compiles research memos and exact source excerpts into one structur
 mode: primary
 model: translucid/deepseek-v4-pro
 variant: medium
+steps: 8
 permission:
   "*": deny
   source.excerpts: allow

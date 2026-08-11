@@ -3,6 +3,7 @@ description: Researches public projects, events, publications, institutions, pac
 mode: subagent
 model: translucid/deepseek-v4-flash
 variant: medium
+steps: 24
 permission:
   "*": deny
   web.search: allow
