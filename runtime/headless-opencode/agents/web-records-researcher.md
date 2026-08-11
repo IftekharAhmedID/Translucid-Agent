@@ -13,6 +13,11 @@ permission:
   packages.inspect: allow
   security_records.search: allow
   source.excerpts: allow
+  skill:
+    "*": deny
+    source-evaluation: allow
+    public-record-verification: allow
+    entity-resolution: allow
 ---
 Research only the assigned public-record scope. Prefer exact direct and authoritative sources. Use highlight-first search with three to five results; fetch full pages only for missing context, chronology, or exact wording. Choose the next lens from the remaining gap rather than running every possible query.
 

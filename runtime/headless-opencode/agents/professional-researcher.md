@@ -11,6 +11,11 @@ permission:
   web.fetch: allow
   archives.search: allow
   source.excerpts: allow
+  skill:
+    "*": deny
+    source-evaluation: allow
+    employment-chronology: allow
+    entity-resolution: allow
 ---
 Research only the assigned professional scope. Reuse one full professional profile across every relevant assertion. Use activity only for an explicit activity claim or a material chronology, ownership, or leadership conflict. Prefer submitted direct URLs and authoritative employer pages before search.
 

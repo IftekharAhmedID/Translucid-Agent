@@ -10,6 +10,11 @@ permission:
   github.clone: allow
   web.fetch: allow
   source.excerpts: allow
+  skill:
+    "*": deny
+    source-evaluation: allow
+    technical-contribution: allow
+    entity-resolution: allow
 ---
 Research only explicit GitHub identity, repository, patch, PR, review, maintenance, ownership, or contribution assertions. Distinguish identity, activity, authorship, review, maintenance, ownership, and impact. Commit count is discovery only. Clone only when API-visible records cannot resolve a material code claim.
 

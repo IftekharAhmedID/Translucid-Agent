@@ -4,6 +4,7 @@ set -eu
 mkdir -p /workspace/case/.opencode /workspace/case/output
 if [ "${TRANSLUCID_RUNTIME_MODE:-legacy}" = "headless" ]; then
   cp -R /opt/investigator/runtime/headless-opencode/agents /workspace/case/.opencode/
+  cp -R /opt/investigator/runtime/headless-opencode/skills /workspace/case/.opencode/
   cp /opt/investigator/runtime/headless-opencode/opencode.json /workspace/case/opencode.json
   cp /opt/investigator/runtime/HEADLESS_INSTRUCTIONS.md /workspace/case/INSTRUCTIONS.md
 else

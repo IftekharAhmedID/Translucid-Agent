@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -55,4 +55,40 @@ test("headless OpenCode loads only the headless plugin and keeps shell and edits
   assert.match(plugin, /two-invocation limit/);
   assert.match(plugin, /experimental\.session\.compacting/);
   assert.doesNotMatch(plugin, /internal\/sources\/index/);
+});
+
+test("exactly five headless skills are copied and discoverable only by permitted agents", async () => {
+  const expectedSkills = ["employment-chronology", "entity-resolution", "public-record-verification", "source-evaluation", "technical-contribution"];
+  assert.deepEqual((await readdir(join(root, "skills"))).sort(), expectedSkills);
+  for (const name of expectedSkills) {
+    const source = await readFile(join(root, "skills", name, "SKILL.md"), "utf8");
+    assert.match(source, new RegExp(`^---\\nname: ${name}\\n`, "m"));
+  }
+
+  const expected = new Map<string, string[]>([
+    ["lead-researcher.md", expectedSkills],
+    ["professional-researcher.md", ["employment-chronology", "entity-resolution", "source-evaluation"]],
+    ["github-researcher.md", ["entity-resolution", "source-evaluation", "technical-contribution"]],
+    ["web-records-researcher.md", ["entity-resolution", "public-record-verification", "source-evaluation"]],
+    ["social-researcher.md", ["entity-resolution", "source-evaluation"]],
+    ["evidence-compiler.md", ["entity-resolution", "source-evaluation"]],
+    ["evidence-auditor.md", ["entity-resolution", "source-evaluation"]],
+    ["document-vision.md", []],
+  ]);
+  for (const [file, allowed] of expected) {
+    const source = await readFile(join(root, "agents", file), "utf8");
+    const block = source.match(/^  skill:\n((?:    .*\n)+)/m)?.[1] ?? "";
+    const actual = [...block.matchAll(/^    ([a-z0-9-]+): allow$/gm)].map((match) => match[1]!).sort();
+    assert.deepEqual(actual, [...allowed].sort(), file);
+  }
+
+  const start = await readFile(join(process.cwd(), "runtime", "start.sh"), "utf8");
+  assert.match(start, /headless-opencode\/skills/);
+});
+
+test("lead uses a bounded checklist and the three default specialists with conditional social research", async () => {
+  const lead = await readFile(join(root, "agents", "lead-researcher.md"), "utf8");
+  assert.match(lead, /15[–-]30/);
+  assert.match(lead, /professional.*GitHub.*web records.*in parallel/is);
+  assert.match(lead, /social.*only/is);
 });
