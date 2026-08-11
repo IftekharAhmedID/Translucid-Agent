@@ -6,6 +6,7 @@ import type { GlobalEvent, Session } from "@opencode-ai/sdk/v2/client";
 import { z } from "zod";
 
 import { extractStructuredOutput } from "../agent/structured-output.ts";
+import { finalizerOutputTransport } from "../core/finalizer-transport.ts";
 import type { RunHandle } from "../runtime/types.ts";
 import type { MemoryRunBudget } from "./budget.ts";
 import { finalizeWithSingleRepair, type IndependentAudit } from "./finalize.ts";
@@ -43,6 +44,7 @@ type Input = {
   researchModel: string;
   compilerModel: string;
   auditorModel: string;
+  finalizerProvider: "ZEN" | "GO";
   onLeadStarted?: (sessionId: string) => void | Promise<void>;
   onProgress?: (message: string) => void;
 };
@@ -66,6 +68,26 @@ export function describeSdkError(error: unknown): string {
     return JSON.stringify(details);
   }
   return String(error);
+}
+
+export function finalizerPromptPayload<T>(
+  provider: "ZEN" | "GO",
+  model: string,
+  prompt: string,
+  schema: z.ZodType<T>,
+) {
+  if (finalizerOutputTransport(provider, model) === "NATIVE_JSON_SCHEMA") {
+    return {
+      format: { type: "json_schema" as const, schema: z.toJSONSchema(schema) },
+      parts: [{ type: "text" as const, text: prompt }],
+    };
+  }
+  return {
+    parts: [{
+      type: "text" as const,
+      text: `${prompt}\n\nReturn only one complete JSON object. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}`,
+    }],
+  };
 }
 
 function unwrap<T>(result: { data?: T; error?: unknown }, action: string): T {
@@ -272,14 +294,14 @@ export class HeadlessInvestigationController {
       const promptJson = async <T>(agent: "evidence-compiler" | "evidence-auditor", title: string, prompt: string, schema: z.ZodType<T>): Promise<T> => {
         const model = agent === "evidence-compiler" ? input.compilerModel : input.auditorModel;
         const session = unwrap(await client.session.create({ directory, title, agent, model: { id: model, providerID: "translucid", variant: "medium" } }, { signal: input.signal }), `${agent} session creation`);
+        const payload = finalizerPromptPayload(input.finalizerProvider, model, prompt, schema);
         const message = unwrap(await client.session.prompt({
           sessionID: session.id,
           directory,
           agent,
           model: { providerID: "translucid", modelID: model },
           variant: "medium",
-          format: { type: "json_schema", schema: z.toJSONSchema(schema) },
-          parts: [{ type: "text", text: prompt }],
+          ...payload,
         }, { signal: input.signal }), `${agent} prompt`);
         return schema.parse(extractStructuredOutput(message));
       };

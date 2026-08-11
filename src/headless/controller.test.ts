@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { buildFinalizerContext, describeSdkError, readCompletedResearchMemos, resultForAudit, waitForResearchIdle } from "./controller.ts";
-import type { InvestigationResult } from "./result-contract.ts";
+import { buildFinalizerContext, describeSdkError, finalizerPromptPayload, readCompletedResearchMemos, resultForAudit, waitForResearchIdle } from "./controller.ts";
+import { investigationDraftSchema, type InvestigationResult } from "./result-contract.ts";
 import { FileSourceStore } from "./source-store.ts";
 
 test("reads completed specialist memos and reports children without a snapshot", async () => {
@@ -149,7 +149,17 @@ test("auditor view removes provisional audit data and unused source metadata", (
 test("controller never reconstructs handoffs from messages or injects duplicate or full source text", async () => {
   const source = await readFile(new URL("./controller.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /session\.messages|document\.txt|exactStoredBody|sourceBundle/);
-  assert.match(source, /format:\s*\{\s*type:\s*"json_schema",\s*schema:\s*z\.toJSONSchema\(schema\)\s*\}/s);
+});
+
+test("finalizers use native schemas when supported and JSON objects for GO DeepSeek thinking models", () => {
+  const native = finalizerPromptPayload("ZEN", "deepseek-v4-pro", "Compile.", investigationDraftSchema);
+  assert.equal(native.format?.type, "json_schema");
+  assert.equal(native.parts[0].text, "Compile.");
+
+  const compatible = finalizerPromptPayload("GO", "deepseek-v4-pro", "Compile.", investigationDraftSchema);
+  assert.equal(compatible.format, undefined);
+  assert.match(compatible.parts[0].text, /Return only one complete JSON object/);
+  assert.match(compatible.parts[0].text, /"claims"/);
 });
 
 test("describes SDK errors whose useful fields are non-enumerable", () => {

@@ -24,6 +24,14 @@ test("only GO DeepSeek finalizer agents receive json_object response format", ()
     prepareFinalizerUpstreamBody(body, { agent: "fresh-adjudicator", provider: "ZEN", model: "deepseek-v4-flash" }),
     body,
   );
+  assert.deepEqual(
+    prepareFinalizerUpstreamBody(body, { agent: "evidence-compiler", provider: "GO", model: "deepseek-v4-pro" }),
+    { ...body, max_tokens: 16_384, response_format: { type: "json_object" } },
+  );
+  assert.deepEqual(
+    prepareFinalizerUpstreamBody(body, { agent: "evidence-auditor", provider: "GO", model: "deepseek-v4-pro" }),
+    { ...body, max_tokens: 16_384, response_format: { type: "json_object" } },
+  );
 });
 
 test("GO finalizers preserve a larger requested output allowance", () => {

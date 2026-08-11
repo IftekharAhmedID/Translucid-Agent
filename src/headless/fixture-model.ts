@@ -34,7 +34,7 @@ function fixtureDraft(): InvestigationDraft {
 
 export function createHeadlessFixtureCompletion(): (body: Record<string, unknown>, agent: string) => Promise<Completion> {
   const calls = new Map<string, number>();
-  return async (_body, agent) => {
+  return async (body, agent) => {
     const call = (calls.get(agent) ?? 0) + 1;
     calls.set(agent, call);
     if (agent === "lead-researcher") {
@@ -45,8 +45,23 @@ export function createHeadlessFixtureCompletion(): (body: Record<string, unknown
       if (call === 1) return { toolCall: { name: "web.fetch", arguments: { url: "https://example.test/synthetic-source" } } };
       return { content: `Finding: synthetic Acme employment.\nExact quote: “${quote}” [S1]\nWhat it establishes: employer, title, and 2021–2025 interval.\nConflict or uncertainty: none inside the synthetic fixture.\nRemaining material gap: none.` };
     }
-    if (agent === "evidence-compiler") return { toolCall: { name: "StructuredOutput", arguments: fixtureDraft() } };
-    if (agent === "evidence-auditor") return { toolCall: { name: "StructuredOutput", arguments: { status: "PASSED", defects: [] } } };
+    const nativeStructuredOutput = Array.isArray(body.tools) && body.tools.some((tool) => {
+      if (!tool || typeof tool !== "object") return false;
+      const functionDefinition = (tool as { function?: { name?: unknown } }).function;
+      return functionDefinition?.name === "StructuredOutput";
+    });
+    if (agent === "evidence-compiler") {
+      const draft = fixtureDraft();
+      return nativeStructuredOutput
+        ? { toolCall: { name: "StructuredOutput", arguments: draft } }
+        : { content: JSON.stringify(draft) };
+    }
+    if (agent === "evidence-auditor") {
+      const audit = { status: "PASSED", defects: [] };
+      return nativeStructuredOutput
+        ? { toolCall: { name: "StructuredOutput", arguments: audit } }
+        : { content: JSON.stringify(audit) };
+    }
     return { content: "No additional synthetic research was required." };
   };
 }

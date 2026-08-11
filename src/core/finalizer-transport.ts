@@ -1,6 +1,11 @@
 export type FinalizerOutputTransport = "NATIVE_JSON_SCHEMA" | "JSON_OBJECT";
 
-const finalizerAgents = new Set(["evidence-critic", "fresh-adjudicator"]);
+const finalizerAgents = new Set([
+  "evidence-critic",
+  "fresh-adjudicator",
+  "evidence-compiler",
+  "evidence-auditor",
+]);
 
 function normalizedModel(model: string): string {
   return model.split("/").at(-1)?.toLowerCase() ?? model.toLowerCase();
