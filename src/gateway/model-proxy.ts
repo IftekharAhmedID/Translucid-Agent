@@ -6,11 +6,14 @@ import { writeFixtureCompletion, type Completion } from "./fixture-model.ts";
 
 export function modelCostReservation(body: Record<string, unknown>, model: string): number {
   if (model === "mimo-v2.5-free") return 0;
-  const inputCharacters = JSON.stringify(body.messages ?? []).length;
-  const estimatedInputTokens = Math.ceil(inputCharacters / 4);
+  const estimatedInputTokens = estimateModelInputTokens(body);
   const maximumOutputTokens = Math.min(Number(body.max_tokens ?? body.max_completion_tokens ?? 32_000), 384_000);
   const rates = model === "deepseek-v4-pro" ? { input: 0.435, output: 0.87 } : { input: 0.14, output: 0.28 };
   return (estimatedInputTokens * rates.input + maximumOutputTokens * rates.output) / 1_000_000;
+}
+
+export function estimateModelInputTokens(body: Record<string, unknown>): number {
+  return Math.ceil(JSON.stringify(body.messages ?? []).length / 4);
 }
 
 export async function proxyModelCompletion(input: {

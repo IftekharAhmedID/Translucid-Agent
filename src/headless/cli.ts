@@ -124,6 +124,9 @@ async function main(): Promise<void> {
       finalizerProvider,
       finalizerModel: process.env.FINALIZER_MODEL ?? "deepseek-v4-pro",
       fixtureCompletion: (body, agent) => fixture(body, agent),
+      onModelRequest: ({ agent, estimatedInputTokens }) => {
+        if (agent === "evidence-compiler" || agent === "evidence-auditor") process.stderr.write(`Run ${runId}: ${agent} request estimated input tokens ${estimatedInputTokens}.\n`);
+      },
     });
     const gatewayPort = await listen(gateway.server, options.runtime === "E2B" ? integerEnvironment("HEADLESS_GATEWAY_PORT", 3001) : 0);
     const localGatewayUrl = `http://127.0.0.1:${gatewayPort}`;

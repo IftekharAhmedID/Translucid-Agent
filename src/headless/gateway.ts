@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
-import { modelCostReservation, proxyModelCompletion } from "../gateway/model-proxy.ts";
+import { estimateModelInputTokens, modelCostReservation, proxyModelCompletion } from "../gateway/model-proxy.ts";
 import { toolNames } from "../providers/contracts.ts";
 import type { ProviderExecutor } from "../providers/executor.ts";
 import type { MemoryRunBudget } from "./budget.ts";
@@ -54,6 +54,7 @@ type GatewayInput = {
   finalizerProvider?: "ZEN" | "GO";
   finalizerModel?: string;
   fixtureCompletion?: (body: Record<string, unknown>, agent: string, model: string) => Promise<{ content?: string; toolCall?: { name: string; arguments: Record<string, unknown> } }>;
+  onModelRequest?: (request: { agent: string; estimatedInputTokens: number }) => void;
 };
 
 export function createHeadlessGateway(input: GatewayInput) {
@@ -105,6 +106,7 @@ export function createHeadlessGateway(input: GatewayInput) {
         const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
         const remainingMs = input.deadlineAt - Date.now();
         if (remainingMs <= 0) throw new GatewayError(401, "Investigation deadline reached.");
+        input.onModelRequest?.({ agent, estimatedInputTokens: estimateModelInputTokens(body) });
         input.budget.reserveModel(modelCostReservation(body, model));
         await proxyModelCompletion({
           request,

@@ -19,6 +19,7 @@ test("authorizes one run-scoped token and exposes only headless tools", async ()
       { PROVIDER_MODE: "fixture" },
       createFileProviderBackend({ sourceStore, budget, deadlineAt: Date.now() + 60_000 }),
     );
+    const modelRequests: Array<{ agent: string; estimatedInputTokens: number }> = [];
     const gateway = createHeadlessGateway({
       runId: "run-gateway",
       deadlineAt: Date.now() + 60_000,
@@ -28,6 +29,7 @@ test("authorizes one run-scoped token and exposes only headless tools", async ()
       sourceStore,
       budget,
       providerMode: "fixture",
+      onModelRequest: (request) => modelRequests.push(request),
     });
     await new Promise<void>((resolve) => gateway.server.listen(0, "127.0.0.1", resolve));
     const address = gateway.server.address();
@@ -72,6 +74,14 @@ test("authorizes one run-scoped token and exposes only headless tools", async ()
 
     const sourceIndex = await fetch(`${origin}/internal/sources/index`, { headers });
     assert.equal(sourceIndex.status, 404);
+
+    const completion = await fetch(`${origin}/internal/llm/v1/chat/completions`, {
+      method: "POST",
+      headers: { ...headers, "x-opencode-agent": "evidence-compiler" },
+      body: JSON.stringify({ model: "deepseek-v4-flash", messages: [{ role: "user", content: "bounded compiler prompt" }] }),
+    });
+    assert.equal(completion.status, 200);
+    assert.deepEqual(modelRequests, [{ agent: "evidence-compiler", estimatedInputTokens: 14 }]);
 
     gateway.cancel();
     const cancelled = await fetch(`${origin}/internal/tools/execute`, {
