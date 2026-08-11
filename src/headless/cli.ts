@@ -50,6 +50,8 @@ function agentToolAllowlist(): Map<string, Set<string>> {
     ["github-researcher", new Set(["github.graphql", "github.rest", "github.clone", "web.fetch", "source.excerpts"])],
     ["web-records-researcher", new Set(["web.search", "web.fetch", "archives.search", "public_records.search", "scholarly.search", "packages.inspect", "security_records.search", "source.excerpts"])],
     ["social-researcher", new Set(["social.profile", "source.excerpts"])],
+    ["evidence-compiler", new Set(["source.excerpts"])],
+    ["evidence-auditor", new Set(["source.excerpts"])],
   ]);
 }
 

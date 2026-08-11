@@ -69,19 +69,19 @@ function citedSourceRefs(text: string): string[] {
     .sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
 }
 
-async function sourceBundle(sourceStore: FileSourceStore, memoText: string): Promise<Array<Record<string, unknown>>> {
+export async function buildFinalizerContext(root: string, sourceStore: FileSourceStore, memoText: string): Promise<{
+  input: unknown;
+  researchMemos: string;
+  citedSources: Array<Record<string, unknown>>;
+}> {
+  const input: unknown = JSON.parse(await readFile(join(root, "input", "document.json"), "utf8"));
   const sources = await sourceStore.list();
   const byRef = new Map(sources.map((source) => [source.ref, source]));
-  let remaining = 300_000;
-  const results: Array<Record<string, unknown>> = [];
+  const citedSources: Array<Record<string, unknown>> = [];
   for (const ref of citedSourceRefs(memoText)) {
     const source = byRef.get(ref);
     if (!source) throw new Error(`Research memo cites unknown source ${ref}.`);
-    const maximum = Math.min(60_000, remaining);
-    if (maximum <= 0) break;
-    const body = await sourceStore.readBounded(ref, maximum);
-    remaining -= body.text.length;
-    results.push({
+    citedSources.push({
       ref,
       kind: source.kind,
       url: source.sourceUrl,
@@ -91,11 +91,12 @@ async function sourceBundle(sourceStore: FileSourceStore, memoText: string): Pro
       retrievedAt: source.retrievedAt,
       sourceAuthority: source.sourceAuthority,
       independenceGroup: source.independenceGroup,
-      exactStoredBody: body.text,
-      truncated: body.truncated,
+      sha256: source.sha256,
+      byteLength: source.byteLength,
+      mimeType: source.mimeType,
     });
   }
-  return results;
+  return { input, researchMemos: memoText, citedSources };
 }
 
 function safeFile(value: string): string {
@@ -117,6 +118,18 @@ export async function readCompletedResearchMemos(memoDirectory: string, children
     .filter((child) => !completedSessionIds.has(child.id))
     .map((child) => `${child.agent ?? "unknown-researcher"} child ${child.id} returned no completed memo; its assigned scope remains unresolved.`);
   return { memos, completedSessionIds, warnings };
+}
+
+export function resultForAudit(result: InvestigationResult, sourceRefs: Set<string>): Omit<InvestigationResult, "audit"> {
+  return {
+    schemaVersion: result.schemaVersion,
+    run: result.run,
+    summary: result.summary,
+    claims: result.claims,
+    evidence: result.evidence,
+    timeline: result.timeline,
+    sources: result.sources.filter((source) => sourceRefs.has(source.ref)),
+  };
 }
 
 export class HeadlessInvestigationController {
@@ -176,16 +189,8 @@ export class HeadlessInvestigationController {
       const limitationMemo = warnings.length ? `\n\n# Research handoff warnings\n\n${warnings.map((warning) => `- ${warning}`).join("\n")}` : "";
       const combinedMemos = `${handoff.memos.join("\n\n")}${leadMemo ? `\n\n# Lead consolidation\n\n${leadMemo}` : ""}${limitationMemo}`;
       if (leadMemo) await writeFile(join(memoDirectory, `lead-${safeFile(lead.id)}.md`), leadMemo, { mode: 0o600 });
-      const [documentText, documentJson, sources] = await Promise.all([
-        readFile(join(input.root, "input", "document.txt"), "utf8"),
-        readFile(join(input.root, "input", "document.json"), "utf8"),
-        sourceBundle(input.sourceStore, combinedMemos),
-      ]);
-      const compilerBase = {
-        input: { documentText: documentText.slice(0, 400_000), documentJson: documentJson.slice(0, 400_000) },
-        researchMemos: combinedMemos.slice(0, 400_000),
-        citedSources: sources,
-      };
+      const compilerBase = await buildFinalizerContext(input.root, input.sourceStore, combinedMemos);
+      const memoSourceRefs = new Set(compilerBase.citedSources.flatMap((source) => typeof source.ref === "string" ? [source.ref] : []));
 
       const promptJson = async <T>(agent: "evidence-compiler" | "evidence-auditor", title: string, prompt: string, schema: z.ZodType<T>): Promise<T> => {
         const model = agent === "evidence-compiler" ? input.compilerModel : input.auditorModel;
@@ -215,7 +220,7 @@ export class HeadlessInvestigationController {
         compile: async ({ attempt, defects, previousDraft }) => promptJson(
           "evidence-compiler",
           `Evidence compiler ${attempt}`,
-          `Compile the supplied research into the semantic-key draft contract. Backend code will assign canonical IDs, authority, verdicts, strength, and statistics. Map every evidence item to one claim and one or more declared facets. Preserve every material input assertion or explain its lack of eligible evidence with an unresolved facet. Exact quotes must occur verbatim in the supplied stored source body.\n\n${JSON.stringify({ ...compilerBase, repairDefects: defects, previousDraft })}`,
+          `Compile the supplied research into the semantic-key draft contract. Backend code will assign canonical IDs, authority, verdicts, strength, and statistics. Map every evidence item to one claim and one or more declared facets. Preserve every material input assertion or explain its lack of eligible evidence with an unresolved facet. Use source.excerpts to inspect memo-cited immutable sources; request at most 60,000 characters per call. Exact quotes must occur verbatim in the stored source.\n\n${JSON.stringify({ ...compilerBase, repairDefects: defects, previousDraft })}`,
           investigationDraftSchema,
         ),
         validate: (draft) => canonicalizeInvestigationResult(draft, {
@@ -230,7 +235,7 @@ export class HeadlessInvestigationController {
           const audit = await promptJson(
             "evidence-auditor",
             `Evidence audit ${attempt}`,
-            `Independently audit this deterministically validated result against the supplied input and research. Mark REPAIR_REQUIRED only for a material defect. Warnings do not require repair.\n\n${JSON.stringify({ result, input: compilerBase.input, researchMemos: compilerBase.researchMemos })}`,
+            `Independently audit this deterministically validated result against the supplied input and research. Use source.excerpts for any exact-source check and request at most 60,000 characters per call. Mark REPAIR_REQUIRED only for a material defect. Warnings do not require repair.\n\n${JSON.stringify({ result: resultForAudit(result, memoSourceRefs), input: compilerBase.input, researchMemos: compilerBase.researchMemos, citedSources: compilerBase.citedSources })}`,
             auditSchema,
           );
           const material = audit.defects.filter((defect) => defect.severity === "MATERIAL").map((defect) => `${defect.code}: ${defect.message}`);
