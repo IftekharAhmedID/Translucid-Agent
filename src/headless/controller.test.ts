@@ -89,6 +89,32 @@ test("builds finalizer context from parsed JSON and memo-cited source metadata w
   }
 });
 
+test("removes unknown memo source refs with an explicit warning instead of discarding completed research", async () => {
+  const root = await mkdtemp(join(tmpdir(), "translucid-unknown-memo-ref-"));
+  try {
+    await mkdir(join(root, "input"), { recursive: true });
+    await writeFile(join(root, "input", "document.json"), JSON.stringify({ pages: [] }));
+    const store = await FileSourceStore.open(root);
+    await store.capture({
+      kind: "SOURCE_CONTENT",
+      provider: "github",
+      providerRoute: "github.rest",
+      sourceUrl: "https://api.github.com/example",
+      mimeType: "application/json",
+      content: { value: "known" },
+      provenance: {},
+    });
+
+    const context = await buildFinalizerContext(root, store, "Known [S1]. Unsupported [S2].");
+    assert.deepEqual(context.citedSources.map(({ ref }) => ref), ["S1"]);
+    assert.doesNotMatch(context.researchMemos, /\bS2\b/);
+    assert.match(context.researchMemos, /unknown source reference was removed/i);
+    assert.deepEqual(context.warnings, ["Research memo cited unknown source S2; that citation was removed and its scope remains unresolved."]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("auditor view removes provisional audit data and unused source metadata", () => {
   const result = {
     sources: [{ ref: "S1" }, { ref: "S2" }],

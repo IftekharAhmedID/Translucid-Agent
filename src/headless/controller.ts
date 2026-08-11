@@ -67,14 +67,19 @@ export async function buildFinalizerContext(root: string, sourceStore: FileSourc
   input: unknown;
   researchMemos: string;
   citedSources: Array<Record<string, unknown>>;
+  warnings: string[];
 }> {
   const input: unknown = JSON.parse(await readFile(join(root, "input", "document.json"), "utf8"));
   const sources = await sourceStore.list();
   const byRef = new Map(sources.map((source) => [source.ref, source]));
   const citedSources: Array<Record<string, unknown>> = [];
+  const unknownSourceRefs: string[] = [];
   for (const ref of citedSourceRefs(memoText)) {
     const source = byRef.get(ref);
-    if (!source) throw new Error(`Research memo cites unknown source ${ref}.`);
+    if (!source) {
+      unknownSourceRefs.push(ref);
+      continue;
+    }
     citedSources.push({
       ref,
       kind: source.kind,
@@ -90,7 +95,12 @@ export async function buildFinalizerContext(root: string, sourceStore: FileSourc
       mimeType: source.mimeType,
     });
   }
-  return { input, researchMemos: memoText, citedSources };
+  const warnings = unknownSourceRefs.map((ref) => `Research memo cited unknown source ${ref}; that citation was removed and its scope remains unresolved.`);
+  const sanitizedMemos = memoText.replace(/\bS([1-9]\d*)\b/g, (ref) => byRef.has(ref) ? ref : "unknown source reference removed");
+  const sourceWarning = warnings.length
+    ? `\n\n# Source-reference warning\n\n- ${warnings.length === 1 ? "An unknown source reference was removed" : `${warnings.length} unknown source references were removed`}; any statement relying only on removed references remains unresolved.`
+    : "";
+  return { input, researchMemos: `${sanitizedMemos}${sourceWarning}`, citedSources, warnings };
 }
 
 function safeFile(value: string): string {
@@ -238,6 +248,7 @@ export class HeadlessInvestigationController {
       const combinedMemos = `${handoff.memos.join("\n\n")}${leadMemo ? `\n\n# Lead consolidation\n\n${leadMemo}` : ""}${limitationMemo}`;
       if (leadMemo) await writeFile(join(memoDirectory, `lead-${safeFile(lead.id)}.md`), leadMemo, { mode: 0o600 });
       const compilerBase = await buildFinalizerContext(input.root, input.sourceStore, combinedMemos);
+      warnings.push(...compilerBase.warnings);
       const memoSourceRefs = new Set(compilerBase.citedSources.flatMap((source) => typeof source.ref === "string" ? [source.ref] : []));
 
       const promptJson = async <T>(agent: "evidence-compiler" | "evidence-auditor", title: string, prompt: string, schema: z.ZodType<T>): Promise<T> => {
