@@ -94,6 +94,63 @@ export function validateFindingBatch(
   return findings;
 }
 
+export function repairFacetFindingBatch(
+  value: unknown,
+  knownEvidenceIds: Set<string>,
+  evidenceClaimIds: Map<string, Set<string>>,
+  claimFacets: Map<string, ClaimFacet[]>,
+  evidenceRelations: Map<string, "SUPPORTS" | "CONTRADICTS" | "CONTEXT">,
+  evidenceFacetKeys: Map<string, Set<string>>,
+): unknown {
+  const parsed = z.object({ findings: z.array(findingOutputSchema).max(5) }).strict().parse(value);
+  const repairedFindings = parsed.findings.map((finding) => {
+    const facets = claimFacets.get(finding.claimId) ?? [];
+    let repaired = false;
+    const facetNotes = finding.facetNotes.map((note) => {
+      const eligible = [...knownEvidenceIds].filter((evidenceId) => (
+        evidenceClaimIds.get(evidenceId)?.has(finding.claimId)
+        && evidenceFacetKeys.get(evidenceId)?.has(note.facetKey)
+        && (evidenceRelations.get(evidenceId) === "SUPPORTS" || evidenceRelations.get(evidenceId) === "CONTRADICTS")
+      ));
+      const contradictionIds = eligible.filter((evidenceId) => evidenceRelations.get(evidenceId) === "CONTRADICTS");
+      const supportIds = eligible.filter((evidenceId) => evidenceRelations.get(evidenceId) === "SUPPORTS");
+      if (note.evidenceIds.length > 0 || (note.status !== "UNRESOLVED" && eligible.length === 0)) return note;
+      const evidenceIds = contradictionIds.length > 0 ? contradictionIds : supportIds;
+      if (!evidenceIds.length) return note;
+      repaired = true;
+      const status = contradictionIds.length > 0 ? "CONTRADICTED" as const : "SUPPORTED" as const;
+      return {
+        ...note,
+        status,
+        evidenceIds,
+        note: `${note.note} Backend retained accepted ${status.toLowerCase()} evidence for this facet.`,
+      };
+    });
+    if (!repaired) return finding;
+    const supportingEvidenceIds = [...new Set([
+      ...finding.supportingEvidenceIds,
+      ...facetNotes.filter((note) => note.status === "SUPPORTED").flatMap((note) => note.evidenceIds),
+    ])];
+    const contradictingEvidenceIds = [...new Set([
+      ...finding.contradictingEvidenceIds,
+      ...facetNotes.filter((note) => note.status === "CONTRADICTED").flatMap((note) => note.evidenceIds),
+    ])];
+    const materialContradiction = facetNotes.some((note) => note.status === "CONTRADICTED" && facets.find((facet) => facet.key === note.facetKey)?.materiality !== "LOW");
+    const allSupported = facetNotes.length > 0 && facetNotes.every((note) => note.status === "SUPPORTED");
+    const allUnresolved = facetNotes.every((note) => note.status === "UNRESOLVED");
+    const verdict = materialContradiction ? "CONTRADICTED" : allSupported ? "CORROBORATED" : allUnresolved ? "UNRESOLVED" : "PARTIALLY_CORROBORATED";
+    return {
+      ...finding,
+      verdict,
+      supportingEvidenceIds,
+      contradictingEvidenceIds,
+      facetNotes,
+      explanation: `${finding.explanation} Deterministic facet alignment retained accepted evidence where the model omitted it.`,
+    };
+  });
+  return { findings: repairedFindings };
+}
+
 function validateFacetVerdict(
   finding: FindingOutput,
   facets: ClaimFacet[],

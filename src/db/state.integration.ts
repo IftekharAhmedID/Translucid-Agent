@@ -312,6 +312,37 @@ test("frontier reconciliation makes every active question terminal before critic
   assert.equal(event?.eventType, "RESEARCH_FRONTIER_RECONCILED");
 });
 
+test("forced finalization closes active questions without falsely claiming artifact review", async () => {
+  const ids = await createInvestigation({ submission: "Synthetic forced finalization.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
+  const question = await openResearchQuestion({ ...ids, claimIds: [], question: "Open question with an unreviewed artifact", priority: "HIGH", possibleRoutes: ["web"], createdByAgent: "lead-investigator" });
+  const artifact = await captureArtifact({ ...ids, kind: "SOURCE_CONTENT", provider: "exa", sourceUrl: "https://example.test/unreviewed", mimeType: "text/plain", content: "Captured but not locally reviewed." });
+  await sql`
+    INSERT INTO provider_calls (
+      id, investigation_id, run_id, capability, provider, semantic_tool, provider_route,
+      request_fingerprint, request_metadata, latency_ms, result_status, cost_source,
+      attempt_count, cost_usd, artifact_ids
+    ) VALUES (
+      ${randomUUID()}, ${ids.investigationId}, ${ids.runId}, 'WEB_SEARCH', 'exa', 'web.search', 'exa.search',
+      ${"forced-finalization-fingerprint"}, ${sql.json({ questionId: question.id })}, 10, 'OK', 'REPORTED',
+      1, 0, ${[artifact.id]}::uuid[]
+    )
+  `;
+
+  const result = await reconcileResearchFrontier(ids.investigationId, ids.runId, { forcedFinalization: true });
+  assert.equal(result.reconciledCount, 1);
+  const [row] = await sql<Array<{ status: string; resolutionSummary: string }>>`
+    SELECT status, resolution_summary AS "resolutionSummary" FROM research_questions WHERE id = ${question.id}
+  `;
+  assert.equal(row?.status, "EXHAUSTED");
+  assert.match(row?.resolutionSummary ?? "", /Emergency finalization/);
+  const [event] = await sql<Array<{ eventType: string; unreviewedArtifactIds: string[] }>>`
+    SELECT event_type AS "eventType", ARRAY(SELECT jsonb_array_elements_text(payload->'unreviewedArtifactIds')) AS "unreviewedArtifactIds"
+    FROM agent_events WHERE run_id = ${ids.runId} AND event_type = 'RESEARCH_FRONTIER_FORCED_FINALIZED'
+  `;
+  assert.equal(event?.eventType, "RESEARCH_FRONTIER_FORCED_FINALIZED");
+  assert.deepEqual(event?.unreviewedArtifactIds, [artifact.id]);
+});
+
 test("one targeted second research wave is allowed while duplicate assignments and a third wave are rejected", async () => {
   const ids = await createInvestigation({ submission: "Synthetic adaptive research.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
   const claim = await createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Ada worked at Acme.", materiality: "HIGH" });
@@ -384,7 +415,7 @@ test("evidence edges are one-claim for findings and artifacts are searchable loc
   const question = await openResearchQuestion({ ...ids, claimIds: [first.id], question: "Does the profile corroborate the Acme employment?", priority: "HIGH", possibleRoutes: ["web.search"], createdByAgent: "lead-investigator" });
   const contextResult = await getResearchContext(ids.investigationId, ids.runId, [question.id]);
   assert.equal((contextResult.assignedResearchQuestions as Array<{ id: string }>)[0]?.id, question.id);
-  assert.equal((contextResult.claims as Array<{ id: string }>).length, 5);
+  assert.deepEqual((contextResult.claims as Array<{ id: string }>).map(({ id }) => id), [first.id]);
   const contextMemory = (contextResult.evidence as Array<{ id: string; artifactId: string; independenceGroup: string }>).find(({ id }) => id === context.id);
   assert.equal(contextMemory?.artifactId, artifact.id);
   assert.match(contextMemory?.independenceGroup ?? "", /domain:example\.test|LEGACY_ARTIFACT/i);
@@ -418,15 +449,32 @@ test("facet declarations can be replaced only before the initial research wave",
   const question = await openResearchQuestion({
     ...ids,
     claimIds: [claim.id],
-    question: "What was Synthetic Ada's Acme Labs employment interval?",
+    question: "What was Synthetic Ada's Acme Labs employment interval and Principal Engineer title?",
     priority: "HIGH",
     possibleRoutes: ["web.search"],
     createdByAgent: "lead-investigator",
   });
+  const secondClaim = await createClaim({
+    ...ids,
+    category: "EMPLOYMENT",
+    normalizedClaim: "Synthetic Ada held a Principal Engineer title at Acme Labs from 2020 to 2023.",
+    materiality: "HIGH",
+    facets: [
+      { key: "employer", label: "Employer: Acme Labs", materiality: "HIGH" },
+      { key: "title", label: "Title: Principal Engineer", materiality: "HIGH" },
+      { key: "tenure", label: "Employment interval: 2020 to 2023", materiality: "HIGH" },
+    ],
+  });
+  const repaired = await updateResearchQuestion({ ...ids, questionId: question.id, claimIds: [claim.id, secondClaim.id] });
+  assert.deepEqual(repaired.claimIds, [claim.id, secondClaim.id]);
   await beginResearchWave({ ...ids, kind: "INITIAL", questionIds: [question.id], publicRationale: "The declared employment facets are ready for research.", agent: "lead-investigator" });
   await assert.rejects(
     () => updateClaimFacets({ ...ids, claimId: claim.id, facets: replacement, agent: "lead-investigator" }),
     /cannot be updated after the initial research wave/i,
+  );
+  await assert.rejects(
+    () => updateResearchQuestion({ ...ids, questionId: question.id, claimIds: [claim.id] }),
+    /only be repaired before the initial research wave/i,
   );
 });
 
@@ -469,6 +517,50 @@ test("new evidence persists declared facet keys and rejects missing or unknown k
   const context = await captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Ada worked at Acme Labs.", relation: "CONTEXT", claimIds: [claim.id], facetKeys: [], entityIds: [] });
   const [contextRow] = await sql<Array<{ facetKeys: string[]; claimCount: number }>>`SELECT facet_keys AS "facetKeys", cardinality(claim_ids)::integer AS "claimCount" FROM evidence WHERE id = ${context.id}`;
   assert.deepEqual(contextRow, { facetKeys: [], claimCount: 1 });
+});
+
+test("facet-specific evidence does not require anchors from unrelated facets", async () => {
+  const ids = await createInvestigation({ submission: "Synthetic compound facet evidence.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
+  const claim = await createClaim({
+    ...ids,
+    category: "CONTRIBUTION",
+    normalizedClaim: "Diego Russo was a core developer on CPython, served on the triage team, and worked at Arm Ltd.",
+    materiality: "HIGH",
+    facets: [
+      { key: "core_developer", label: "Core developer: CPython JIT code ownership", materiality: "HIGH" },
+      { key: "triage", label: "Triage team membership", materiality: "MEDIUM" },
+    ],
+  });
+  const artifact = await captureArtifact({
+    ...ids,
+    kind: "SOURCE_CONTENT",
+    provider: "github",
+    sourceUrl: "https://github.com/python/cpython/pull/136460",
+    mimeType: "text/plain",
+    content: "Add Diego as code owner of the JIT",
+  });
+  const evidence = await captureEvidence({
+    ...ids,
+    artifactId: artifact.id,
+    exactQuote: "Add Diego as code owner of the JIT",
+    relation: "SUPPORTS",
+    claimIds: [claim.id],
+    facetKeys: ["core_developer"],
+    entityIds: [],
+  });
+  assert.ok(evidence.id);
+  await assert.rejects(
+    () => captureEvidence({
+      ...ids,
+      artifactId: artifact.id,
+      exactQuote: "Add Diego as code owner of the JIT",
+      relation: "SUPPORTS",
+      claimIds: [claim.id],
+      facetKeys: ["triage"],
+      entityIds: [],
+    }),
+    /incompatible with facet triage/i,
+  );
 });
 
 test("artifact lookup recovers immutable provider metadata and exhaustion requires review", async () => {

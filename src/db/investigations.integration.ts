@@ -80,6 +80,14 @@ test("expired leases are reclaimed and heartbeats extend active leases", async (
   assert.ok(claimed);
 
   await sql`UPDATE runs SET lease_expires_at = now() - interval '1 second' WHERE id = ${claimed.id}`;
+  const skipped = await claimRuns({
+    leaseOwner: "runner-a",
+    limit: 1,
+    leaseMs: 60_000,
+    timeoutMs: 1_800_000,
+    excludeRunIds: [claimed.id],
+  });
+  assert.equal(skipped.length, 0);
   const [reclaimed] = await claimRuns({
     leaseOwner: "runner-b",
     limit: 1,

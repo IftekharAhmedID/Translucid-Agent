@@ -156,17 +156,22 @@ export async function claimRuns(input: {
   limit: number;
   leaseMs: number;
   timeoutMs: number;
+  excludeRunIds?: string[];
 }): Promise<ClaimedRun[]> {
   if (input.limit < 1) return [];
   const sql = getSql();
 
   return sql.begin(async (transaction) => {
+    const excludedRuns = input.excludeRunIds?.length
+      ? transaction`AND id NOT IN ${transaction(input.excludeRunIds)}`
+      : transaction``;
     const claimed = await transaction<ClaimedRun[]>`
       WITH available AS (
         SELECT id
         FROM runs
         WHERE status = 'QUEUED'
            OR (status = 'RUNNING' AND lease_expires_at < now())
+           ${excludedRuns}
         ORDER BY queued_at, id
         FOR UPDATE SKIP LOCKED
         LIMIT ${input.limit}

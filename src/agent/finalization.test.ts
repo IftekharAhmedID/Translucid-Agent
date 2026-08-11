@@ -6,6 +6,7 @@ import {
   buildFindingBatchBundle,
   criticJsonExample,
   criticOutputSchema,
+  emptyCriticOutput,
   findingBatchOutputSchema,
   mergeCriticBatches,
   mergeFindingBatches,
@@ -127,6 +128,7 @@ test("summary schema is focused and excludes findings", () => {
 
 test("critic reports only exceptions instead of echoing every accepted evidence ID", () => {
   assert.deepEqual(criticOutputSchema.parse(criticJsonExample), criticJsonExample);
+  assert.deepEqual(emptyCriticOutput(), criticJsonExample);
   assert.throws(() => criticOutputSchema.parse({ ...criticJsonExample, acceptedEvidenceIds: [] }));
 });
 

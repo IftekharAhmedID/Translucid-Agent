@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { validateAdjudication } from "./adjudication.ts";
+import { repairFacetFindingBatch, validateAdjudication } from "./adjudication.ts";
 import type { AdjudicationOutput } from "./contracts.ts";
 
 const baseOutput: AdjudicationOutput = {
@@ -198,6 +198,26 @@ test("unresolved facets cannot discard an accepted facet-aligned edge", () => {
     () => validateAdjudication(unresolved, new Set(["ev-1", "ev-2"]), new Set(["claim-1", "claim-2"]), evidenceClaimIds, claimFacets, evidenceRelations, undefined, evidenceFacetKeys),
     /eligible evidence/i,
   );
+});
+
+test("deterministic facet repair restores omitted accepted evidence before validation", () => {
+  const claimFacets = new Map([
+    ["claim-1", [{ key: "title", label: "Title", materiality: "HIGH" as const }]],
+  ]);
+  const repaired = repairFacetFindingBatch({
+    findings: [{
+      ...baseOutput.findings[0]!,
+      claimId: "claim-1",
+      verdict: "UNRESOLVED",
+      supportingEvidenceIds: [],
+      contradictingEvidenceIds: [],
+      facetNotes: [{ facetKey: "title", status: "UNRESOLVED", note: "The model omitted the accepted edge.", evidenceIds: [] }],
+    }],
+  }, new Set(["ev-1"]), new Map([["ev-1", new Set(["claim-1"])] ]), claimFacets, new Map([["ev-1", "SUPPORTS" as const]]), new Map([["ev-1", new Set(["title"])] ]));
+  const finding = (repaired as { findings: Array<{ verdict: string; supportingEvidenceIds: string[]; facetNotes: Array<{ status: string; evidenceIds: string[] }> }> }).findings[0]!;
+  assert.equal(finding.verdict, "CORROBORATED");
+  assert.deepEqual(finding.supportingEvidenceIds, ["ev-1"]);
+  assert.deepEqual(finding.facetNotes[0]?.evidenceIds, ["ev-1"]);
 });
 
 test("context authority cannot be described as universal self-representation", () => {

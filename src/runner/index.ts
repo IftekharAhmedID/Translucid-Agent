@@ -146,6 +146,7 @@ async function main(): Promise<void> {
   const expectedManifestHash = await getPinnedLocalManifestHash();
   const runnerId = `${hostname()}:${process.pid}`;
   const active = new Set<Promise<void>>();
+  const activeRunIds = new Set<string>();
   const runtimePools = {
     LOCAL: new Semaphore(config.localRuntimeConcurrency),
     E2B: new Semaphore(config.globalE2bConcurrency),
@@ -154,9 +155,13 @@ async function main(): Promise<void> {
   while (true) {
     const capacity = config.runnerConcurrency - active.size;
     if (capacity > 0) {
-      const claimed = await claimRuns({ leaseOwner: runnerId, limit: capacity, leaseMs: LEASE_MS, timeoutMs: config.investigationTimeoutMs });
+      const claimed = await claimRuns({ leaseOwner: runnerId, limit: capacity, leaseMs: LEASE_MS, timeoutMs: config.investigationTimeoutMs, excludeRunIds: [...activeRunIds] });
       for (const run of claimed) {
-        const task = runtimePools[run.runtimeKind].use(() => runOne(run, runnerId, expectedManifestHash, providerExecutor)).finally(() => active.delete(task));
+        activeRunIds.add(run.id);
+        const task = runtimePools[run.runtimeKind].use(() => runOne(run, runnerId, expectedManifestHash, providerExecutor)).finally(() => {
+          active.delete(task);
+          activeRunIds.delete(run.id);
+        });
         active.add(task);
       }
     }

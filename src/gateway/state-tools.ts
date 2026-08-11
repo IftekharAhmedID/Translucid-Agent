@@ -50,7 +50,7 @@ const schemas: Record<StateToolName, z.ZodType> = {
   "observation.list_timeline": z.object({ entityId: uuid.optional() }).strict(),
   "research.open": z.object({ claimIds: z.array(uuid).max(100), question: z.string().min(5).max(2_000), priority: z.enum(["HIGH", "MEDIUM", "LOW"]), possibleRoutes: z.array(z.enum(toolNames)).min(1).max(20) }).strict(),
   "research.select_route": z.object({ questionId: uuid, route: z.string().min(1).max(200), publicRationale: z.string().min(10).max(500) }).strict(),
-  "research.update": z.object({ questionId: uuid, priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(), possibleRoutes: z.array(z.enum(toolNames)).min(1).max(20).optional(), status: z.enum(["OPEN", "IN_PROGRESS"]).optional(), publicRationale: z.string().min(10).max(500) }).strict().refine((value) => Boolean(value.priority || value.possibleRoutes || value.status), "A research question update is required."),
+  "research.update": z.object({ questionId: uuid, claimIds: z.array(uuid).min(1).max(100).optional(), priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(), possibleRoutes: z.array(z.enum(toolNames)).min(1).max(20).optional(), status: z.enum(["OPEN", "IN_PROGRESS"]).optional(), publicRationale: z.string().min(10).max(500) }).strict().refine((value) => Boolean(value.claimIds || value.priority || value.possibleRoutes || value.status), "A research question update is required."),
   "research.resolve": z.object({ questionId: uuid, status: z.enum(["RESOLVED", "EXHAUSTED", "SKIPPED"]), resolutionSummary: z.string().min(5).max(2_000), reviewedArtifactIds: z.array(uuid).max(100).optional() }).strict(),
   "research.list": z.object({}).strict(),
   "research.context": z.object({ questionIds: z.array(uuid).min(1).max(12), maxBytes: z.number().int().min(128 * 1024).max(512 * 1024).optional() }).strict(),
@@ -103,7 +103,7 @@ export async function executeStateTool(name: StateToolName, raw: unknown, contex
       return result;
     }
     case "research.update": {
-      const result = await updateResearchQuestion({ ...base, questionId: String(args.questionId), priority: args.priority as "HIGH" | "MEDIUM" | "LOW" | undefined, possibleRoutes: args.possibleRoutes as string[] | undefined, status: args.status as "OPEN" | "IN_PROGRESS" | undefined });
+      const result = await updateResearchQuestion({ ...base, questionId: String(args.questionId), claimIds: args.claimIds as string[] | undefined, priority: args.priority as "HIGH" | "MEDIUM" | "LOW" | undefined, possibleRoutes: args.possibleRoutes as string[] | undefined, status: args.status as "OPEN" | "IN_PROGRESS" | undefined });
       await insertAgentEvent({ ...base, phase: "RESEARCH", agent: context.agent, sessionId: context.sessionId, eventType: "RESEARCH_QUESTION_UPDATED", status: String(result.status), publicRationale: String(args.publicRationale), payload: { questionId: args.questionId } });
       return result;
     }

@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { researchCompletionAction, researchContinuationAllowed, researchProgressFingerprint } from "./research-completion.ts";
+import { hasDurableResearchIntake, researchCompletionAction, researchContinuationAllowed, researchProgressFingerprint } from "./research-completion.ts";
+
+test("empty intake cannot be finalized as a successful investigation", () => {
+  assert.equal(hasDurableResearchIntake({ claimCount: 0, questionCount: 0 }), false);
+  assert.equal(hasDurableResearchIntake({ claimCount: 3, questionCount: 0 }), false);
+  assert.equal(hasDurableResearchIntake({ claimCount: 3, questionCount: 2 }), true);
+});
 
 test("a terminal durable frontier finishes immediately even when OpenCode remains busy", () => {
   assert.equal(researchCompletionAction({ totalQuestionCount: 12, activeQuestionCount: 0, sessionStatus: "busy", readyForContinuation: false }), "ABORT_AND_FINISH");

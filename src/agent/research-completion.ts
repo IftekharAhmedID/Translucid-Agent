@@ -30,6 +30,10 @@ export function researchContinuationAllowed(input: {
   return input.activeQuestionCount > 0 && unchanged < 2;
 }
 
+export function hasDurableResearchIntake(input: { claimCount: number; questionCount: number }): boolean {
+  return input.claimCount > 0 && input.questionCount > 0;
+}
+
 export function researchCompletionAction(input: {
   totalQuestionCount: number;
   activeQuestionCount: number;

@@ -24,6 +24,10 @@ export const criticJsonExample = {
   limitations: [],
 };
 
+export function emptyCriticOutput(): CriticOutput {
+  return criticOutputSchema.parse(criticJsonExample);
+}
+
 export const findingBatchOutputSchema = z.object({
   findings: z.array(findingOutputSchema).max(5),
 }).strict();

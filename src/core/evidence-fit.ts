@@ -1,7 +1,7 @@
 import type { ClaimFacet } from "./contracts.ts";
 
 const ignored = new Set([
-  "about", "after", "been", "between", "company", "development", "developer", "engineer", "experience", "from", "have", "into", "more", "over", "project", "role", "software", "team", "that", "their", "there", "these", "this", "through", "with", "work",
+  "about", "after", "and", "are", "been", "between", "but", "can", "company", "development", "developer", "engineer", "experience", "for", "from", "had", "has", "have", "her", "his", "into", "its", "more", "not", "of", "over", "project", "role", "software", "team", "that", "the", "their", "there", "these", "this", "through", "was", "were", "while", "with", "work", "who",
 ]);
 
 const actionFamilies = [
@@ -41,7 +41,7 @@ function hasNumericOrAcronymAnchor(claimTokens: Token[], quoteTokens: Token[]): 
   return claimAnchors.some(({ value }) => quoteTokens.some((token) => token.value === value));
 }
 
-function facetEvidenceCompatible(exactQuote: string, facetLabel: string): boolean {
+export function facetEvidenceCompatible(exactQuote: string, facetLabel: string): boolean {
   const compatibility = evaluateEvidenceCompatibility(exactQuote, facetLabel);
   if (compatibility.compatible) return true;
   return compatibility.sharedAnchors.length === 1 && compatibility.sharedAnchors[0]!.length >= 4;

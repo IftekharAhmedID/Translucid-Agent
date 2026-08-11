@@ -2,7 +2,7 @@ import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import type { GlobalEvent, Session } from "@opencode-ai/sdk/v2/client";
 import { z } from "zod";
 
-import { validateAdjudication, validateFindingBatch, validateInvestigationSummary } from "../core/adjudication.ts";
+import { repairFacetFindingBatch, validateAdjudication, validateFindingBatch, validateInvestigationSummary } from "../core/adjudication.ts";
 import { auditEvidenceEdges } from "../core/evidence-fit.ts";
 import { countSourceAuthorities, type AuditStats } from "../core/audit-stats.ts";
 import { getConfig } from "../core/config.ts";
@@ -20,6 +20,7 @@ import {
   buildSummaryBundle,
   criticJsonExample,
   criticOutputSchema,
+  emptyCriticOutput,
   findingBatchOutputSchema,
   mapWithConcurrency,
   mergeCriticBatches,
@@ -29,7 +30,7 @@ import {
   validateCriticBatch,
 } from "./finalization.ts";
 import { extractStructuredOutput, structuredOutputRecovery } from "./structured-output.ts";
-import { researchCompletionAction, researchContinuationAllowed, researchProgressFingerprint } from "./research-completion.ts";
+import { hasDurableResearchIntake, researchCompletionAction, researchContinuationAllowed, researchProgressFingerprint } from "./research-completion.ts";
 
 const directory = "/workspace/case";
 type ControllerInput = {
@@ -94,14 +95,22 @@ export class OpenCodeInvestigationController {
       input.signal.throwIfAborted();
       await getSql()`UPDATE runs SET opencode_primary_session_id = ${lead.id}, updated_at = now() WHERE id = ${input.runId}`;
       const researchDeadline = forcedFinalizationAt(input.deadlineAt, getConfig().finalizationReserveMs);
-      await client.session.promptAsync({ sessionID: lead.id, directory, agent: "lead-investigator", model: { providerID: "translucid", modelID: getConfig().researchModel }, variant: getConfig().reasoningVariant, parts: [{ type: "text", text: `Begin the authorized investigation from /workspace/case/input/manifest.json. The raw PDF has already been parsed and removed; use only the manifest's structured text/JSON paths and sparse-page images. Obey the declared classification and your ordered workflow. Persist durable state through semantic tools. Return as soon as every durable research question is terminal; never continue merely because time remains. Emergency finalization begins at ${researchDeadline.toISOString()} and the hard case deadline is ${input.deadlineAt.toISOString()}. Do not write a final adjudication.` }] }, { signal: input.signal });
+      await client.session.promptAsync({ sessionID: lead.id, directory, agent: "lead-investigator", model: { providerID: "translucid", modelID: getConfig().researchModel }, variant: getConfig().reasoningVariant, parts: [{ type: "text", text: `Begin the authorized investigation from /workspace/case/input/manifest.json. The raw PDF has already been parsed and removed; use only the manifest's structured text/JSON paths and sparse-page images. Obey the declared classification and your ordered workflow. Before creating or reopening the Research Frontier, inspect durable state: this run may be a recovery attempt with claims or questions already persisted. Never recreate an existing claim; preserve all durable claims and ensure every existing claim belongs to at least one question before research.begin_wave. If a prior attempt left claims outside the frontier, open a compact recovery question for those claim IDs and reconcile membership before retrying the wave. Persist durable state through semantic tools. Return as soon as every durable research question is terminal; never continue merely because time remains. Emergency finalization begins at ${researchDeadline.toISOString()} and the hard case deadline is ${input.deadlineAt.toISOString()}. Do not write a final adjudication.` }] }, { signal: input.signal });
       const researchFinished = await this.waitForResearchCompletion(client, lead.id, input, researchDeadline);
       if (!researchFinished) {
         await abortAll();
         await insertAgentEvent({ investigationId: input.investigationId, runId: input.runId, phase: "RESEARCH", agent: "runner", eventType: "FORCED_FINALIZATION", status: "EXHAUSTED", publicRationale: "The emergency finalization reserve began, so unfinished research stopped and durable state was preserved for review.", payload: { forcedFinalizationAt: researchDeadline.toISOString() } });
       }
 
-      await reconcileResearchFrontier(input.investigationId, input.runId);
+      const [intake] = await getSql()<Array<{ claimCount: number; questionCount: number }>>`
+        SELECT
+          (SELECT count(*)::integer FROM claims WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}) AS "claimCount",
+          (SELECT count(*)::integer FROM research_questions WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}) AS "questionCount"
+      `;
+      if (!hasDurableResearchIntake({ claimCount: intake?.claimCount ?? 0, questionCount: intake?.questionCount ?? 0 })) {
+        throw new Error("LEAD_INTAKE_EMPTY: finalization cannot complete without durable claims and research questions.");
+      }
+      await reconcileResearchFrontier(input.investigationId, input.runId, { forcedFinalization: !researchFinished });
       const rawFrozen = await buildFrozenEvidenceBundle(input.investigationId, input.runId);
       const edgeAudit = auditEvidenceEdges(
         (rawFrozen.allEvidence ?? rawFrozen.evidence) as Array<{ id: string; relation: "SUPPORTS" | "CONTRADICTS" | "CONTEXT"; claimIds: string[]; facetKeys?: string[]; exactQuote: string }>,
@@ -132,18 +141,33 @@ export class OpenCodeInvestigationController {
         const claimIds = batch.map(({ id }) => id);
         const criticBundle = buildCriticBatchBundle(frozen, claimIds);
         const eligibleEvidenceIds = new Set((criticBundle.evidence as Array<{ id: string }>).map(({ id }) => id));
-        const result = await this.promptStructured({
-          client,
-          input,
-          knownSessions,
-          title: `Frozen evidence critic ${index + 1} of ${criticClaimBatches.length}`,
-          agent: "evidence-critic",
-          phase: "CRITIC",
-          prompt: `Audit exactly these ${claimIds.length} frozen claim packets. Do not research or cite evidence outside this packet. Return only exceptions in the required structured audit.\n${JSON.stringify(criticBundle)}`,
-          schema: criticOutputSchema,
-          jsonExample: criticJsonExample,
-        });
-        return validateCriticBatch(result.value, new Set(claimIds), eligibleEvidenceIds);
+        try {
+          const result = await this.promptStructured({
+            client,
+            input,
+            knownSessions,
+            title: `Frozen evidence critic ${index + 1} of ${criticClaimBatches.length}`,
+            agent: "evidence-critic",
+            phase: "CRITIC",
+            prompt: `Audit exactly these ${claimIds.length} frozen claim packets. Do not research or cite evidence outside this packet. Return only exceptions in the required structured audit.\n${JSON.stringify(criticBundle)}`,
+            schema: criticOutputSchema,
+            jsonExample: criticJsonExample,
+          });
+          return validateCriticBatch(result.value, new Set(claimIds), eligibleEvidenceIds);
+        } catch (error) {
+          input.signal.throwIfAborted();
+          await insertAgentEvent({
+            investigationId: input.investigationId,
+            runId: input.runId,
+            phase: "CRITIC",
+            agent: "evidence-critic",
+            eventType: "CRITIC_BATCH_FALLBACK",
+            status: "DEGRADED",
+            publicRationale: "The bounded critic response did not produce valid structured output, so the deterministic empty critic was used; validated evidence remains available to fresh adjudication.",
+            payload: { batch: index + 1, claimCount: claimIds.length, error: error instanceof Error ? error.message.slice(0, 1_000) : String(error).slice(0, 1_000) },
+          });
+          return emptyCriticOutput();
+        }
       });
       const criticOutput = mergeCriticBatches(criticOutputs);
       for (const id of criticOutput.rejectedEvidence.map(({ evidenceId }) => evidenceId)) {
@@ -221,7 +245,7 @@ export class OpenCodeInvestigationController {
           });
           batchSessionIds[index] = adjudication.sessionId;
           try {
-            return validateFindingBatch(adjudication.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations, evidenceFacetKeys);
+            return validateFindingBatch(repairFacetFindingBatch(adjudication.value, acceptedEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations, evidenceFacetKeys), new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations, evidenceFacetKeys);
           } catch (validationError) {
             const validationMessage = validationError instanceof Error ? validationError.message : String(validationError);
             await insertAgentEvent({
@@ -247,14 +271,14 @@ export class OpenCodeInvestigationController {
               jsonExample: batchJsonExample,
             });
             batchSessionIds[index] = correction.sessionId;
-            return validateFindingBatch(correction.value, new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations, evidenceFacetKeys);
+            return validateFindingBatch(repairFacetFindingBatch(correction.value, acceptedEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations, evidenceFacetKeys), new Set(claimIds), acceptedEvidenceIds, evidenceClaimIds, claimFacets, evidenceRelations, evidenceFacetKeys);
           }
         } catch (error) {
           throw new Error(`Adjudication batch ${index + 1}/${claimBatches.length} failed on ${getConfig().finalizerOpenCodeProvider}: ${error instanceof Error ? error.message : String(error)}`);
         }
       });
       const findings = mergeFindingBatches(findingBatches, claims.map(({ id }) => id));
-      const summaryPrompt = `Summarize only the validated findings, accepted evidence, entity resolution, observations and stated capability limitations. Backend audit statistics below are authoritative; do not infer or restate counts that are not present. Treat CONTEXT as conservative unknown authority, not self-representation. professionalIdentityClaimIds and professionalTimelineClaimIds are deterministic claim mappings, not free-form categories: use only the claim IDs listed in the corresponding identityClaimCandidates and timelineClaimCandidates arrays. Every professionalIdentity.evidenceIds item must belong to at least one identityClaimCandidate; every professionalTimelineEvidenceIds item must belong to at least one timelineClaimCandidate. Populate strongestEvidenceByClaim with only evidence IDs and facet keys belonging to its declared claim; never reuse evidence across summary sections unless its claim mapping authorizes it. CONTEXT is never citation-eligible. Return the focused non-ranking summary object.\n${JSON.stringify(buildSummaryBundle(adjudicationBundle, findings, auditStats))}`;
+      const summaryPrompt = `Summarize only the validated findings, accepted evidence, entity resolution, observations and stated capability limitations. Backend audit statistics below are authoritative; do not infer or restate counts that are not present. Treat CONTEXT as conservative unknown authority, not self-representation. professionalIdentityClaimIds and professionalTimelineClaimIds are deterministic claim mappings, not free-form categories: use only the claim IDs listed in the corresponding identityClaimCandidates and timelineClaimCandidates arrays. Every professionalIdentity.evidenceIds item must belong to at least one identityClaimCandidate; every professionalTimelineEvidenceIds item must belong to at least one timelineClaimCandidate. Populate strongestEvidenceByClaim with only evidence IDs and facet keys belonging to its declared claim; never reuse evidence across summary sections unless its claim mapping authorizes it. strongestEvidenceIds must equal exactly the de-duplicated union of all strongestEvidenceByClaim.evidenceIds; do not add any extra IDs and do not omit any mapped ID. CONTEXT is never citation-eligible. Return the focused non-ranking summary object.\n${JSON.stringify(buildSummaryBundle(adjudicationBundle, findings, auditStats))}`;
       let summaryResult = await this.promptStructured({
         client,
         input,
@@ -302,7 +326,7 @@ export class OpenCodeInvestigationController {
           title: "Fresh investigation summary correction",
           agent: "fresh-adjudicator",
           phase: "ADJUDICATION",
-          prompt: `${summaryPrompt}\n\nThe previous independent summary was rejected by deterministic validation: ${validationMessage}\nCorrect only that mapping defect. Do not cite an evidence ID in the identity or timeline section unless its claim ID appears in the corresponding candidate array. This is the only correction attempt.`,
+          prompt: `${summaryPrompt}\n\nThe previous independent summary was rejected by deterministic validation: ${validationMessage}\nCorrect only that mapping defect. Do not cite an evidence ID in the identity or timeline section unless its claim ID appears in the corresponding candidate array. Set strongestEvidenceIds to exactly the de-duplicated union of strongestEvidenceByClaim.evidenceIds. This is the only correction attempt.`,
           schema: summaryOutputSchema,
           jsonExample: {
             summary: {

@@ -6,7 +6,7 @@ import { auditClaimFacetCoverage } from "../core/facet-coverage.ts";
 import { assessEntityLink, type IdentityAnchor } from "../core/identity.ts";
 import { sha256 } from "../core/input.ts";
 import { deriveArtifactTrust, effectiveAttestationGroup, effectiveSourceAuthority } from "../core/source-trust.ts";
-import { evidenceQuoteHasClaimAnchor } from "../core/evidence-fit.ts";
+import { facetEvidenceCompatible } from "../core/evidence-fit.ts";
 import { deriveTimelineStates, type TimelineState } from "../core/timeline.ts";
 import { getSql } from "./client.ts";
 
@@ -67,19 +67,22 @@ export async function getResearchContext(
   if (new Set(questionIds).size !== questionIds.length) throw new Error("research.context question IDs must be unique.");
   const safeMaxBytes = Math.min(Math.max(maxBytes, DEFAULT_CONTEXT_BYTES), MAX_CONTEXT_BYTES);
   const sql = getSql();
-  const [questions, claims, entities, identifiers, links, artifacts, observations, evidence, providerAttempts, runs] = await Promise.all([
+  const [questions, runs] = await Promise.all([
     sql`SELECT id, claim_ids AS "claimIds", question, priority, status, possible_routes AS "possibleRoutes", selected_route AS "selectedRoute", resolution_summary AS "resolutionSummary" FROM research_questions WHERE investigation_id = ${investigationId} AND run_id = ${runId} AND id IN ${sql(questionIds)} ORDER BY created_at, id`,
-    sql`SELECT id, category, normalized_claim AS "normalizedClaim", facets, materiality, source_span AS "sourceSpan", valid_from AS "validFrom", valid_to AS "validTo", status FROM claims WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
+    sql`SELECT root_entity_id AS "rootEntityId" FROM runs WHERE investigation_id = ${investigationId} AND id = ${runId}`,
+  ]);
+  if (questions.length !== new Set(questionIds).size) throw new Error("One or more research question IDs do not belong to this run.");
+  const assignedClaimIds = [...new Set(questions.flatMap((question) => question.claimIds))];
+  const [claims, entities, identifiers, links, artifacts, observations, evidence, providerAttempts] = await Promise.all([
+    sql`SELECT id, category, normalized_claim AS "normalizedClaim", facets, materiality, source_span AS "sourceSpan", valid_from AS "validFrom", valid_to AS "validTo", status FROM claims WHERE investigation_id = ${investigationId} AND run_id = ${runId} AND id = ANY(${assignedClaimIds}::uuid[]) ORDER BY created_at, id`,
     sql`SELECT id, type, canonical_name AS "canonicalName" FROM entities WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
     sql`SELECT id, entity_id AS "entityId", type, value, normalized_value AS "normalizedValue", confidence, evidence_id AS "evidenceId" FROM entity_identifiers WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
     sql`SELECT id, from_entity_id AS "fromEntityId", to_entity_id AS "toEntityId", relationship, confidence, evidence_ids AS "evidenceIds" FROM entity_links WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
     sql`SELECT id, kind, provider, source_url AS "sourceUrl", mime_type AS "mimeType", retrieved_at AS "retrievedAt", source_authority AS "sourceAuthority", independence_group AS "independenceGroup", canonical_source_url AS "canonicalSourceUrl" FROM artifacts WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
     sql`SELECT id, artifact_id AS "artifactId", entity_id AS "entityId", field, value_json AS value, observed_at AS "observedAt", source_event_at AS "sourceEventAt", valid_from AS "validFrom", valid_to AS "validTo" FROM observations WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY valid_from NULLS LAST, observed_at, id`,
     sql`SELECT evidence.id, evidence.artifact_id AS "artifactId", evidence.exact_quote AS "exactQuote", evidence.source_location AS "sourceLocation", evidence.relation, evidence.claim_ids AS "claimIds", evidence.facet_keys AS "facetKeys", evidence.entity_ids AS "entityIds", COALESCE(artifact.source_authority, evidence.source_tier, 'CONTEXT') AS "sourceAuthority", COALESCE(artifact.independence_group, 'LEGACY_ARTIFACT:' || artifact.id::text) AS "independenceGroup" FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id WHERE evidence.investigation_id = ${investigationId} AND evidence.run_id = ${runId} ORDER BY evidence.created_at, evidence.id`,
-    sql`SELECT id, capability, provider, semantic_tool AS "semanticTool", provider_route AS "providerRoute", result_status AS "resultStatus", artifact_ids AS "artifactIds", cost_source AS "costSource", created_at AS "createdAt" FROM provider_calls WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
-    sql`SELECT root_entity_id AS "rootEntityId" FROM runs WHERE investigation_id = ${investigationId} AND id = ${runId}`,
+    sql`SELECT id, capability, provider, semantic_tool AS "semanticTool", provider_route AS "providerRoute", request_metadata AS "requestMetadata", result_status AS "resultStatus", artifact_ids AS "artifactIds", cost_source AS "costSource", created_at AS "createdAt" FROM provider_calls WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
   ]);
-  if (questions.length !== new Set(questionIds).size) throw new Error("One or more research question IDs do not belong to this run.");
   const rootCandidate = (runs[0] as Record<string, unknown> | undefined)?.rootEntityId;
   const effectiveArtifacts: Array<Record<string, unknown> & { id: string; sourceAuthority: string; attestationGroup: string }> = ([...artifacts] as Array<Record<string, unknown>>).map((artifact) => {
     const sourceAuthority = effectiveSourceAuthority({ artifact, entities: [...entities] as unknown as Array<{ id: string; type?: string; canonicalName?: string; metadata?: Record<string, unknown> }>, entityLinks: [...links] as unknown as Array<{ fromEntityId: string; toEntityId: string; relationship?: string }>, rootCandidate: typeof rootCandidate === "string" ? rootCandidate : null });
@@ -87,10 +90,24 @@ export async function getResearchContext(
     return { ...artifact, sourceAuthority, attestationGroup, id: String(artifact.id) };
   });
   const artifactById = new Map(effectiveArtifacts.map((artifact) => [String(artifact.id), artifact]));
-  const effectiveEvidence = [...evidence].map((edge) => {
+  const effectiveEvidence = [...evidence].filter((edge) => {
+    const claimIds = Array.isArray(edge.claimIds) ? edge.claimIds.map(String) : [];
+    return claimIds.some((claimId) => assignedClaimIds.includes(claimId));
+  }).map((edge) => {
     const artifact = artifactById.get(String(edge.artifactId));
     return artifact ? { ...edge, sourceAuthority: artifact.sourceAuthority, attestationGroup: artifact.attestationGroup } : edge;
   });
+  const assignedQuestionIds = new Set(questionIds);
+  const scopedProviderAttempts = [...providerAttempts].filter((attempt) => {
+    const metadata = attempt.requestMetadata;
+    return metadata && typeof metadata === "object" && assignedQuestionIds.has(String((metadata as Record<string, unknown>).questionId ?? ""));
+  });
+  const scopedArtifactIds = new Set([
+    ...scopedProviderAttempts.flatMap((attempt) => Array.isArray(attempt.artifactIds) ? attempt.artifactIds.map(String) : []),
+    ...effectiveEvidence.map((edge) => String(edge.artifactId)),
+  ]);
+  const scopedArtifacts = effectiveArtifacts.filter((artifact) => scopedArtifactIds.has(artifact.id));
+  const scopedObservations = [...observations].filter((observation) => scopedArtifactIds.has(String(observation.artifactId)));
   const exhaustedRoutes = [...questions].flatMap((question) => question.status === "EXHAUSTED" || question.status === "SKIPPED" ? [{ questionId: question.id, routes: question.possibleRoutes, selectedRoute: question.selectedRoute }] : []);
   const facetCoverage = (claims as unknown as Array<{ id: string; facets: ClaimFacet[] }>).flatMap((claim) => (Array.isArray(claim.facets) ? claim.facets : []).map((facet) => {
     const support = (effectiveEvidence as unknown as Array<{ id: string; relation: string; claimIds: string[]; facetKeys: string[]; sourceAuthority: string; attestationGroup: string }>).filter((edge) => edge.relation === "SUPPORTS" && edge.claimIds.includes(claim.id) && edge.facetKeys.includes(facet.key));
@@ -110,10 +127,10 @@ export async function getResearchContext(
     entities: [...entities],
     identifiers: [...identifiers],
     entityLinks: [...links],
-    artifacts: [...effectiveArtifacts],
-    observations: [...observations],
+    artifacts: scopedArtifacts,
+    observations: scopedObservations,
     evidence: [...effectiveEvidence],
-    providerAttempts: [...providerAttempts],
+    providerAttempts: scopedProviderAttempts,
     knownExhaustedRoutes: exhaustedRoutes,
     facetCoverage,
   }, safeMaxBytes, ["providerAttempts", "evidence", "observations", "artifacts", "identifiers", "entityLinks", "facetCoverage", "entities", "claims"]);
@@ -547,15 +564,11 @@ export async function captureEvidence(
     }
   }
   if (input.relation !== "CONTEXT" && input.claimIds.length) {
-    const claims = await getSql()<Array<{ id: string; normalizedClaim: string }>>`
-      SELECT id, normalized_claim AS "normalizedClaim"
-      FROM claims
-      WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}
-        AND id = ANY(${input.claimIds}::uuid[])
-    `;
-    for (const claim of claims) {
-      if (!evidenceQuoteHasClaimAnchor(quote, claim.normalizedClaim)) {
-        throw new Error(`Evidence quote does not contain a recognizable anchor for claim ${claim.id}.`);
+    const claim = referencedClaims[0];
+    for (const facetKey of input.facetKeys) {
+      const facet = claim?.facets.find(({ key }) => key === facetKey);
+      if (!facet || !facetEvidenceCompatible(quote, facet.label)) {
+        throw new Error(`Evidence quote is incompatible with facet ${facetKey}.`);
       }
     }
   }
@@ -1122,17 +1135,26 @@ export async function updateResearchQuestion(input: CaseIds & {
   priority?: Priority;
   possibleRoutes?: string[];
   status?: Extract<ResearchQuestionStatus, "OPEN" | "IN_PROGRESS">;
-}): Promise<{ id: string; priority: Priority; possibleRoutes: string[]; status: ResearchQuestionStatus }> {
-  if (!input.priority && !input.possibleRoutes && !input.status) throw new Error("A research question update is required.");
+  claimIds?: string[];
+}): Promise<{ id: string; claimIds: string[]; priority: Priority; possibleRoutes: string[]; status: ResearchQuestionStatus }> {
+  if (!input.priority && !input.possibleRoutes && !input.status && !input.claimIds) throw new Error("A research question update is required.");
+  if (input.claimIds) {
+    if (input.claimIds.length < 1 || input.claimIds.length > 100 || new Set(input.claimIds).size !== input.claimIds.length) throw new Error("A research question claim set must contain one to one hundred unique claim IDs.");
+    await assertRowsBelongToCase("claims", input.claimIds, input.investigationId, input.runId);
+    const [run] = await getSql()<Array<{ waveCount: number }>>`SELECT research_wave_count AS "waveCount" FROM runs WHERE id = ${input.runId} AND investigation_id = ${input.investigationId}`;
+    if (!run) throw new Error("Run not found while updating research question.");
+    if (run.waveCount !== 0) throw new Error("Research question claim membership can only be repaired before the initial research wave.");
+  }
   const possibleRoutes = input.possibleRoutes ? getSql().json(toJson(input.possibleRoutes)) : null;
-  const [row] = await getSql()<Array<{ id: string; priority: Priority; possibleRoutes: string[]; status: ResearchQuestionStatus }>>`
+  const [row] = await getSql()<Array<{ id: string; claimIds: string[]; priority: Priority; possibleRoutes: string[]; status: ResearchQuestionStatus }>>`
     UPDATE research_questions
-    SET priority = COALESCE(${input.priority ?? null}, priority),
+    SET claim_ids = COALESCE(${input.claimIds ?? null}::uuid[], claim_ids),
+        priority = COALESCE(${input.priority ?? null}, priority),
         possible_routes = COALESCE(${possibleRoutes}::jsonb, possible_routes),
         status = COALESCE(${input.status ?? null}, status), updated_at = now()
     WHERE id = ${input.questionId} AND investigation_id = ${input.investigationId}
       AND run_id = ${input.runId} AND status IN ('OPEN', 'IN_PROGRESS')
-    RETURNING id, priority, possible_routes AS "possibleRoutes", status
+    RETURNING id, claim_ids AS "claimIds", priority, possible_routes AS "possibleRoutes", status
   `;
   if (!row) throw new Error("Open research question not found.");
   return row;
@@ -1159,7 +1181,9 @@ const RESEARCH_RECONCILIATION_LIMITATION =
 export async function reconcileResearchFrontier(
   investigationId: string,
   runId: string,
+  options: { forcedFinalization?: boolean } = {},
 ): Promise<{ reconciledCount: number; activeCount: 0 }> {
+  const forcedFinalization = options.forcedFinalization === true;
   return getSql().begin(async (transaction) => {
     const activeQuestions = await transaction<Array<{ id: string }>>`
       SELECT id FROM research_questions
@@ -1194,10 +1218,17 @@ export async function reconcileResearchFrontier(
       : [];
     const evidenced = new Set(evidencedArtifactIds.map(({ id }) => id));
     const unreviewed = successfulArtifactIds.filter((id) => !evidenced.has(id));
-    if (unreviewed.length > 0) throw new Error(`UNREVIEWED_ARTIFACTS: ${unreviewed.join(", ")}`);
+    if (unreviewed.length > 0 && !forcedFinalization) throw new Error(`UNREVIEWED_ARTIFACTS: ${unreviewed.join(", ")}`);
+    const resolutionSummary = forcedFinalization
+      ? "Emergency finalization ended this question before every captured artifact could be locally reviewed; only durable evidence was eligible for adjudication."
+      : RESEARCH_RECONCILIATION_LIMITATION;
+    const eventType = forcedFinalization ? "RESEARCH_FRONTIER_FORCED_FINALIZED" : "RESEARCH_FRONTIER_RECONCILED";
+    const publicRationale = forcedFinalization
+      ? "Emergency finalization made the remaining questions terminal without claiming that unreviewed artifacts were reviewed; only captured evidence was preserved for adjudication."
+      : RESEARCH_RECONCILIATION_LIMITATION;
     const reconciled = await transaction<Array<{ id: string }>>`
       UPDATE research_questions
-      SET status = 'EXHAUSTED', resolution_summary = ${RESEARCH_RECONCILIATION_LIMITATION},
+      SET status = 'EXHAUSTED', resolution_summary = ${resolutionSummary},
         resolved_at = now(), updated_at = now()
       WHERE investigation_id = ${investigationId} AND run_id = ${runId}
         AND status IN ('OPEN', 'IN_PROGRESS')
@@ -1215,9 +1246,9 @@ export async function reconcileResearchFrontier(
         budget_delta, public_rationale, payload
       ) VALUES (
         ${investigationId}, ${runId}, 'RESEARCH', 'runner',
-        'RESEARCH_FRONTIER_RECONCILED', 'COMPLETED', '{}'::jsonb,
-        ${RESEARCH_RECONCILIATION_LIMITATION},
-        ${transaction.json(toJson({ reconciledQuestionIds: reconciled.map(({ id }) => id) }))}
+        ${eventType}, 'COMPLETED', '{}'::jsonb,
+        ${publicRationale},
+        ${transaction.json(toJson({ reconciledQuestionIds: reconciled.map(({ id }) => id), unreviewedArtifactIds: forcedFinalization ? unreviewed : [] }))}
       )
     `;
     return { reconciledCount: reconciled.length, activeCount: 0 as const };

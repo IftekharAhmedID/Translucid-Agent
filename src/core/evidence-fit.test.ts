@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { auditEvidenceEdges, evidenceQuoteHasClaimAnchor, evaluateEvidenceCompatibility } from "./evidence-fit.ts";
+import { auditEvidenceEdges, evidenceQuoteHasClaimAnchor, evaluateEvidenceCompatibility, facetEvidenceCompatible } from "./evidence-fit.ts";
 
 test("evidence quote must share a meaningful claim anchor", () => {
   assert.equal(evidenceQuoteHasClaimAnchor("I work as Principal Software Engineer at Arm.", "Diego Russo is a Principal Software Engineer at Arm."), true);
@@ -10,6 +10,20 @@ test("evidence quote must share a meaningful claim anchor", () => {
 
 test("generic-token-only matches are rejected", () => {
   assert.equal(evidenceQuoteHasClaimAnchor("I am a software engineer on a team.", "A candidate is a software engineer on a team."), false);
+});
+
+test("facet compatibility accepts evidence for one facet without requiring the whole compound claim", () => {
+  assert.equal(
+    facetEvidenceCompatible("Add Diego as code owner of the JIT", "Core developer: CPython JIT code ownership"),
+    true,
+  );
+  assert.equal(
+    evidenceQuoteHasClaimAnchor(
+      "Add Diego as code owner of the JIT",
+      "Diego Russo was a core developer on CPython, served on the triage team, and worked at Arm Ltd.",
+    ),
+    false,
+  );
 });
 
 test("shifted adjacent evidence pairs are rejected when only a shared generic or single anchor remains", () => {
