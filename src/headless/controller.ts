@@ -53,8 +53,23 @@ export type HeadlessControllerOutput = {
   childSessions: Array<{ id: string; role: string; compactions: number }>;
 };
 
+export function describeSdkError(error: unknown): string {
+  if (error instanceof Error) {
+    const details = Object.fromEntries(Object.getOwnPropertyNames(error)
+      .filter((name) => !new Set(["name", "message", "stack"]).has(name))
+      .map((name) => [name, (error as unknown as Record<string, unknown>)[name]]));
+    const suffix = Object.keys(details).length ? ` ${JSON.stringify(details)}` : "";
+    return `${error.name}: ${error.message}${suffix}`;
+  }
+  if (error && typeof error === "object") {
+    const details = Object.fromEntries(Object.getOwnPropertyNames(error).map((name) => [name, (error as Record<string, unknown>)[name]]));
+    return JSON.stringify(details);
+  }
+  return String(error);
+}
+
 function unwrap<T>(result: { data?: T; error?: unknown }, action: string): T {
-  if (result.error || result.data === undefined) throw new Error(`${action} failed: ${JSON.stringify(result.error ?? "missing data")}`);
+  if (result.error || result.data === undefined) throw new Error(`${action} failed: ${describeSdkError(result.error ?? "missing data")}`);
   return result.data;
 }
 
@@ -215,7 +230,7 @@ export class HeadlessInvestigationController {
           variant: "medium",
           parts: [{ type: "text", text: `Begin the headless investigation from /workspace/case/input/manifest.json. Complete one initial specialist wave and at most one exact-gap targeted wave. Return a consolidated natural-language research memo with exact [S#] citations. The research deadline is ${new Date(researchDeadline).toISOString()}; reserve finalization time and stop when material gaps are resolved or honestly exhausted.` }],
         }, { signal: researchAbort.signal });
-        if (launch.error) throw new Error(`lead research prompt failed: ${JSON.stringify(launch.error)}`);
+        if (launch.error) throw new Error(`lead research prompt failed: ${describeSdkError(launch.error)}`);
         await waitForResearchIdle({
           readStatus: async () => {
             const statuses = unwrap(await client.session.status({ directory }, { signal: researchAbort.signal }), "session status");

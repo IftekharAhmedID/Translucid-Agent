@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { buildFinalizerContext, readCompletedResearchMemos, resultForAudit, waitForResearchIdle } from "./controller.ts";
+import { buildFinalizerContext, describeSdkError, readCompletedResearchMemos, resultForAudit, waitForResearchIdle } from "./controller.ts";
 import type { InvestigationResult } from "./result-contract.ts";
 import { FileSourceStore } from "./source-store.ts";
 
@@ -149,4 +149,12 @@ test("auditor view removes provisional audit data and unused source metadata", (
 test("controller never reconstructs handoffs from messages or injects duplicate or full source text", async () => {
   const source = await readFile(new URL("./controller.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /session\.messages|document\.txt|exactStoredBody|sourceBundle/);
+});
+
+test("describes SDK errors whose useful fields are non-enumerable", () => {
+  const error = new Error("upstream request timed out");
+  Object.defineProperty(error, "data", { value: { ref: "err_123" }, enumerable: false });
+
+  assert.match(describeSdkError(error), /Error: upstream request timed out/);
+  assert.match(describeSdkError(error), /err_123/);
 });
