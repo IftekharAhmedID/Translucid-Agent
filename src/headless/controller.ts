@@ -278,7 +278,8 @@ export class HeadlessInvestigationController {
           agent,
           model: { providerID: "translucid", modelID: model },
           variant: "medium",
-          parts: [{ type: "text", text: `${prompt}\n\nReturn only one complete JSON object. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}` }],
+          format: { type: "json_schema", schema: z.toJSONSchema(schema) },
+          parts: [{ type: "text", text: prompt }],
         }, { signal: input.signal }), `${agent} prompt`);
         return schema.parse(extractStructuredOutput(message));
       };

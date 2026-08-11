@@ -35,6 +35,7 @@ test("lead has native delegation but no provider tools, while specialists cannot
 test("compiler and auditor can read bounded source excerpts but have no network tools", async () => {
   for (const file of ["evidence-compiler.md", "evidence-auditor.md"]) {
     const source = await readFile(join(root, "agents", file), "utf8");
+    assert.match(source, /StructuredOutput: allow/);
     assert.match(source, /source\.excerpts: allow/);
     assert.doesNotMatch(source, /\b(?:web\.|professional\.|github\.|social\.|archives\.|public_records\.|scholarly\.|packages\.|security_records\.)[a-z_]+:\s*allow/);
   }

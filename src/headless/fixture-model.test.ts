@@ -16,10 +16,11 @@ test("fixture model exercises delegation, provider capture, compilation, and aud
   assert.match(memo.content ?? "", /\[S1\]/);
 
   const compiler = await complete({}, "evidence-compiler");
-  const draft = investigationDraftSchema.parse(JSON.parse(compiler.content ?? ""));
+  assert.equal(compiler.toolCall?.name, "StructuredOutput");
+  const draft = investigationDraftSchema.parse(compiler.toolCall?.arguments);
   assert.equal(draft.claims[0]?.facets.length, 3);
   assert.equal(draft.evidence[0]?.sourceRef, "S1");
 
   const audit = await complete({}, "evidence-auditor");
-  assert.deepEqual(JSON.parse(audit.content ?? ""), { status: "PASSED", defects: [] });
+  assert.deepEqual(audit, { toolCall: { name: "StructuredOutput", arguments: { status: "PASSED", defects: [] } } });
 });

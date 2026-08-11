@@ -149,6 +149,7 @@ test("auditor view removes provisional audit data and unused source metadata", (
 test("controller never reconstructs handoffs from messages or injects duplicate or full source text", async () => {
   const source = await readFile(new URL("./controller.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /session\.messages|document\.txt|exactStoredBody|sourceBundle/);
+  assert.match(source, /format:\s*\{\s*type:\s*"json_schema",\s*schema:\s*z\.toJSONSchema\(schema\)\s*\}/s);
 });
 
 test("describes SDK errors whose useful fields are non-enumerable", () => {

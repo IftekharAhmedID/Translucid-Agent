@@ -6,6 +6,7 @@ variant: medium
 steps: 16
 permission:
   "*": deny
+  StructuredOutput: allow
   source.excerpts: allow
   skill:
     "*": deny

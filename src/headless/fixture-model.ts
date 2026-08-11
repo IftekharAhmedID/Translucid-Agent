@@ -45,8 +45,8 @@ export function createHeadlessFixtureCompletion(): (body: Record<string, unknown
       if (call === 1) return { toolCall: { name: "web.fetch", arguments: { url: "https://example.test/synthetic-source" } } };
       return { content: `Finding: synthetic Acme employment.\nExact quote: “${quote}” [S1]\nWhat it establishes: employer, title, and 2021–2025 interval.\nConflict or uncertainty: none inside the synthetic fixture.\nRemaining material gap: none.` };
     }
-    if (agent === "evidence-compiler") return { content: JSON.stringify(fixtureDraft()) };
-    if (agent === "evidence-auditor") return { content: JSON.stringify({ status: "PASSED", defects: [] }) };
+    if (agent === "evidence-compiler") return { toolCall: { name: "StructuredOutput", arguments: fixtureDraft() } };
+    if (agent === "evidence-auditor") return { toolCall: { name: "StructuredOutput", arguments: { status: "PASSED", defects: [] } } };
     return { content: "No additional synthetic research was required." };
   };
 }
