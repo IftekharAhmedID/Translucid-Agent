@@ -98,12 +98,6 @@ export function createHeadlessGateway(input: GatewayInput) {
         });
         return json(response, 200, result);
       }
-      if (request.method === "GET" && url.pathname === "/internal/sources/index") {
-        authorize(request, "tool", "source.excerpts");
-        const sources = await input.sourceStore.list();
-        const index = sources.map(({ ref, title, sourceUrl, providerRoute }) => ({ ref, ...(title ? { title } : {}), ...(sourceUrl ? { url: sourceUrl } : {}), providerRoute }));
-        return json(response, 200, { sources: index, truncated: false });
-      }
       if (request.method === "POST" && url.pathname === "/internal/llm/v1/chat/completions") {
         const body = await readJson(request, MAX_MODEL_BODY);
         const model = typeof body.model === "string" ? body.model.split("/").at(-1) ?? "" : "";

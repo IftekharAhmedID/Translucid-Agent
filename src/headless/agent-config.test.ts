@@ -43,4 +43,5 @@ test("headless OpenCode loads only the headless plugin and keeps shell and edits
   assert.match(plugin, /eight-child research limit/);
   assert.match(plugin, /two-invocation limit/);
   assert.match(plugin, /experimental\.session\.compacting/);
+  assert.doesNotMatch(plugin, /internal\/sources\/index/);
 });

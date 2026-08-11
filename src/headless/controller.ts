@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
@@ -64,11 +64,6 @@ function assistantText(message: { info: { role: string; error?: { name?: string 
   return message.parts.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("").trim();
 }
 
-export function latestUsableAssistantText(messages: Array<{ info: { role: string; error?: { name?: string } }; parts: Array<{ type: string; text?: string }> }>): string {
-  const latest = [...messages].reverse().find((message) => message.info.role === "assistant" && !message.info.error && assistantText(message));
-  return latest ? assistantText(latest) : "";
-}
-
 function citedSourceRefs(text: string): string[] {
   return [...new Set([...text.matchAll(/\bS([1-9]\d*)\b/g)].map((match) => `S${match[1]}`))]
     .sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
@@ -105,6 +100,23 @@ async function sourceBundle(sourceStore: FileSourceStore, memoText: string): Pro
 
 function safeFile(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 120);
+}
+
+type ChildMemoSession = Pick<Session, "id" | "agent">;
+
+export async function readCompletedResearchMemos(memoDirectory: string, children: ChildMemoSession[]): Promise<{
+  memos: string[];
+  completedSessionIds: Set<string>;
+  warnings: string[];
+}> {
+  const files = await readdir(memoDirectory).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error));
+  const memos = await Promise.all(files.filter((file) => file.endsWith(".md") && !file.startsWith("lead-")).sort().map((file) => readFile(join(memoDirectory, file), "utf8")));
+  if (memos.length === 0) throw new Error("No specialist memo completed; refusing to compile partial reasoning.");
+  const completedSessionIds = new Set(memos.flatMap((memo) => memo.match(/^Session:\s*(\S+)\s*$/m)?.[1] ?? []));
+  const warnings = children
+    .filter((child) => !completedSessionIds.has(child.id))
+    .map((child) => `${child.agent ?? "unknown-researcher"} child ${child.id} returned no completed memo; its assigned scope remains unresolved.`);
+  return { memos, completedSessionIds, warnings };
 }
 
 export class HeadlessInvestigationController {
@@ -155,23 +167,15 @@ export class HeadlessInvestigationController {
       const children = unwrap(await client.session.children({ sessionID: lead.id, directory }), "child session listing");
       const memoDirectory = join(input.root, ".work", "memos");
       await mkdir(memoDirectory, { recursive: true });
-      const childSessions: Array<{ id: string; role: string; compactions: number }> = [];
-      const memos: string[] = [];
-      for (const child of children) {
-        const messages = unwrap(await client.session.messages({ sessionID: child.id, directory }), `messages for ${child.id}`);
-        const role = messages.find((message) => message.info.role === "user")?.info.agent ?? "unknown-researcher";
-        const text = latestUsableAssistantText(messages) || "No usable public memo was returned.";
-        const memo = `# ${role}\n\nSession: ${child.id}\n\n${text || "No usable public memo was returned."}\n`;
-        await writeFile(join(memoDirectory, `${safeFile(role)}-${safeFile(child.id)}.md`), memo, { mode: 0o600 });
-        memos.push(memo);
-        childSessions.push({ id: child.id, role, compactions: compactions.get(child.id) ?? 0 });
-      }
+      const handoff = await readCompletedResearchMemos(memoDirectory, children);
+      warnings.push(...handoff.warnings);
+      const childSessions = children.map((child) => ({ id: child.id, role: child.agent ?? "unknown-researcher", compactions: compactions.get(child.id) ?? 0 }));
       if (!leadMemo) {
-        const leadMessages = unwrap(await client.session.messages({ sessionID: lead.id, directory }), "lead messages");
-        leadMemo = latestUsableAssistantText(leadMessages) || "Research ended without a consolidated lead memo.";
+        warnings.push("Lead consolidation was unavailable; compilation used completed specialist memo snapshots only.");
       }
-      const combinedMemos = `${memos.join("\n\n")}\n\n# Lead consolidation\n\n${leadMemo}`;
-      await writeFile(join(memoDirectory, `lead-${safeFile(lead.id)}.md`), leadMemo, { mode: 0o600 });
+      const limitationMemo = warnings.length ? `\n\n# Research handoff warnings\n\n${warnings.map((warning) => `- ${warning}`).join("\n")}` : "";
+      const combinedMemos = `${handoff.memos.join("\n\n")}${leadMemo ? `\n\n# Lead consolidation\n\n${leadMemo}` : ""}${limitationMemo}`;
+      if (leadMemo) await writeFile(join(memoDirectory, `lead-${safeFile(lead.id)}.md`), leadMemo, { mode: 0o600 });
       const [documentText, documentJson, sources] = await Promise.all([
         readFile(join(input.root, "input", "document.txt"), "utf8"),
         readFile(join(input.root, "input", "document.json"), "utf8"),

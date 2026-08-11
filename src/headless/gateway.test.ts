@@ -70,6 +70,9 @@ test("authorizes one run-scoped token and exposes only headless tools", async ()
     });
     assert.equal(forbidden.status, 403);
 
+    const sourceIndex = await fetch(`${origin}/internal/sources/index`, { headers });
+    assert.equal(sourceIndex.status, 404);
+
     gateway.cancel();
     const cancelled = await fetch(`${origin}/internal/tools/execute`, {
       method: "POST",
