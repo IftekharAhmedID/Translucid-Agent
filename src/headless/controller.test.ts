@@ -55,6 +55,26 @@ test("waits for an asynchronously prompted research session to become idle", asy
   assert.equal(index, 3);
 });
 
+test("does not mistake a slowly queued async prompt for an idle research session", async () => {
+  let clock = 0;
+  let polls = 0;
+
+  await waitForResearchIdle({
+    readStatus: async () => {
+      polls += 1;
+      clock += 500;
+      if (polls === 8) return "busy";
+      return undefined;
+    },
+    deadlineAt: 60_000,
+    signal: new AbortController().signal,
+    intervalMs: 0,
+    now: () => clock,
+  });
+
+  assert.equal(polls, 9);
+});
+
 test("builds finalizer context from parsed JSON and memo-cited source metadata without stored bodies", async () => {
   const root = await mkdtemp(join(tmpdir(), "translucid-finalizer-context-"));
   try {

@@ -141,14 +141,17 @@ export async function waitForResearchIdle(input: {
   deadlineAt: number;
   signal: AbortSignal;
   intervalMs?: number;
+  now?: () => number;
+  initialGraceMs?: number;
 }): Promise<void> {
+  const now = input.now ?? Date.now;
   let observedBusy = false;
-  const startedAt = Date.now();
-  while (Date.now() < input.deadlineAt) {
+  const startedAt = now();
+  while (now() < input.deadlineAt) {
     input.signal.throwIfAborted();
     const status = await input.readStatus();
     if (status === "busy" || status === "retry") observedBusy = true;
-    else if (observedBusy || Date.now() - startedAt >= 3_000) return;
+    else if (observedBusy || now() - startedAt >= (input.initialGraceMs ?? 30_000)) return;
     const interval = input.intervalMs ?? 500;
     if (interval > 0) await new Promise((resolve) => setTimeout(resolve, interval));
   }
