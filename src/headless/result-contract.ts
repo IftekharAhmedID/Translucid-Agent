@@ -25,7 +25,7 @@ export const investigationDraftSchema = z.object({
     strongestEvidenceByClaim: z.array(z.object({
       claimKey: key,
       facetKeys: z.array(facetKey).min(1).max(12),
-      evidenceKeys: z.array(key).min(1).max(100),
+      evidenceKeys: z.array(key).max(100),
     }).strict()).max(100),
     materialInconsistencies: z.array(z.object({
       claimKey: key,
@@ -68,9 +68,10 @@ export const investigationDraftSchema = z.object({
 }).strict();
 
 export type InvestigationDraft = z.infer<typeof investigationDraftSchema>;
+type EvidenceStrength = "STRONG" | "MODERATE" | "WEAK";
 
 export type InvestigationResult = {
-  schemaVersion: "1.0";
+  schemaVersion: "1.1";
   run: {
     id: string;
     status: "COMPLETED" | "COMPLETED_WITH_LIMITATIONS";
@@ -98,13 +99,14 @@ export type InvestigationResult = {
     materiality: InvestigationDraft["claims"][number]["materiality"];
     sourceSpan: { page?: number; text: string };
     verdict: "CORROBORATED" | "PARTIALLY_CORROBORATED" | "CONTRADICTED" | "UNRESOLVED";
-    strength: "STRONG" | "MODERATE" | "WEAK";
+    strength: EvidenceStrength;
     explanation: string;
     facets: Array<{
       key: string;
       label: string;
       materiality: "HIGH" | "MEDIUM" | "LOW";
       status: "SUPPORTED" | "CONTRADICTED" | "UNRESOLVED";
+      strength: EvidenceStrength;
       evidenceIds: string[];
       note: string;
     }>;
@@ -199,7 +201,7 @@ function verdict(facets: Array<{ materiality: "HIGH" | "MEDIUM" | "LOW"; status:
   return "CONTRADICTED";
 }
 
-function strength(evidence: InvestigationResult["evidence"]): InvestigationResult["claims"][number]["strength"] {
+function evidenceStrength(evidence: Array<{ sourceAuthority: Exclude<SourceAuthority, "CONTEXT" | "DISCOVERY_ONLY">; attestationGroup: string }>): EvidenceStrength {
   if (evidence.some((item) => item.sourceAuthority === "DIRECT_WORK")) return "STRONG";
   const nonCandidateGroups = new Set(evidence
     .filter((item) => item.attestationGroup !== "CANDIDATE_SELF")
@@ -207,6 +209,12 @@ function strength(evidence: InvestigationResult["evidence"]): InvestigationResul
   if (nonCandidateGroups.size >= 2) return "STRONG";
   if (evidence.some((item) => item.sourceAuthority === "FIRST_PARTY_INSTITUTIONAL" || item.sourceAuthority === "INDEPENDENT_PROFESSIONAL")) return "MODERATE";
   return "WEAK";
+}
+
+function materialFloorStrength(facets: Array<{ materiality: "HIGH" | "MEDIUM" | "LOW"; strength: EvidenceStrength }>): EvidenceStrength {
+  const tier = (["HIGH", "MEDIUM", "LOW"] as const).find((materialityValue) => facets.some((facet) => facet.materiality === materialityValue));
+  const strengths = facets.filter((facet) => facet.materiality === tier).map((facet) => facet.strength);
+  return strengths.includes("WEAK") ? "WEAK" : strengths.includes("MODERATE") ? "MODERATE" : "STRONG";
 }
 
 function timelineState(evidence: InvestigationResult["evidence"]): InvestigationResult["timeline"][number]["state"] {
@@ -299,7 +307,7 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
       const matching = claimEvidence.filter((item) => item.facetKeys.includes(facet.key));
       const expected = expectedFacetStatus(matching.map((item) => item.relation));
       if (facet.status !== expected) throw new Error(`Facet ${facet.key} on claim ${claim.key} must be ${expected}, not ${facet.status}.`);
-      return { ...facet, evidenceIds: matching.map((item) => evidenceIds.get(item.key)!) };
+      return { ...facet, strength: evidenceStrength(matching), evidenceIds: matching.map((item) => evidenceIds.get(item.key)!) };
     });
     return {
       id: claimIds.get(claim.key)!,
@@ -308,7 +316,7 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
       materiality: claim.materiality,
       sourceSpan: claim.sourceSpan,
       verdict: verdict(facets),
-      strength: strength(evidence.filter((item) => item.claimId === claimIds.get(claim.key))),
+      strength: materialFloorStrength(facets),
       explanation: claim.explanation,
       facets,
     };
@@ -326,7 +334,8 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
       if (!item.facetKeys.some((value) => facetKeys.includes(value))) throw new Error(`Summary evidence ${evidenceKey} does not belong to a declared facet on claim ${claimKeyValue}.`);
     }
   };
-  for (const item of draft.summary.strongestEvidenceByClaim) assertEvidenceScope(item.claimKey, item.facetKeys, item.evidenceKeys);
+  const strongestEvidenceByClaim = draft.summary.strongestEvidenceByClaim.filter((item) => item.evidenceKeys.length > 0);
+  for (const item of strongestEvidenceByClaim) assertEvidenceScope(item.claimKey, item.facetKeys, item.evidenceKeys);
   for (const item of draft.summary.materialInconsistencies) assertEvidenceScope(item.claimKey, claimByKey.get(item.claimKey)?.facets.map((facet) => facet.key) ?? [], item.evidenceKeys);
 
   const assertEvidenceWithinClaims = (values: string[], allowedClaimKeys: string[], label: string): void => {
@@ -352,7 +361,7 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
     professionalTimelineSummary: draft.summary.professionalTimelineSummary,
     timelineClaimIds: mapKnown(draft.summary.timelineClaimKeys, claimIds, "timeline claim"),
     timelineEvidenceIds: mapKnown(draft.summary.timelineEvidenceKeys, evidenceIds, "timeline evidence"),
-    strongestEvidenceByClaim: draft.summary.strongestEvidenceByClaim.map((item) => ({
+    strongestEvidenceByClaim: strongestEvidenceByClaim.map((item) => ({
       claimId: claimIds.get(item.claimKey)!,
       facetKeys: item.facetKeys,
       evidenceIds: mapKnown(item.evidenceKeys, evidenceIds, "strongest evidence"),
@@ -402,7 +411,7 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
   const hasLimitations = summary.limitations.length > 0 || claims.some((claim) => claim.facets.some((facet) => facet.status === "UNRESOLVED"));
 
   return {
-    schemaVersion: "1.0",
+    schemaVersion: "1.1",
     run: { ...context.run, status: hasLimitations ? "COMPLETED_WITH_LIMITATIONS" : "COMPLETED" },
     summary,
     claims,

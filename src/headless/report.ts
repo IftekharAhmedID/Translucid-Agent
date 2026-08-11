@@ -62,7 +62,7 @@ export async function renderInvestigationReport(result: InvestigationResult): Pr
     subheading(`${claim.id} · ${claim.verdict} · ${claim.strength}`);
     paragraph(claim.statement);
     paragraph(claim.explanation);
-    for (const facet of claim.facets) bullet(`${facet.status} · ${facet.label} — ${facet.note} [evidence: ${facet.evidenceIds.join(", ") || "none"}]`);
+    for (const facet of claim.facets) bullet(`${facet.status} · ${facet.strength} · ${facet.label} — ${facet.note} [evidence: ${facet.evidenceIds.join(", ") || "none"}]`);
   }
 
   heading("Professional timeline");

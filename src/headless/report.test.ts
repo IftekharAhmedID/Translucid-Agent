@@ -7,7 +7,7 @@ import { renderInvestigationReport } from "./report.ts";
 import type { InvestigationResult } from "./result-contract.ts";
 
 const result: InvestigationResult = {
-  schemaVersion: "1.0",
+  schemaVersion: "1.1",
   run: {
     id: "run-report",
     status: "COMPLETED",
@@ -37,7 +37,7 @@ const result: InvestigationResult = {
     verdict: "CORROBORATED",
     strength: "STRONG",
     explanation: "Direct work evidence supports the title.",
-    facets: [{ key: "title", label: "Title: Principal Engineer", materiality: "HIGH", status: "SUPPORTED", evidenceIds: ["E1"], note: "The source states the title." }],
+    facets: [{ key: "title", label: "Title: Principal Engineer", materiality: "HIGH", status: "SUPPORTED", strength: "STRONG", evidenceIds: ["E1"], note: "The source states the title." }],
   }],
   evidence: [{
     id: "E1",
@@ -86,5 +86,6 @@ test("renders deterministic PDF bytes from the canonical result only", async () 
   }
   assert.match(pages.join("\n"), /Synthetic Candidate was Principal Engineer/);
   assert.match(pages.join("\n"), /Principal Engineer/);
+  assert.match(pages.join("\n"), /SUPPORTED · STRONG · Title/);
   assert.match(pages.join("\n"), /github\.com\/example\/project/);
 });

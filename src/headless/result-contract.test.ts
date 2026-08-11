@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { canonicalizeInvestigationResult, type InvestigationDraft } from "./result-contract.ts";
+import { finalizeWithSingleRepair } from "./finalize.ts";
+import { canonicalizeInvestigationResult, investigationDraftSchema, type InvestigationDraft } from "./result-contract.ts";
 import { FileSourceStore } from "./source-store.ts";
 
 const run = {
@@ -112,7 +113,11 @@ test("canonicalizes semantic keys and derives facet outcomes, trust, timeline st
     assert.equal(result.claims[0]?.id, "C1");
     assert.equal(result.claims[0]?.verdict, "CORROBORATED");
     assert.equal(result.claims[0]?.strength, "STRONG");
-    assert.deepEqual(result.claims[0]?.facets.map(({ evidenceIds }) => evidenceIds), [["E1"], ["E2"]]);
+    assert.equal(result.schemaVersion, "1.1");
+    assert.deepEqual(result.claims[0]?.facets.map(({ evidenceIds, strength }) => ({ evidenceIds, strength })), [
+      { evidenceIds: ["E1"], strength: "STRONG" },
+      { evidenceIds: ["E2"], strength: "STRONG" },
+    ]);
     assert.deepEqual(result.evidence.map(({ id, claimId, sourceAuthority, attestationGroup }) => ({ id, claimId, sourceAuthority, attestationGroup })), [
       { id: "E1", claimId: "C1", sourceAuthority: "DIRECT_WORK", attestationGroup: "github-repository:example/toolchain" },
       { id: "E2", claimId: "C1", sourceAuthority: "DIRECT_WORK", attestationGroup: "github-repository:example/toolchain" },
@@ -130,6 +135,71 @@ test("canonicalizes semantic keys and derives facet outcomes, trust, timeline st
       providerCalls: 2,
       cacheHits: 1,
     });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("drops empty strongest-evidence rows before validation without spending the repair", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-result-empty-summary-"));
+  try {
+    const { store, sourceRef } = await directWorkStore(directory);
+    const emptyRow = draft(sourceRef);
+    emptyRow.summary.strongestEvidenceByClaim = [{ claimKey: "employment", facetKeys: ["title"], evidenceKeys: [] }];
+    const finalized = await finalizeWithSingleRepair<InvestigationDraft, Awaited<ReturnType<typeof canonicalizeInvestigationResult>>>({
+      compile: async () => investigationDraftSchema.parse(emptyRow),
+      validate: (value) => canonicalizeInvestigationResult(value, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+      audit: async () => ({ status: "PASSED", defects: [] }),
+    });
+
+    assert.equal(finalized.compilerAttempts, 1);
+    assert.deepEqual(finalized.result.summary.strongestEvidenceByClaim, []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("direct technical evidence strengthens only its mapped facet and claim strength uses the HIGH-facet floor", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-result-facet-strength-"));
+  try {
+    const { store, sourceRef } = await directWorkStore(directory);
+    const self = await store.capture({
+      kind: "PROVIDER_RESPONSE",
+      provider: "linkdapi",
+      providerRoute: "linkdapi.profile",
+      sourceUrl: "https://www.linkedin.com/in/example",
+      mimeType: "application/json",
+      content: { role: { team: "Arm Ltd, DSG" } },
+      provenance: {},
+    });
+    const mixed = draft(sourceRef);
+    mixed.evidence[1]!.sourceRef = self.ref;
+    const result = await canonicalizeInvestigationResult(mixed, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 });
+
+    assert.deepEqual(result.claims[0]?.facets.map(({ key, status, strength }) => ({ key, status, strength })), [
+      { key: "employer_team", status: "SUPPORTED", strength: "WEAK" },
+      { key: "title", status: "SUPPORTED", strength: "STRONG" },
+    ]);
+    assert.equal(result.claims[0]?.strength, "WEAK");
+
+    mixed.claims[0]!.facets[0]!.materiality = "MEDIUM";
+    const highFloor = await canonicalizeInvestigationResult(mixed, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 });
+    assert.equal(highFloor.claims[0]?.strength, "STRONG");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a direct contradiction remains CONTRADICTED with STRONG evidence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-result-contradiction-strength-"));
+  try {
+    const { store, sourceRef } = await directWorkStore(directory);
+    const contradicted = draft(sourceRef);
+    contradicted.evidence[0]!.relation = "CONTRADICTS";
+    contradicted.claims[0]!.facets.find(({ key }) => key === "title")!.status = "CONTRADICTED";
+    const result = await canonicalizeInvestigationResult(contradicted, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 });
+    assert.equal(result.claims[0]?.verdict, "CONTRADICTED");
+    assert.equal(result.claims[0]?.strength, "STRONG");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
