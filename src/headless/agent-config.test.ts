@@ -95,14 +95,14 @@ test("lead uses a bounded checklist and the three default specialists with condi
 
 test("every headless agent uses OpenCode's native steps limit as an emergency circuit breaker", async () => {
   const expected = new Map<string, number>([
-    ["lead-researcher.md", 16],
-    ["professional-researcher.md", 24],
-    ["github-researcher.md", 24],
-    ["web-records-researcher.md", 24],
-    ["social-researcher.md", 16],
-    ["evidence-compiler.md", 8],
-    ["evidence-auditor.md", 8],
-    ["document-vision.md", 4],
+    ["lead-researcher.md", 48],
+    ["professional-researcher.md", 64],
+    ["github-researcher.md", 64],
+    ["web-records-researcher.md", 64],
+    ["social-researcher.md", 32],
+    ["evidence-compiler.md", 32],
+    ["evidence-auditor.md", 16],
+    ["document-vision.md", 8],
   ]);
 
   for (const [file, steps] of expected) {

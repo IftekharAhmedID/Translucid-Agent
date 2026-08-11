@@ -62,3 +62,10 @@ test("specialist tasks are forced to complete before their memo handoff", async 
 
   assert.equal(output.args.background, false);
 });
+
+test("empty OpenCode task-result envelopes are not completed memo handoffs", async () => {
+  const { completedTaskMemo } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
+
+  assert.equal(completedTaskMemo("<task id=\"child\" state=\"completed\"><task_result>\n\n</task_result></task>"), undefined);
+  assert.match(completedTaskMemo("<task id=\"child\" state=\"completed\"><task_result>Finding [S1].</task_result></task>") ?? "", /Finding \[S1\]/);
+});

@@ -47,6 +47,15 @@ function returnedSourceRefs(body: string): string[] {
   }
 }
 
+export function completedTaskMemo(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const memo = value.trim();
+  if (!memo) return undefined;
+  const taskResult = memo.match(/<task_result>([\s\S]*?)<\/task_result>/i);
+  if (taskResult && !taskResult[1]?.trim()) return undefined;
+  return memo;
+}
+
 const plugin: Plugin = async () => {
   const roleCounts = new Map<string, number>();
   const taskWave = new Map<string, "INITIAL" | "TARGETED">();
@@ -143,7 +152,7 @@ const plugin: Plugin = async () => {
       const role = input.args?.subagent_type;
       if (!specialistRoles.includes(role)) return;
       const sessionId = typeof output.metadata?.sessionId === "string" ? output.metadata.sessionId : input.callID;
-      const memo = typeof output.output === "string" ? output.output.trim() : "";
+      const memo = completedTaskMemo(output.output);
       const wave = taskWave.get(input.callID) ?? "UNKNOWN";
       taskWave.delete(input.callID);
       if (!memo) return;
