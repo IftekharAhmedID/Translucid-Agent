@@ -4,7 +4,7 @@ import { relative, resolve } from "node:path";
 import { ALL_TRAFFIC, Sandbox } from "e2b";
 
 import { waitForHttp } from "./process.ts";
-import type { InvestigatorRuntime, RunHandle, RunStatus, RuntimeStartInput } from "./types.ts";
+import { openCodeRuntimeEnvironment, type InvestigatorRuntime, type RunHandle, type RunStatus, type RuntimeStartInput } from "./types.ts";
 
 async function workspaceFiles(root: string, path = root): Promise<Array<{ path: string; data: Uint8Array }>> {
   const entries = await readdir(path, { withFileTypes: true });
@@ -31,8 +31,9 @@ export class E2BRuntime implements InvestigatorRuntime {
         INVESTIGATION_ID: input.investigationId,
         RUN_ID: input.runId,
         OPENCODE_SERVER_PASSWORD: input.openCodePassword,
-        HOME: "/workspace/case",
-        XDG_CONFIG_HOME: "/workspace/case/.config",
+        TRANSLUCID_RUNTIME_MODE: input.mode ?? "legacy",
+        ...(input.deadlineAt ? { CASE_DEADLINE_AT: input.deadlineAt } : {}),
+        ...openCodeRuntimeEnvironment,
       },
       network: { allowOut: [gatewayHost], denyOut: [ALL_TRAFFIC], allowPublicTraffic: false },
       lifecycle: { onTimeout: "kill" },

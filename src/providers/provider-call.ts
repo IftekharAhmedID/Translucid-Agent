@@ -6,6 +6,7 @@ import { getSql } from "../db/client.ts";
 import { insertAgentEvent } from "../db/investigations.ts";
 import { captureArtifact } from "../db/state.ts";
 import type { ProviderCostSource, ToolName } from "./contracts.ts";
+import type { ConcreteProviderResult, ProviderNetworkResult } from "./backend.ts";
 import { redactSecrets } from "./http.ts";
 import { providerDeadlineMs, providerTimeoutMs } from "./provider-policy.ts";
 import { providerRequestFingerprint } from "./request-fingerprint.ts";
@@ -18,31 +19,7 @@ type ExecuteContext = {
   sessionId: string;
 };
 
-export type ProviderArtifactInput = {
-  kind: string;
-  sourceUrl: string;
-  mimeType?: string;
-  content: unknown;
-  status?: number;
-  provenance?: Record<string, unknown>;
-};
-
-export type ProviderNetworkResult = {
-  data: unknown;
-  sourceUrl: string;
-  status?: number;
-  costUsd: number;
-  costSource: ProviderCostSource;
-  artifacts?: ProviderArtifactInput[];
-};
-
-export type ConcreteProviderResult = ProviderNetworkResult & {
-  provider: string;
-  providerRoute: string;
-  artifactIds: string[];
-  evidenceEligibleArtifactIds: string[];
-  reused: boolean;
-};
+export type { ConcreteProviderResult, ProviderArtifactInput, ProviderNetworkResult } from "./backend.ts";
 
 type ProviderCallRow = {
   id: string;

@@ -4,9 +4,29 @@ import test from "node:test";
 import {
   capabilityForRequest,
   decideProfessionalProfileRoute,
+  parseHeadlessToolRequest,
   parseToolRequest,
   shouldAllowSocialResearch,
 } from "./contracts.ts";
+
+test("headless provider requests contain only network-semantic arguments", () => {
+  const parsed = parseHeadlessToolRequest({
+    tool: "web.search",
+    arguments: { query: "Ada Lovelace analytical engine", mode: "fast" },
+  });
+  assert.equal(parsed.tool, "web.search");
+  assert.equal(parsed.arguments.resultLimit, 5);
+  assert.equal(parsed.arguments.highlightQuery, "Ada Lovelace analytical engine");
+  assert.equal("questionId" in parsed.arguments, false);
+
+  assert.throws(() => parseHeadlessToolRequest({
+    tool: "web.search",
+    arguments: {
+      query: "Ada Lovelace analytical engine",
+      questionId: "11111111-1111-4111-8111-111111111111",
+    },
+  }));
+});
 
 test("tool requests require a durable question and public rationale", () => {
   assert.throws(() =>

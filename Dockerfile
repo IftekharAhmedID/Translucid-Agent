@@ -14,7 +14,7 @@ COPY src/core/input.ts src/core/input.ts
 COPY runtime runtime
 RUN chmod 0555 runtime/start.sh \
   && mkdir -p /workspace/case \
-  && chown -R node:node /workspace /opt/investigator
+  && chown -R node:node /workspace
 
 USER node
 EXPOSE 4096

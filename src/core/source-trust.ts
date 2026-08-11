@@ -115,6 +115,7 @@ function authority(input: TrustInput, canonicalUrl: string | undefined): SourceA
     || route === "github.rest" && typeof network.path === "string" && /^\/repos\/[^/]+\/[^/]+\/(commits|issues|pulls)\b/.test(network.path)
     || route === "github.graphql" && typeof network.query === "string" && /\b(pullRequests?|commits?|reviews?|repository)\b/i.test(network.query);
   if (input.kind === "SEARCH_DISCOVERY") return "DISCOVERY_ONLY";
+  if (input.provider === "fixture" && canonicalUrl && new URL(canonicalUrl).hostname === "example.test") return "FIRST_PARTY_INSTITUTIONAL";
   if (input.kind.startsWith("INPUT_") || input.provider === "submission") return "SELF_REPRESENTATION";
   if (route.startsWith("linkdapi.") || route.startsWith("brightdata.") || canonicalUrl && /(^|\.)(linkedin|x|instagram|tiktok)\.com$/.test(new URL(canonicalUrl).hostname)) return "SELF_REPRESENTATION";
   if (githubDirect) return "DIRECT_WORK";

@@ -1,3 +1,8 @@
+export const openCodeRuntimeEnvironment = {
+  HOME: "/tmp/translucid-opencode",
+  XDG_CONFIG_HOME: "/tmp/translucid-opencode/.config",
+} as const;
+
 export type RuntimeStartInput = {
   investigationId: string;
   runId: string;
@@ -7,6 +12,8 @@ export type RuntimeStartInput = {
   openCodePassword: string;
   expectedManifestHash?: string;
   timeoutMs: number;
+  mode?: "legacy" | "headless";
+  deadlineAt?: string;
 };
 
 export type RunHandle = {

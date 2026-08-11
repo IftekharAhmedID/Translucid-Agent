@@ -46,6 +46,10 @@ function assertSafeLanguage(value: unknown): void {
   if (strings.some((text) => absenceAsDeception.test(text))) throw new Error("Adjudication describes missing evidence as deception.");
 }
 
+export function assertSafeInvestigationLanguage(value: unknown): void {
+  assertSafeLanguage(value);
+}
+
 function assertHonestSourceLanguage(value: unknown, sourceAuthorityCounts?: Record<string, number>): void {
   if (!sourceAuthorityCounts) return;
   const total = Object.values(sourceAuthorityCounts).reduce((sum, count) => sum + count, 0);

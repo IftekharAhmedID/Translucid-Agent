@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 
 import { runProcess, waitForHttp } from "./process.ts";
-import type { InvestigatorRuntime, RunHandle, RunStatus, RuntimeStartInput } from "./types.ts";
+import { openCodeRuntimeEnvironment, type InvestigatorRuntime, type RunHandle, type RunStatus, type RuntimeStartInput } from "./types.ts";
 
 const imageName = "translucid-investigator:1.18.15";
 let buildPromise: Promise<void> | undefined;
@@ -27,7 +27,7 @@ export class LocalDockerRuntime implements InvestigatorRuntime {
     const name = `translucid-case-${input.runId}`;
     const gatewayUrl = input.gatewayUrl.replace("127.0.0.1", "host.docker.internal").replace("localhost", "host.docker.internal");
     await runProcess("docker", [
-      "run", "--detach", "--rm", "--name", name, "--label", `com.translucid.run-id=${input.runId}`,
+      "run", "--detach", "--rm", "--name", name, "--label", `com.translucid.run-id=${input.runId}`, "--label", `com.translucid.owner-pid=${process.pid}`,
       "--add-host", "host.docker.internal:host-gateway",
       "--publish", "127.0.0.1::4096",
       "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
@@ -39,8 +39,9 @@ export class LocalDockerRuntime implements InvestigatorRuntime {
       "--env", `INVESTIGATION_ID=${input.investigationId}`,
       "--env", `RUN_ID=${input.runId}`,
       "--env", `OPENCODE_SERVER_PASSWORD=${input.openCodePassword}`,
-      "--env", "HOME=/workspace/case",
-      "--env", "XDG_CONFIG_HOME=/workspace/case/.config",
+      "--env", `TRANSLUCID_RUNTIME_MODE=${input.mode ?? "legacy"}`,
+      ...(input.deadlineAt ? ["--env", `CASE_DEADLINE_AT=${input.deadlineAt}`] : []),
+      ...Object.entries(openCodeRuntimeEnvironment).flatMap(([name, value]) => ["--env", `${name}=${value}`]),
       imageName,
       "/opt/investigator/runtime/start.sh",
     ], { timeoutMs: 60_000 });

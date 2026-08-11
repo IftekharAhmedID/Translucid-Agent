@@ -2,15 +2,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 
 import { buildCompactionContext } from "../agent/compaction.ts";
 import { getConfig } from "../core/config.ts";
-import { prepareFinalizerUpstreamBody } from "../core/finalizer-transport.ts";
 import { getSql } from "../db/client.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
 import { toolNames } from "../providers/contracts.ts";
 import { authorizeCaseToken, consumeBudget } from "../providers/security.ts";
 import { executeStateTool, isStateTool } from "./state-tools.ts";
 import { compactToolResultForAgent } from "./agent-tool-result.ts";
-import { fixtureCompletion, writeFixtureCompletion } from "./fixture-model.ts";
-import { decodeJsonToolNames, encodeModelToolNames, SseToolNameDecoder } from "./model-tool-names.ts";
+import { fixtureCompletion } from "./fixture-model.ts";
+import { modelCostReservation, proxyModelCompletion } from "./model-proxy.ts";
 
 const MAX_TOOL_BODY = 1024 * 1024;
 const MAX_MODEL_BODY = 16 * 1024 * 1024;
@@ -49,17 +48,6 @@ function json(response: ServerResponse, status: number, body: unknown): void {
 
 export function canWriteGatewayError(response: Pick<ServerResponse, "headersSent" | "writableEnded" | "destroyed">): boolean {
   return !response.headersSent && !response.writableEnded && !response.destroyed;
-}
-
-function modelCostReservation(body: Record<string, unknown>, model: string): number {
-  if (model === "mimo-v2.5-free") return 0;
-  const inputCharacters = JSON.stringify(body.messages ?? []).length;
-  const estimatedInputTokens = Math.ceil(inputCharacters / 4);
-  const maximumOutputTokens = Math.min(Number(body.max_tokens ?? body.max_completion_tokens ?? 32_000), 384_000);
-  const rates = model === "deepseek-v4-pro"
-    ? { input: 0.435, output: 0.87 }
-    : { input: 0.14, output: 0.28 };
-  return (estimatedInputTokens * rates.input + maximumOutputTokens * rates.output) / 1_000_000;
 }
 
 async function handleTool(request: IncomingMessage, response: ServerResponse, executor: ProviderExecutor): Promise<void> {
@@ -112,74 +100,23 @@ async function handleModel(request: IncomingMessage, response: ServerResponse): 
   const reservation = modelCostReservation(body, model);
   if (reservation > 0) await consumeBudget({ runId, counter: "modelUsd", increment: reservation, ceiling: getConfig().modelBudgetUsd });
 
-  if (getConfig().providerMode === "fixture") {
-    writeFixtureCompletion(response, body, model, await fixtureCompletion(body, investigationId, runId));
-    return;
-  }
-
-  const upstreamKey = process.env.OPENCODE_API_KEY;
-  if (!upstreamKey) throw new Error("OPENCODE_API_KEY is not configured on the host gateway.");
-  const encoded = encodeModelToolNames(body);
-  const upstreamAbort = new AbortController();
-  const timeout = setTimeout(() => upstreamAbort.abort(new DOMException("Investigation deadline reached.", "TimeoutError")), Math.min(remaining, 300_000));
-  request.once("aborted", () => upstreamAbort.abort(new DOMException("Runtime request disconnected.", "AbortError")));
-  response.once("close", () => upstreamAbort.abort(new DOMException("Runtime response disconnected.", "AbortError")));
-  let upstream: Response;
-  try {
-    const finalizerAgents = new Set(["evidence-critic", "fresh-adjudicator"]);
-    const finalizer = finalizerAgents.has(agent);
-    const config = getConfig();
-    const upstreamUrl = finalizer
-      ? config.finalizerOpenCodeUpstreamUrl
-      : config.researchOpenCodeUpstreamUrl;
-    const upstreamBody = finalizer
-      ? prepareFinalizerUpstreamBody(
-          { ...encoded.body, model },
-          { agent, provider: config.finalizerOpenCodeProvider, model: config.finalizerModel },
-        )
-      : { ...encoded.body, model };
-    upstream = await fetch(upstreamUrl, {
-      method: "POST",
-      headers: { authorization: `Bearer ${upstreamKey}`, "content-type": "application/json" },
-      body: JSON.stringify(upstreamBody),
-      signal: upstreamAbort.signal,
-    });
-  } catch (error) {
-    clearTimeout(timeout);
-    throw error;
-  }
-  response.writeHead(upstream.status, {
-    "content-type": upstream.headers.get("content-type") ?? "application/json",
-    "cache-control": "no-store",
-    "x-content-type-options": "nosniff",
+  const config = getConfig();
+  await proxyModelCompletion({
+    request,
+    response,
+    body,
+    agent,
+    model,
+    remainingMs: remaining,
+    providerMode: config.providerMode,
+    upstreamKey: process.env.OPENCODE_API_KEY,
+    researchUpstreamUrl: config.researchOpenCodeUpstreamUrl,
+    finalizerUpstreamUrl: config.finalizerOpenCodeUpstreamUrl,
+    finalizerProvider: config.finalizerOpenCodeProvider,
+    finalizerModel: config.finalizerModel,
+    finalizerAgents: new Set(["evidence-critic", "fresh-adjudicator"]),
+    fixtureCompletion: () => fixtureCompletion(body, investigationId, runId),
   });
-  if (!upstream.body) { clearTimeout(timeout); return void response.end(); }
-  const contentType = upstream.headers.get("content-type") ?? "application/json";
-  if (!contentType.includes("text/event-stream")) {
-    try {
-      const payload = await upstream.text();
-      response.end(contentType.includes("json") ? decodeJsonToolNames(payload, encoded.wireToSemantic) : payload);
-    } finally {
-      clearTimeout(timeout);
-    }
-    return;
-  }
-  const reader = upstream.body.getReader();
-  const toolNames = new SseToolNameDecoder(encoded.wireToSemantic);
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const decoded = toolNames.push(value);
-      if (decoded && !response.write(decoded)) await new Promise<void>((resolve) => response.once("drain", resolve));
-    }
-    const final = toolNames.flush();
-    if (final) response.write(final);
-  } finally {
-    clearTimeout(timeout);
-    response.end();
-    reader.releaseLock();
-  }
 }
 
 export function createGatewayServer(executor = new ProviderExecutor(process.env)) {

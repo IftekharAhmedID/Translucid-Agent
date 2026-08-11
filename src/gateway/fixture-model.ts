@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { getSql } from "../db/client.ts";
 
-type Completion = { content?: string; toolCall?: { name: string; arguments: Record<string, unknown> } };
+export type Completion = { content?: string; toolCall?: { name: string; arguments: Record<string, unknown> } };
 
 function toolNames(body: Record<string, unknown>): Set<string> {
   const tools = Array.isArray(body.tools) ? body.tools : [];

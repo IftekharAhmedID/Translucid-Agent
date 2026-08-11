@@ -1,9 +1,10 @@
 import { buildCapabilityRegistry, type Capability } from "../core/capabilities.ts";
-import { getSql } from "../db/client.ts";
 import {
   capabilityForRequest,
+  parseHeadlessToolRequest,
   parseToolRequest,
   shouldAllowSocialResearch,
+  type HeadlessParsedToolRequest,
   type ParsedToolRequest,
   type ProfessionalMaterialField,
   type ProviderCostSource,
@@ -11,20 +12,36 @@ import {
   type ToolResult,
   unavailableResult,
 } from "./contracts.ts";
+import type {
+  ConcreteProviderResult,
+  ProviderArtifactInput,
+  ProviderCallBackend,
+  ProviderExecutionContext,
+  ProviderNetworkResult,
+} from "./backend.ts";
 import { inspectGitHubRepository } from "./github-repository.ts";
 import { safePublicFetch } from "./http.ts";
-import {
-  executeConcreteProviderCall,
-  type ConcreteProviderResult,
-  type ProviderArtifactInput,
-  type ProviderNetworkResult,
-} from "./provider-call.ts";
 import { fetchWithRetry } from "./retry.ts";
 
 type Environment = Record<string, string | undefined>;
-type ExecuteContext = { investigationId: string; runId: string; agent: string; sessionId: string };
-type ProfileRequest = Extract<ParsedToolRequest, { tool: "professional.profile" }>;
-type ActivityRequest = Extract<ParsedToolRequest, { tool: "professional.activity" }>;
+type ExecuteContext = ProviderExecutionContext & { investigationId: string };
+type AnyParsedToolRequest = ParsedToolRequest | HeadlessParsedToolRequest;
+type RequestOf<Name extends ToolName> = Extract<AnyParsedToolRequest, { tool: Name }>;
+type ProfileRequest = Extract<AnyParsedToolRequest, { tool: "professional.profile" }>;
+type ActivityRequest = Extract<AnyParsedToolRequest, { tool: "professional.activity" }>;
+
+export type HeadlessToolResult = {
+  status: "OK" | "CAPABILITY_UNAVAILABLE" | "RATE_LIMITED" | "BUDGET_EXHAUSTED" | "ERROR";
+  capability: Capability;
+  provider?: string;
+  sourceRefs: string[];
+  evidenceEligibleSourceRefs: string[];
+  preview: string;
+  observedAt: string;
+  costUsd: number;
+  costSource: ProviderCostSource;
+  cache: "HIT" | "MISS";
+};
 
 const defaultToolCeilings: Record<ToolName, number> = {
   "web.search": 1_000,
@@ -128,17 +145,24 @@ function authHeaders(value: string | undefined, scheme = "Bearer"): Record<strin
   return value ? { authorization: `${scheme} ${value}` } : {};
 }
 
-function fixtureData(request: ParsedToolRequest): unknown {
-  const common = request.arguments as { questionId: string; claimIds: string[] };
+function fixtureData(request: AnyParsedToolRequest): unknown {
+  const common = request.arguments as { questionId?: string; claimIds?: string[] };
   return {
     synthetic: true,
     tool: request.tool,
-    questionId: common.questionId,
-    claimIds: common.claimIds,
+    ...(common.questionId ? { questionId: common.questionId } : {}),
+    ...(common.claimIds ? { claimIds: common.claimIds } : {}),
     records: request.tool === "professional.profile"
       ? [{ fullName: "Synthetic Candidate", headline: "Principal Engineer", positions: [{ company: "Acme Synthetic Labs", title: "Principal Engineer", start: "2021", end: "2025" }] }]
       : [{ title: "Synthetic fixture result", url: "https://example.test/synthetic-source", text: "Synthetic Candidate held the title Principal Engineer at Acme Synthetic Labs from 2021 through 2025. Synthetic corroborating content for deterministic development tests." }],
   };
+}
+
+function preview(value: unknown): string {
+  let serialized: string;
+  try { serialized = typeof value === "string" ? value : JSON.stringify(value); }
+  catch { serialized = "Provider returned a non-serializable response."; }
+  return serialized.length <= 20_000 ? serialized : `${serialized.slice(0, 20_000)}\n[preview truncated; use source.excerpts]`;
 }
 
 export function unwrapLinkdProfileResponse(value: unknown): Record<string, unknown> | undefined {
@@ -183,7 +207,7 @@ export class ProviderExecutor {
   private readonly pools: Map<ToolName, Semaphore>;
   private readonly brightDataPool: Semaphore;
 
-  constructor(private readonly environment: Environment = process.env) {
+  constructor(private readonly environment: Environment = process.env, private readonly callBackend?: ProviderCallBackend) {
     this.registry = buildCapabilityRegistry(environment);
     this.pools = new Map(Object.keys(defaultToolCeilings).map((tool) => [tool as ToolName, new Semaphore(concurrencyFor(tool as ToolName, environment))]));
     this.brightDataPool = new Semaphore(Math.max(1, Number(environment.BRIGHTDATA_CONCURRENCY ?? 2)));
@@ -195,11 +219,32 @@ export class ProviderExecutor {
 
   async execute(raw: unknown, context: ExecuteContext): Promise<ToolResult> {
     const request = parseToolRequest(raw);
+    return this.executeParsed(request, context, true);
+  }
+
+  async executeHeadless(raw: unknown, context: ProviderExecutionContext): Promise<HeadlessToolResult> {
+    const request = parseHeadlessToolRequest(raw);
+    const result = await this.executeParsed(request, context, false);
+    return {
+      status: result.status,
+      capability: result.capability,
+      ...(result.provider ? { provider: result.provider } : {}),
+      sourceRefs: result.artifactIds,
+      evidenceEligibleSourceRefs: result.evidenceEligibleArtifactIds,
+      preview: preview(result.data),
+      observedAt: result.observedAt,
+      costUsd: result.costUsd,
+      costSource: result.costSource,
+      cache: result.cache ?? "MISS",
+    };
+  }
+
+  private async executeParsed(request: AnyParsedToolRequest, context: ProviderExecutionContext, requireQuestionScope: boolean): Promise<ToolResult & { cache?: "HIT" | "MISS" }> {
     const capability = capabilityForRequest(request);
     const entry = this.registry[capability];
     if (!["READY", "READY_FIXTURE", "DEGRADED"].includes(entry.state)) return unavailableResult(capability);
     if (request.tool === "social.profile" && !shouldAllowSocialResearch(request.arguments.reason)) return unavailableResult(capability);
-    await this.assertQuestionScope(request, context);
+    if (requireQuestionScope) await this.assertQuestionScope(request as ParsedToolRequest, context as ExecuteContext);
     const pool = this.pools.get(request.tool);
     if (!pool) throw new Error("Provider semaphore is missing.");
     try {
@@ -216,6 +261,7 @@ export class ProviderExecutor {
         observedAt: new Date().toISOString(),
         costUsd: response.costUsd,
         costSource: response.costSource,
+        cache: response.reused ? "HIT" : "MISS",
       };
     } catch (error) {
       const responseStatus = typeof (error as { status?: unknown })?.status === "number" ? Number((error as { status: number }).status) : undefined;
@@ -236,6 +282,7 @@ export class ProviderExecutor {
   }
 
   private async assertQuestionScope(request: ParsedToolRequest, context: ExecuteContext): Promise<void> {
+    const { getSql } = await import("../db/client.ts");
     const [question] = await getSql()<Array<{ status: string }>>`
       SELECT status FROM research_questions
       WHERE id = ${request.arguments.questionId} AND investigation_id = ${context.investigationId} AND run_id = ${context.runId}
@@ -243,7 +290,7 @@ export class ProviderExecutor {
     if (!question || !["OPEN", "IN_PROGRESS"].includes(question.status)) throw new Error("Tool request must reference an active research question in this run.");
   }
 
-  private executeFixture(request: ParsedToolRequest, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+  private executeFixture(request: AnyParsedToolRequest, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
     return this.call(request, context, capability, "fixture", `fixture.${request.tool}`, request.arguments, async () => ({
       data: fixtureData(request),
       sourceUrl: `https://example.test/fixtures/${request.tool}`,
@@ -252,7 +299,7 @@ export class ProviderExecutor {
     }));
   }
 
-  private async executeLive(request: ParsedToolRequest, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+  private async executeLive(request: AnyParsedToolRequest, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
     switch (request.tool) {
       case "web.search": return this.webSearch(request, context, capability);
       case "web.fetch": return this.webFetch(request, context, capability);
@@ -285,7 +332,7 @@ export class ProviderExecutor {
     }
   }
 
-  private webSearch(request: Extract<ParsedToolRequest, { tool: "web.search" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+  private webSearch(request: RequestOf<"web.search">, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
     const body = {
       query: request.arguments.query,
       type: request.arguments.mode,
@@ -314,7 +361,7 @@ export class ProviderExecutor {
     });
   }
 
-  private webFetch(request: Extract<ParsedToolRequest, { tool: "web.fetch" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+  private webFetch(request: RequestOf<"web.fetch">, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
     const url = request.arguments.url;
     if (this.environment.EXA_API_KEY) {
       return this.call(request, context, capability, "exa", "exa.contents", { urls: [url], text: true, highlights: true }, async (signal, onAttempt) => {
@@ -329,7 +376,7 @@ export class ProviderExecutor {
     });
   }
 
-  private async professionalProfile(request: ProfileRequest, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+  private async professionalProfile(request: ProfileRequest, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
     const username = request.arguments.username.trim().toLocaleLowerCase("en-US");
     let linkd: ConcreteProviderResult | undefined;
     let linkdError: string | undefined;
@@ -372,7 +419,7 @@ export class ProviderExecutor {
     }
   }
 
-  private async professionalActivity(request: ActivityRequest, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+  private async professionalActivity(request: ActivityRequest, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
     const username = request.arguments.username.trim().toLocaleLowerCase("en-US");
     if (this.environment.LINKDAPI_API_KEY) {
       try {
@@ -388,7 +435,7 @@ export class ProviderExecutor {
     return this.brightData(request, context, capability, this.required("BRIGHTDATA_LINKEDIN_POSTS_DATASET_ID"), { url: `https://www.linkedin.com/in/${username}/recent-activity/all/` }, "brightdata.linkedin-posts", "brightdata-linkedin-posts");
   }
 
-  private async brightData(request: ParsedToolRequest, context: ExecuteContext, capability: Capability, datasetId: string, payload: Record<string, unknown>, providerRoute: string, provider: string): Promise<ConcreteProviderResult> {
+  private async brightData(request: AnyParsedToolRequest, context: ProviderExecutionContext, capability: Capability, datasetId: string, payload: Record<string, unknown>, providerRoute: string, provider: string): Promise<ConcreteProviderResult> {
     const knownCost = this.configuredCost("BRIGHTDATA_COST_USD_PER_RECORD");
     return this.brightDataPool.use(() => this.call(request, context, capability, provider, providerRoute, { datasetId, ...payload }, async (signal, onAttempt) => {
       const url = `https://api.brightdata.com/datasets/v3/scrape?dataset_id=${encodeURIComponent(datasetId)}&format=json`;
@@ -397,7 +444,7 @@ export class ProviderExecutor {
     }, knownCost));
   }
 
-  private async archives(request: Extract<ParsedToolRequest, { tool: "archives.search" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+  private async archives(request: RequestOf<"archives.search">, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
     const { url, fromYear, toYear } = request.arguments;
     const target = encodeURIComponent(url);
     const waybackUrl = `https://web.archive.org/cdx/search/cdx?url=${target}&output=json&filter=statuscode:200&filter=mimetype:text/html&collapse=digest&fl=timestamp,original,statuscode,mimetype,digest&limit=50${fromYear ? `&from=${fromYear}` : ""}${toYear ? `&to=${toYear}` : ""}`;
@@ -428,7 +475,7 @@ export class ProviderExecutor {
     return this.combine([indexList, search], { index: currentIndex, captures: search.data });
   }
 
-  private publicRecords(request: Extract<ParsedToolRequest, { tool: "public_records.search" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+  private publicRecords(request: RequestOf<"public_records.search">, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
     const query = encodeURIComponent(request.arguments.query);
     if (request.arguments.recordType === "PATENT") {
       const url = `https://api.uspto.gov/api/v1/patent/applications/search?q=${query}`;
@@ -442,7 +489,7 @@ export class ProviderExecutor {
     return this.publicApiCall(request, context, capability, "ietf-datatracker", "public-records.ietf", { query: request.arguments.query }, url);
   }
 
-  private scholarly(request: Extract<ParsedToolRequest, { tool: "scholarly.search" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+  private scholarly(request: RequestOf<"scholarly.search">, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
     const query = encodeURIComponent(request.arguments.query);
     if (this.environment.OPENALEX_API_KEY) {
       const privateUrl = `https://api.openalex.org/works?search=${query}&per-page=20&api_key=${encodeURIComponent(this.environment.OPENALEX_API_KEY)}`;
@@ -453,7 +500,7 @@ export class ProviderExecutor {
     return this.publicApiCall(request, context, capability, "crossref", "scholarly.crossref", { query: request.arguments.query }, url);
   }
 
-  private packages(request: Extract<ParsedToolRequest, { tool: "packages.inspect" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+  private packages(request: RequestOf<"packages.inspect">, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
     const name = encodeURIComponent(request.arguments.package);
     const [provider, url] = request.arguments.registry === "NPM" ? ["npm", `https://registry.npmjs.org/${name}`]
       : request.arguments.registry === "PYPI" ? ["pypi", `https://pypi.org/pypi/${name}/json`]
@@ -461,7 +508,7 @@ export class ProviderExecutor {
     return this.publicApiCall(request, context, capability, provider, `packages.${request.arguments.registry.toLowerCase()}`, { registry: request.arguments.registry, package: request.arguments.package }, url);
   }
 
-  private async securityRecords(request: Extract<ParsedToolRequest, { tool: "security_records.search" }>, context: ExecuteContext, capability: Capability): Promise<ConcreteProviderResult> {
+  private async securityRecords(request: RequestOf<"security_records.search">, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
     if (request.arguments.cve) {
       if (this.environment.GITHUB_TOKEN) {
         try {
@@ -478,7 +525,7 @@ export class ProviderExecutor {
     return this.call(request, context, capability, "osv", "security.osv", body, async (signal, onAttempt) => ({ data: await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "user-agent": this.publicUserAgent() }, body: JSON.stringify(body), signal }, onAttempt), sourceUrl: url, costUsd: 0, costSource: "FREE_PUBLIC" }));
   }
 
-  private publicApiCall(request: ParsedToolRequest, context: ExecuteContext, capability: Capability, provider: string, route: string, networkArguments: Record<string, unknown>, url: string, headers: Record<string, string> = {}): Promise<ConcreteProviderResult> {
+  private publicApiCall(request: AnyParsedToolRequest, context: ProviderExecutionContext, capability: Capability, provider: string, route: string, networkArguments: Record<string, unknown>, url: string, headers: Record<string, string> = {}): Promise<ConcreteProviderResult> {
     return this.call(request, context, capability, provider, route, networkArguments, async (signal, onAttempt) => ({
       data: await apiFetch(url, { headers: { "user-agent": this.publicUserAgent(), ...headers }, signal }, onAttempt),
       sourceUrl: url,
@@ -487,21 +534,35 @@ export class ProviderExecutor {
     }));
   }
 
-  private call(request: ParsedToolRequest, context: ExecuteContext, capability: Capability, provider: string, providerRoute: string, networkArguments: Record<string, unknown>, run: (signal: AbortSignal, onAttempt: (attempt: number) => void) => Promise<ProviderNetworkResult>, knownCost?: Pick<ProviderNetworkResult, "costUsd" | "costSource">): Promise<ConcreteProviderResult> {
-    return executeConcreteProviderCall({
+  private call(request: AnyParsedToolRequest, context: ProviderExecutionContext, capability: Capability, provider: string, providerRoute: string, networkArguments: Record<string, unknown>, run: (signal: AbortSignal, onAttempt: (attempt: number) => void) => Promise<ProviderNetworkResult>, knownCost?: Pick<ProviderNetworkResult, "costUsd" | "costSource">): Promise<ConcreteProviderResult> {
+    const arguments_ = request.arguments as { questionId?: string; claimIds?: string[]; publicRationale?: string };
+    return this.executeProviderCall({
       context,
-      questionId: request.arguments.questionId,
-      claimIds: request.arguments.claimIds,
+      ...(arguments_.questionId && arguments_.claimIds && arguments_.publicRationale ? {
+        requestMetadata: { questionId: arguments_.questionId, claimIds: arguments_.claimIds, publicRationale: arguments_.publicRationale },
+      } : {}),
       capability,
       semanticTool: request.tool,
       provider,
       providerRoute,
       networkArguments,
-      publicRationale: request.arguments.publicRationale,
       countCeiling: this.toolCeiling(request.tool),
       providerBudgetUsd: nonNegativeNumber(this.environment.PROVIDER_BUDGET_USD, 10),
       knownCost,
       run,
+    });
+  }
+
+  private async executeProviderCall(input: Parameters<ProviderCallBackend>[0]): Promise<ConcreteProviderResult> {
+    if (this.callBackend) return this.callBackend(input);
+    if (!input.context.investigationId || !input.requestMetadata) throw new Error("Legacy provider persistence requires investigation and question metadata.");
+    const { executeConcreteProviderCall } = await import("./provider-call.ts");
+    return executeConcreteProviderCall({
+      ...input,
+      context: { ...input.context, investigationId: input.context.investigationId },
+      questionId: input.requestMetadata.questionId,
+      claimIds: input.requestMetadata.claimIds,
+      publicRationale: input.requestMetadata.publicRationale,
     });
   }
 

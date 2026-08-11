@@ -38,6 +38,35 @@ const webSearchSchema = contextSchema.extend({
   resultLimit: z.number().int().min(1).max(10).default(5),
 }).transform((value) => ({ ...value, highlightQuery: value.highlightQuery ?? value.query }));
 
+const headlessSchemas = {
+  "web.search": z.object({
+    query: searchText,
+    mode: z.enum(["fast", "auto"]).default("fast"),
+    highlightQuery: searchText.optional(),
+    resultLimit: z.number().int().min(1).max(10).default(5),
+  }).strict().transform((value) => ({ ...value, highlightQuery: value.highlightQuery ?? value.query })),
+  "web.fetch": z.object({ url: httpUrl }).strict(),
+  "professional.profile": z.object({ username: z.string().trim().min(2).max(200), requiredMaterialField: professionalMaterialFieldSchema.default("IDENTITY") }).strict(),
+  "professional.activity": z.object({ username: z.string().trim().min(2).max(200) }).strict(),
+  "social.profile": z.object({
+    platform: z.enum(["X", "INSTAGRAM", "TIKTOK"]),
+    handle: z.string().trim().min(1).max(200),
+    reason: z.enum(["EXPLICIT_SOCIAL_CLAIM", "PUBLIC_IDENTITY_CROSS_LINK", "MATERIAL_ACTIVITY_QUESTION"]),
+  }).strict(),
+  "github.graphql": z.object({ query: z.string().min(1).max(20_000), variables: z.record(z.string(), z.unknown()).default({}) }).strict(),
+  "github.rest": z.object({ path: z.string().regex(/^\/(users|repos|search|commits|issues|pulls|orgs)\b/).max(1_000) }).strict(),
+  "github.clone": z.object({
+    repository: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,99})\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/),
+    ref: z.string().regex(/^(?![-/])(?!.*\.\.)(?!.*\/\.)(?!.*\.lock(?:\/|$))[A-Za-z0-9._/-]{1,200}$/).optional(),
+    authorHint: z.string().trim().min(1).max(200).optional(),
+  }).strict(),
+  "archives.search": z.object({ url: httpUrl, fromYear: z.number().int().min(1996).max(2100).optional(), toYear: z.number().int().min(1996).max(2100).optional() }).strict(),
+  "public_records.search": z.object({ recordType: z.enum(["PATENT", "SEC", "IETF"]), query: searchText }).strict(),
+  "scholarly.search": z.object({ query: searchText }).strict(),
+  "packages.inspect": z.object({ registry: z.enum(["NPM", "PYPI", "HUGGING_FACE"]), package: z.string().trim().min(1).max(300) }).strict(),
+  "security_records.search": z.object({ ecosystem: z.string().trim().max(100).optional(), package: z.string().trim().max(300).optional(), cve: z.string().regex(/^CVE-\d{4}-\d{4,}$/i).optional() }).strict().refine((value) => Boolean(value.package || value.cve), "Package or CVE is required."),
+} satisfies Record<ToolName, z.ZodType>;
+
 const schemas = {
   "web.search": webSearchSchema,
   "web.fetch": contextSchema.extend({ url: httpUrl }),
@@ -66,12 +95,24 @@ export type ParsedToolRequest = {
   [Name in ToolName]: { tool: Name; arguments: z.infer<(typeof schemas)[Name]> }
 }[ToolName];
 
+export type HeadlessParsedToolRequest = {
+  [Name in ToolName]: { tool: Name; arguments: z.infer<(typeof headlessSchemas)[Name]> }
+}[ToolName];
+
 export function parseToolRequest(input: unknown): ParsedToolRequest {
   const envelope = z.object({ tool: z.enum(toolNames), arguments: z.unknown() }).strict().parse(input);
   return {
     tool: envelope.tool,
     arguments: schemas[envelope.tool].parse(envelope.arguments),
   } as ParsedToolRequest;
+}
+
+export function parseHeadlessToolRequest(input: unknown): HeadlessParsedToolRequest {
+  const envelope = z.object({ tool: z.enum(toolNames), arguments: z.unknown() }).strict().parse(input);
+  return {
+    tool: envelope.tool,
+    arguments: headlessSchemas[envelope.tool].parse(envelope.arguments),
+  } as HeadlessParsedToolRequest;
 }
 
 export const toolCapabilities: Record<ToolName, Capability> = {
@@ -90,7 +131,7 @@ export const toolCapabilities: Record<ToolName, Capability> = {
   "security_records.search": "SECURITY_RECORDS",
 };
 
-export function capabilityForRequest(request: ParsedToolRequest): Capability {
+export function capabilityForRequest(request: ParsedToolRequest | HeadlessParsedToolRequest): Capability {
   if (request.tool === "public_records.search" && request.arguments.recordType === "PATENT") return "PATENTS";
   return toolCapabilities[request.tool];
 }

@@ -3,6 +3,7 @@ node_modules/
 coverage/
 dist/
 .debug/
+runs/
 runtime-manifest.json
 
 # Local investigation inputs and generated acceptance artifacts. Keep on disk,
