@@ -161,20 +161,15 @@ export class OpenCodeInvestigationController {
       const evidenceFacetKeys = new Map(frozenEvidence.map(({ id, facetKeys }) => [id, new Set(facetKeys ?? [])]));
       const claims = (adjudicationBundle.claims as Array<{ id: string }>);
       const claimBatches = partitionClaims(claims);
-      const [auditCountRows, authorityRows] = await Promise.all([
+      const [auditCountRows] = await Promise.all([
         getSql()<Array<{ totalClaims: number; totalEvidenceRows: number; researchQuestionCount: number }>>`
           SELECT
             (SELECT count(*)::integer FROM claims WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}) AS "totalClaims",
             (SELECT count(*)::integer FROM evidence WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}) AS "totalEvidenceRows",
             (SELECT count(*)::integer FROM research_questions WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}) AS "researchQuestionCount"
         `,
-        getSql()<Array<{ sourceAuthority: string | null; sourceTier: string | null }>>`
-          SELECT COALESCE(artifact.source_authority, evidence.source_tier, 'CONTEXT') AS "sourceAuthority", evidence.source_tier AS "sourceTier"
-          FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id
-          WHERE evidence.investigation_id = ${input.investigationId} AND evidence.run_id = ${input.runId}
-          ORDER BY evidence.created_at, evidence.id
-        `,
       ]);
+      const authorityRows = ((rawFrozen.allEvidence ?? rawFrozen.evidence) as Array<{ sourceTier?: string; sourceAuthority?: string }>).map((edge) => ({ sourceAuthority: edge.sourceAuthority ?? edge.sourceTier ?? "CONTEXT" }));
       const countRow = auditCountRows[0];
       const extractionLimitations = Array.isArray(rawFrozen.extractionLimitations) ? rawFrozen.extractionLimitations : [];
       const capabilityLimitations = [...new Set(extractionLimitations.flatMap((value) => value && typeof value === "object" && typeof (value as { publicRationale?: unknown }).publicRationale === "string" ? [String((value as { publicRationale: string }).publicRationale)] : []))];
@@ -266,21 +261,24 @@ export class OpenCodeInvestigationController {
         title: "Fresh investigation summary",
         agent: "fresh-adjudicator",
         phase: "ADJUDICATION",
-        prompt: `Summarize only the validated findings, accepted evidence, entity resolution, observations and stated capability limitations. Backend audit statistics below are authoritative; do not infer or restate counts that are not present. Treat CONTEXT as conservative unknown authority, not self-representation. Return the focused non-ranking summary object.\n${JSON.stringify(buildSummaryBundle(adjudicationBundle, findings, auditStats))}`,
+        prompt: `Summarize only the validated findings, accepted evidence, entity resolution, observations and stated capability limitations. Backend audit statistics below are authoritative; do not infer or restate counts that are not present. Treat CONTEXT as conservative unknown authority, not self-representation. Populate professionalIdentityClaimIds and professionalTimelineClaimIds from the claim-scoped evidence map. Populate strongestEvidenceByClaim with only evidence IDs and facet keys belonging to its declared claim; never reuse evidence across summary sections unless its claim mapping authorizes it. CONTEXT is never citation-eligible. Return the focused non-ranking summary object.\n${JSON.stringify(buildSummaryBundle(adjudicationBundle, findings, auditStats))}`,
         schema: summaryOutputSchema,
         jsonExample: {
           summary: {
-            professionalIdentity: { status: "AMBIGUOUS", summary: "Example JSON shape only.", evidenceIds: [] },
-            professionalTimelineSummary: "Example JSON shape only.",
-            professionalTimelineEvidenceIds: [],
-            strongestEvidenceIds: [],
+          professionalIdentity: { status: "AMBIGUOUS", summary: "Example JSON shape only.", evidenceIds: [] },
+          professionalTimelineSummary: "Example JSON shape only.",
+          professionalTimelineEvidenceIds: [],
+          professionalIdentityClaimIds: [],
+          professionalTimelineClaimIds: [],
+          strongestEvidenceIds: [],
+          strongestEvidenceByClaim: [],
             materialInconsistencies: [],
             unresolvedMaterialClaimIds: [],
             investigationLimitations: ["Example JSON shape only."],
           },
         },
       });
-      let summary = validateInvestigationSummary(summaryResult.value.summary, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds, auditStats.sourceAuthorityCounts);
+      let summary = validateInvestigationSummary(summaryResult.value.summary, acceptedEvidenceIds, knownClaimIds, evidenceClaimIds, auditStats.sourceAuthorityCounts, evidenceRelations, evidenceFacetKeys, claimFacets);
       if ((auditStats.sourceAuthorityCounts.CONTEXT ?? 0) > 0 && !summary.investigationLimitations.some((limitation) => limitation.includes("conservatively classified as CONTEXT"))) {
         summary = { ...summary, investigationLimitations: [...summary.investigationLimitations.slice(0, 99), "Some captured sources remain conservatively classified as CONTEXT because the backend does not deterministically recognize their authority."] };
       }

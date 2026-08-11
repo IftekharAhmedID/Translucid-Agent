@@ -14,6 +14,7 @@ type CompactionPayload = {
   claims?: unknown[];
   evidenceIds?: unknown[];
   artifactIds?: unknown[];
+  facetCoverage?: unknown[];
   progressFingerprint?: string | null;
   deadlineAt: string | null;
   budgetCounters: Record<string, number>;
@@ -50,8 +51,8 @@ export async function buildCompactionContext(investigationId: string, runId: str
     sql`SELECT id, from_entity_id AS "fromEntityId", to_entity_id AS "toEntityId", relationship, evidence_ids AS "evidenceIds" FROM entity_links WHERE run_id = ${runId} ORDER BY created_at LIMIT 40`,
     sql`SELECT id, payload FROM agent_events WHERE run_id = ${runId} AND event_type = 'IDENTITY_LINK_REJECTED' ORDER BY id DESC LIMIT 20`,
     sql`SELECT id, claim_ids AS "claimIds", status, selected_route AS "selectedRoute", left(COALESCE(resolution_summary, ''), 500) AS "resolutionSummary" FROM research_questions WHERE run_id = ${runId} ORDER BY created_at LIMIT 12`,
-    sql`SELECT provider_route AS "providerRoute", request_fingerprint AS "requestFingerprint", result_status AS "resultStatus", artifact_ids AS "artifactIds" FROM provider_calls WHERE run_id = ${runId} AND provider_route IS NOT NULL ORDER BY created_at DESC LIMIT 120`,
-    sql`SELECT evidence.id, evidence.artifact_id AS "artifactId", evidence.relation, evidence.claim_ids AS "claimIds", COALESCE(artifact.source_authority, 'CONTEXT') AS authority FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id WHERE evidence.run_id = ${runId} ORDER BY CASE COALESCE(artifact.source_authority, 'CONTEXT') WHEN 'DIRECT_WORK' THEN 1 WHEN 'FIRST_PARTY_INSTITUTIONAL' THEN 2 WHEN 'INDEPENDENT_PROFESSIONAL' THEN 3 WHEN 'SELF_REPRESENTATION' THEN 4 ELSE 5 END, evidence.created_at LIMIT 80`,
+    sql`SELECT provider_route AS "providerRoute", request_fingerprint AS "requestFingerprint", result_status AS "resultStatus", artifact_ids AS "artifactIds", request_metadata AS "requestMetadata" FROM provider_calls WHERE run_id = ${runId} AND provider_route IS NOT NULL ORDER BY created_at DESC LIMIT 120`,
+    sql`SELECT evidence.id, evidence.artifact_id AS "artifactId", evidence.relation, evidence.claim_ids AS "claimIds", evidence.facet_keys AS "facetKeys", COALESCE(artifact.source_authority, 'CONTEXT') AS authority FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id WHERE evidence.run_id = ${runId} ORDER BY CASE COALESCE(artifact.source_authority, 'CONTEXT') WHEN 'DIRECT_WORK' THEN 1 WHEN 'FIRST_PARTY_INSTITUTIONAL' THEN 2 WHEN 'INDEPENDENT_PROFESSIONAL' THEN 3 WHEN 'SELF_REPRESENTATION' THEN 4 ELSE 5 END, evidence.created_at LIMIT 80`,
     sql`SELECT id, normalized_claim AS "normalizedClaim", facets, category, materiality, valid_from AS "validFrom", valid_to AS "validTo" FROM claims WHERE run_id = ${runId} ORDER BY created_at LIMIT 60`,
     sql`SELECT id, kind, source_url AS "sourceUrl", source_authority AS "sourceAuthority", independence_group AS "independenceGroup" FROM artifacts WHERE run_id = ${runId} ORDER BY created_at LIMIT 120`,
     sql<Array<{ progressFingerprint: string | null }>>`SELECT runtime_handle->'researchProgress'->>'fingerprint' AS "progressFingerprint" FROM runs WHERE id = ${runId} AND investigation_id = ${investigationId}`,
@@ -75,5 +76,5 @@ export async function buildCompactionContext(investigationId: string, runId: str
     deadlineAt: run.deadlineAt?.toISOString() ?? null,
     budgetCounters: run.budgetCounters,
   };
-  return ["Durable state survives compaction; continue from these IDs and do not reconstruct state from memory.", serializeCompactionPayload(payload)].join("\n");
+  return ["Durable state survives compaction; continue from these IDs and do not reconstruct state from memory. After compaction, call research.context, then artifact.lookup, then artifact.excerpts; capture facet-keyed evidence or mark an inspected artifact reviewed before resolving its question. Never issue a second network request solely to recover an artifact ID; an identical semantic provider call is allowed only when the gateway returns CACHE_HIT.", serializeCompactionPayload(payload)].join("\n");
 }

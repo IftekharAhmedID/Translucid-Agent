@@ -167,6 +167,8 @@ async function recordCacheReuse(input: {
 
 export async function executeConcreteProviderCall(input: {
   context: ExecuteContext;
+  questionId: string;
+  claimIds: string[];
   capability: Capability;
   semanticTool: ToolName;
   provider: string;
@@ -184,6 +186,8 @@ export async function executeConcreteProviderCall(input: {
   const routeDeadlineAt = Date.now() + providerDeadlineMs(input.providerRoute, caseDeadlineAt);
   const staleAfterMs = providerTimeoutMs(input.providerRoute) + 5_000;
   const metadata = redactSecrets({
+    questionId: input.questionId,
+    claimIds: input.claimIds,
     semanticTool: input.semanticTool,
     providerRoute: input.providerRoute,
     arguments: input.networkArguments,

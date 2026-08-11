@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import postgres from "postgres";
@@ -15,6 +16,7 @@ import {
   completeResearchTask,
   getArtifactExcerpts,
   getResearchContext,
+  lookupArtifacts,
   linkEntities,
   linkEvidence,
   listTimeline,
@@ -24,6 +26,7 @@ import {
   resolveResearchQuestion,
   selectResearchRoute,
   updateResearchQuestion,
+  updateClaimFacets,
   upsertEntity,
 } from "./state.ts";
 
@@ -309,18 +312,22 @@ test("frontier reconciliation makes every active question terminal before critic
   assert.equal(event?.eventType, "RESEARCH_FRONTIER_RECONCILED");
 });
 
-test("one targeted second research wave is allowed while duplicate roles and a third wave are rejected", async () => {
+test("one targeted second research wave is allowed while duplicate assignments and a third wave are rejected", async () => {
   const ids = await createInvestigation({ submission: "Synthetic adaptive research.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
   const claim = await createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Ada worked at Acme.", materiality: "HIGH" });
   const question = await openResearchQuestion({ ...ids, claimIds: [claim.id], question: "What was Ada's Acme title?", priority: "HIGH", possibleRoutes: ["web.search"], createdByAgent: "lead-investigator" });
-  const initial = await beginResearchWave({ ...ids, kind: "INITIAL", questionIds: [question.id], publicRationale: "Starting one broad route for the active material title question.", agent: "lead-investigator" });
+  const secondQuestion = await openResearchQuestion({ ...ids, claimIds: [claim.id], question: "What was Ada's Acme tenure?", priority: "HIGH", possibleRoutes: ["web.search"], createdByAgent: "lead-investigator" });
+  const initial = await beginResearchWave({ ...ids, kind: "INITIAL", questionIds: [question.id, secondQuestion.id], publicRationale: "Starting one broad route for the active material title and tenure questions.", agent: "lead-investigator" });
   assert.equal(initial.waveNumber, 1);
-  await authorizeResearchTask({ ...ids, role: "professional-investigator", agent: "lead-investigator" });
-  await assert.rejects(() => authorizeResearchTask({ ...ids, role: "professional-investigator", agent: "lead-investigator" }), /already been delegated/i);
-  await completeResearchTask({ ...ids, role: "professional-investigator", agent: "lead-investigator" });
+  await authorizeResearchTask({ ...ids, assignmentId: "00000000-0000-4000-8000-000000000001", role: "professional-investigator", questionIds: [question.id], agent: "lead-investigator" });
+  await assert.rejects(() => authorizeResearchTask({ ...ids, assignmentId: "00000000-0000-4000-8000-000000000002", role: "professional-investigator", questionIds: [question.id], agent: "lead-investigator" }), /already assigned/i);
+  await authorizeResearchTask({ ...ids, assignmentId: "00000000-0000-4000-8000-000000000002", role: "professional-investigator", questionIds: [secondQuestion.id], agent: "lead-investigator" });
+  await assert.rejects(() => authorizeResearchTask({ ...ids, assignmentId: "00000000-0000-4000-8000-000000000003", role: "professional-investigator", questionIds: [secondQuestion.id], agent: "lead-investigator" }), /maximum two/i);
+  await completeResearchTask({ ...ids, assignmentId: "00000000-0000-4000-8000-000000000001", role: "professional-investigator", agent: "lead-investigator" });
+  await completeResearchTask({ ...ids, assignmentId: "00000000-0000-4000-8000-000000000002", role: "professional-investigator", agent: "lead-investigator" });
   const targeted = await beginResearchWave({ ...ids, kind: "TARGETED", questionIds: [question.id], escalationReason: "CHRONOLOGY_CONFLICT", publicRationale: "A material chronology conflict requires one targeted archive pass.", agent: "lead-investigator" });
   assert.equal(targeted.waveNumber, 2);
-  await authorizeResearchTask({ ...ids, role: "web-records-investigator", agent: "lead-investigator" });
+  await authorizeResearchTask({ ...ids, assignmentId: "00000000-0000-4000-8000-000000000004", role: "web-records-investigator", questionIds: [question.id], agent: "lead-investigator" });
   await assert.rejects(() => beginResearchWave({ ...ids, kind: "TARGETED", questionIds: [question.id], escalationReason: "MATERIAL_UNCERTAINTY", publicRationale: "Attempting an impermissible third research wave.", agent: "lead-investigator" }), /third research wave/i);
 });
 
@@ -381,4 +388,142 @@ test("evidence edges are one-claim for findings and artifacts are searchable loc
   const contextMemory = (contextResult.evidence as Array<{ id: string; artifactId: string; independenceGroup: string }>).find(({ id }) => id === context.id);
   assert.equal(contextMemory?.artifactId, artifact.id);
   assert.match(contextMemory?.independenceGroup ?? "", /domain:example\.test|LEGACY_ARTIFACT/i);
+});
+
+test("facet declarations can be replaced only before the initial research wave", async () => {
+  const ids = await createInvestigation({ submission: "Synthetic facet lifecycle.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
+  const claim = await createClaim({
+    ...ids,
+    category: "EMPLOYMENT",
+    normalizedClaim: "Synthetic Ada worked at Acme Labs from 2020 to 2023.",
+    materiality: "HIGH",
+    facets: [{ key: "employer", label: "Acme Labs", materiality: "HIGH" }],
+  });
+  const replacement = [
+    { key: "employer", label: "Employer: Acme Labs", materiality: "HIGH" as const },
+    { key: "tenure", label: "Employment interval: 2020 to 2023", materiality: "HIGH" as const },
+  ];
+  await assert.rejects(
+    () => updateClaimFacets({ ...ids, claimId: claim.id, facets: replacement, agent: "professional-investigator" }),
+    /only the lead/i,
+  );
+  const updated = await updateClaimFacets({ ...ids, claimId: claim.id, facets: replacement, agent: "lead-investigator", sessionId: "facet-session" });
+  assert.deepEqual(updated.facets, replacement);
+  const [event] = await sql<Array<{ eventType: string; claimId: string }>>`
+    SELECT event_type AS "eventType", payload->>'claimId' AS "claimId"
+    FROM agent_events WHERE run_id = ${ids.runId} AND event_type = 'CLAIM_FACETS_UPDATED'
+  `;
+  assert.deepEqual(event, { eventType: "CLAIM_FACETS_UPDATED", claimId: claim.id });
+
+  const question = await openResearchQuestion({
+    ...ids,
+    claimIds: [claim.id],
+    question: "What was Synthetic Ada's Acme Labs employment interval?",
+    priority: "HIGH",
+    possibleRoutes: ["web.search"],
+    createdByAgent: "lead-investigator",
+  });
+  await beginResearchWave({ ...ids, kind: "INITIAL", questionIds: [question.id], publicRationale: "The declared employment facets are ready for research.", agent: "lead-investigator" });
+  await assert.rejects(
+    () => updateClaimFacets({ ...ids, claimId: claim.id, facets: replacement, agent: "lead-investigator" }),
+    /cannot be updated after the initial research wave/i,
+  );
+});
+
+test("new evidence persists declared facet keys and rejects missing or unknown keys", async () => {
+  const ids = await createInvestigation({ submission: "Synthetic evidence facet storage.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
+  const claim = await createClaim({
+    ...ids,
+    category: "EMPLOYMENT",
+    normalizedClaim: "Synthetic Ada worked at Acme Labs.",
+    materiality: "HIGH",
+    facets: [{ key: "employer", label: "Acme Labs", materiality: "HIGH" }],
+  });
+  const artifact = await captureArtifact({
+    ...ids,
+    kind: "CAPTURED_PAGE",
+    provider: "fixture-company",
+    sourceUrl: "https://acme.example.test/team",
+    mimeType: "text/plain",
+    content: "Synthetic Ada worked at Acme Labs.",
+  });
+  const evidence = await captureEvidence({
+    ...ids,
+    artifactId: artifact.id,
+    exactQuote: "Synthetic Ada worked at Acme Labs.",
+    relation: "SUPPORTS",
+    claimIds: [claim.id],
+    facetKeys: ["employer"],
+    entityIds: [],
+  });
+  const [stored] = await sql<Array<{ facetKeys: string[] }>>`SELECT facet_keys AS "facetKeys" FROM evidence WHERE id = ${evidence.id}`;
+  assert.deepEqual(stored?.facetKeys, ["employer"]);
+  await assert.rejects(
+    () => captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Ada worked at Acme Labs.", relation: "SUPPORTS", claimIds: [claim.id], facetKeys: [], entityIds: [] }),
+    /at least one declared claim facet/i,
+  );
+  await assert.rejects(
+    () => captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Ada worked at Acme Labs.", relation: "SUPPORTS", claimIds: [claim.id], facetKeys: ["title"], entityIds: [] }),
+    /not declared/i,
+  );
+  const context = await captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Ada worked at Acme Labs.", relation: "CONTEXT", claimIds: [claim.id], facetKeys: [], entityIds: [] });
+  const [contextRow] = await sql<Array<{ facetKeys: string[]; claimCount: number }>>`SELECT facet_keys AS "facetKeys", cardinality(claim_ids)::integer AS "claimCount" FROM evidence WHERE id = ${context.id}`;
+  assert.deepEqual(contextRow, { facetKeys: [], claimCount: 1 });
+});
+
+test("artifact lookup recovers immutable provider metadata and exhaustion requires review", async () => {
+  const ids = await createInvestigation({ submission: "Synthetic artifact recovery.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
+  const claim = await createClaim({ ...ids, category: "IDENTITY", normalizedClaim: "Synthetic Ada has a public profile.", materiality: "HIGH" });
+  const question = await openResearchQuestion({ ...ids, claimIds: [claim.id], question: "Does a public profile exist?", priority: "HIGH", possibleRoutes: ["web.search"], createdByAgent: "lead-investigator" });
+  const artifact = await captureArtifact({ ...ids, kind: "SOURCE_CONTENT", provider: "exa", sourceUrl: "https://example.test/profile", mimeType: "text/plain", content: "Synthetic Ada public profile." });
+  const providerCallId = randomUUID();
+  await sql`
+    INSERT INTO provider_calls (
+      id, investigation_id, run_id, capability, provider, semantic_tool, provider_route,
+      request_fingerprint, request_metadata, latency_ms, result_status, cost_source,
+      attempt_count, cost_usd, artifact_ids
+    ) VALUES (
+      ${providerCallId}, ${ids.investigationId}, ${ids.runId}, 'WEB_SEARCH', 'exa', 'web.search', 'exa.search',
+      ${"recovery-fingerprint"}, ${sql.json({ questionId: question.id, claimIds: [claim.id] })}, 10, 'OK', 'REPORTED',
+      1, 0, ${[artifact.id]}::uuid[]
+    )
+  `;
+  const lookedUp = await lookupArtifacts(ids.investigationId, ids.runId, { questionIds: [question.id] });
+  assert.deepEqual([...lookedUp], [{ artifactId: artifact.id, kind: "SOURCE_CONTENT", sourceUrl: "https://example.test/profile", provider: "exa", providerRoute: "exa.search", providerCallId, evidenceIds: [] }]);
+  assert.equal("content" in (lookedUp[0] ?? {}), false);
+  await assert.rejects(
+    () => resolveResearchQuestion({ ...ids, questionId: question.id, selectedRoute: "web.search", status: "EXHAUSTED", resolutionSummary: "The available route produced no usable evidence." }),
+    new RegExp(`UNREVIEWED_ARTIFACTS: ${artifact.id}`),
+  );
+  const resolved = await resolveResearchQuestion({ ...ids, questionId: question.id, selectedRoute: "web.search", status: "EXHAUSTED", resolutionSummary: "The captured profile was inspected locally and did not resolve the claim.", reviewedArtifactIds: [artifact.id] });
+  assert.equal(resolved.status, "EXHAUSTED");
+  const [reviewEvent] = await sql<Array<{ eventType: string; reviewedArtifactIds: string[] }>>`
+    SELECT event_type AS "eventType", ARRAY(SELECT jsonb_array_elements_text(payload->'reviewedArtifactIds')) AS "reviewedArtifactIds"
+    FROM agent_events WHERE run_id = ${ids.runId} AND event_type = 'RESEARCH_ARTIFACTS_REVIEWED'
+  `;
+  assert.equal(reviewEvent?.eventType, "RESEARCH_ARTIFACTS_REVIEWED");
+  assert.deepEqual(reviewEvent?.reviewedArtifactIds, [artifact.id]);
+});
+
+test("research context reports facet gaps without treating unknown context as corroboration", async () => {
+  const ids = await createInvestigation({ submission: "Synthetic facet-gap state.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
+  const claims = await Promise.all([
+    createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Ada worked at Acme Labs.", materiality: "HIGH", facets: [{ key: "employer", label: "Acme Labs", materiality: "HIGH" }] }),
+    createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Ada held a Principal Engineer title.", materiality: "HIGH", facets: [{ key: "title", label: "Principal Engineer", materiality: "HIGH" }] }),
+    createClaim({ ...ids, category: "PROJECT", normalizedClaim: "Synthetic Ada published the Atlas package.", materiality: "HIGH", facets: [{ key: "package", label: "Atlas package", materiality: "HIGH" }] }),
+    createClaim({ ...ids, category: "PROJECT", normalizedClaim: "Synthetic Ada led Northstar.", materiality: "HIGH", facets: [{ key: "project", label: "Northstar", materiality: "HIGH" }] }),
+  ]);
+  const selfArtifact = await captureArtifact({ ...ids, kind: "PROVIDER_RESPONSE", provider: "linkdapi", sourceUrl: "https://www.linkedin.com/in/synthetic-ada", mimeType: "text/plain", content: "Synthetic Ada worked at Acme Labs." , provenance: { providerRoute: "linkdapi.profile" } });
+  const institutionalArtifact = await captureArtifact({ ...ids, kind: "PROVIDER_RESPONSE", provider: "packages", sourceUrl: "https://pypi.org/project/atlas", mimeType: "text/plain", content: "Synthetic Ada published the Atlas package.", provenance: { providerRoute: "packages.inspect" } });
+  const contradictionArtifact = await captureArtifact({ ...ids, kind: "SOURCE_CONTENT", provider: "fixture-project", sourceUrl: "https://project.example.test/northstar", mimeType: "text/plain", content: "Synthetic Ada did not lead Northstar." });
+  await captureEvidence({ ...ids, artifactId: selfArtifact.id, exactQuote: "Synthetic Ada worked at Acme Labs.", relation: "SUPPORTS", claimIds: [claims[0]!.id], facetKeys: ["employer"], entityIds: [] });
+  await captureEvidence({ ...ids, artifactId: institutionalArtifact.id, exactQuote: "Synthetic Ada published the Atlas package.", relation: "SUPPORTS", claimIds: [claims[2]!.id], facetKeys: ["package"], entityIds: [] });
+  await captureEvidence({ ...ids, artifactId: contradictionArtifact.id, exactQuote: "Synthetic Ada did not lead Northstar.", relation: "CONTRADICTS", claimIds: [claims[3]!.id], facetKeys: ["project"], entityIds: [] });
+  const question = await openResearchQuestion({ ...ids, claimIds: claims.map(({ id }) => id), question: "Which facets have durable evidence?", priority: "HIGH", possibleRoutes: ["web.search"], createdByAgent: "lead-investigator" });
+  const context = await getResearchContext(ids.investigationId, ids.runId, [question.id]);
+  const coverage = context.facetCoverage as Array<{ claimId: string; status: string; supportEvidenceIds: string[]; contradictingEvidenceIds: string[] }>;
+  assert.equal(coverage.find((item) => item.claimId === claims[0]!.id)?.status, "SELF_ONLY");
+  assert.equal(coverage.find((item) => item.claimId === claims[1]!.id)?.status, "NO_EVIDENCE");
+  assert.equal(coverage.find((item) => item.claimId === claims[2]!.id)?.status, "SUPPORTED");
+  assert.equal(coverage.find((item) => item.claimId === claims[3]!.id)?.status, "CONFLICT");
 });

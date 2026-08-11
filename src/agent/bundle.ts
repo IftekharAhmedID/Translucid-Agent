@@ -1,4 +1,5 @@
 import { getSql } from "../db/client.ts";
+import { effectiveAttestationGroup, effectiveSourceAuthority } from "../core/source-trust.ts";
 
 type Row = Record<string, unknown>;
 
@@ -97,18 +98,30 @@ export function buildAdjudicationBundle(
 
 export async function buildFrozenEvidenceBundle(investigationId: string, runId: string): Promise<Record<string, unknown>> {
   const sql = getSql();
-  const [claims, entities, identifiers, links, artifacts, observations, evidence, questions, extractionLimitations] = await Promise.all([
+  const [claims, entities, identifiers, links, artifacts, observations, evidence, questions, extractionLimitations, runs] = await Promise.all([
     sql`SELECT id, category, normalized_claim AS "normalizedClaim", materiality, facets, source_span AS "sourceSpan", valid_from AS "validFrom", valid_to AS "validTo", status FROM claims WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at`,
     sql`SELECT id, type, canonical_name AS "canonicalName", metadata FROM entities WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at`,
     sql`SELECT id, entity_id AS "entityId", type, value, normalized_value AS "normalizedValue", confidence, evidence_id AS "evidenceId" FROM entity_identifiers WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at`,
     sql`SELECT id, from_entity_id AS "fromEntityId", to_entity_id AS "toEntityId", relationship, confidence, evidence_ids AS "evidenceIds" FROM entity_links WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at`,
-    sql`SELECT id, kind, provider, source_url AS "sourceUrl", mime_type AS "mimeType", retrieved_at AS "retrievedAt", sha256, byte_length AS "byteLength", COALESCE(source_authority, 'CONTEXT') AS "sourceAuthority", COALESCE(independence_group, 'LEGACY_ARTIFACT:' || id::text) AS "independenceGroup", canonical_source_url AS "canonicalSourceUrl" FROM artifacts WHERE investigation_id = ${investigationId} ORDER BY created_at`,
+    sql`SELECT id, kind, provider, source_url AS "sourceUrl", mime_type AS "mimeType", retrieved_at AS "retrievedAt", sha256, byte_length AS "byteLength", COALESCE(source_authority, 'CONTEXT') AS "sourceAuthority", COALESCE(independence_group, 'LEGACY_ARTIFACT:' || id::text) AS "independenceGroup", canonical_source_url AS "canonicalSourceUrl" FROM artifacts WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at`,
     sql`SELECT id, artifact_id AS "artifactId", entity_id AS "entityId", field, value_json AS value, observed_at AS "observedAt", source_event_at AS "sourceEventAt", valid_from AS "validFrom", valid_to AS "validTo" FROM observations WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY valid_from NULLS LAST, observed_at`,
     sql`SELECT evidence.id, evidence.artifact_id AS "artifactId", evidence.exact_quote AS "exactQuote", evidence.source_location AS "sourceLocation", COALESCE(artifact.source_authority, evidence.source_tier, 'CONTEXT') AS "sourceTier", COALESCE(artifact.independence_group, 'LEGACY_ARTIFACT:' || artifact.id::text) AS "independenceGroup", evidence.relation, evidence.claim_ids AS "claimIds", evidence.facet_keys AS "facetKeys", evidence.entity_ids AS "entityIds" FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id WHERE evidence.investigation_id = ${investigationId} AND evidence.run_id = ${runId} ORDER BY evidence.created_at`,
     sql`SELECT id, claim_ids AS "claimIds", question, priority, status, selected_route AS "selectedRoute", resolution_summary AS "resolutionSummary" FROM research_questions WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at`,
     sql`SELECT event_type AS "eventType", public_rationale AS "publicRationale", payload FROM agent_events WHERE investigation_id = ${investigationId} AND run_id = ${runId} AND event_type = 'CLAIM_EXTRACTION_TRUNCATED' ORDER BY id`,
+    sql`SELECT root_entity_id AS "rootEntityId" FROM runs WHERE investigation_id = ${investigationId} AND id = ${runId}`,
   ]);
-  const selectedEvidence = selectEvidenceForCritic([...evidence], [...claims]);
+  const rootCandidate = (runs[0] as Row | undefined)?.rootEntityId;
+  const effectiveArtifacts: Array<Row & { id: string; sourceAuthority: string; attestationGroup: string }> = ([...artifacts] as Row[]).map((artifact) => {
+    const sourceAuthority = effectiveSourceAuthority({ artifact, entities: [...entities] as Row[] as never, entityLinks: [...links] as Row[] as never, rootCandidate: typeof rootCandidate === "string" ? rootCandidate : null });
+    const attestationGroup = effectiveAttestationGroup({ artifact: { ...artifact, sourceAuthority }, entities: [...entities] as Row[] as never, entityLinks: [...links] as Row[] as never, rootCandidate: typeof rootCandidate === "string" ? rootCandidate : null });
+    return { ...artifact, sourceAuthority, attestationGroup, id: String(artifact.id) };
+  });
+  const artifactById = new Map(effectiveArtifacts.map((artifact) => [String(artifact.id), artifact]));
+  const effectiveEvidence = [...evidence].map((edge) => {
+    const artifact = artifactById.get(String(edge.artifactId));
+    return artifact ? { ...edge, sourceTier: artifact.sourceAuthority, attestationGroup: artifact.attestationGroup } : edge;
+  });
+  const selectedEvidence = selectEvidenceForCritic(effectiveEvidence, [...claims]);
   const evidenceIds = new Set(selectedEvidence.map(({ id }) => String(id)));
   const artifactIds = new Set(selectedEvidence.map(({ artifactId }) => String(artifactId)));
   return {
@@ -118,10 +131,10 @@ export async function buildFrozenEvidenceBundle(investigationId: string, runId: 
     entities: [...entities],
     identifiers: [...identifiers].filter(({ evidenceId }) => evidenceIds.has(String(evidenceId))),
     links: [...links].filter(({ evidenceIds: ids }) => Array.isArray(ids) && ids.some((id) => evidenceIds.has(String(id)))),
-    artifacts: [...artifacts].filter(({ id }) => artifactIds.has(String(id))),
+    artifacts: effectiveArtifacts.filter(({ id }) => artifactIds.has(String(id))),
     observations: [...observations].filter(({ artifactId }) => artifactIds.has(String(artifactId))),
     evidence: selectedEvidence,
-    allEvidence: [...evidence],
+    allEvidence: effectiveEvidence,
     researchQuestions: [...questions],
     extractionLimitations: [...extractionLimitations],
     evidenceSelection: { originalCount: evidence.length, selectedCount: selectedEvidence.length, supportsPerFacet: 2, contradictionsPerFacet: 2, contextPerClaim: 1 },

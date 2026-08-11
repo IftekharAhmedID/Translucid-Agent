@@ -8,6 +8,7 @@ const gatewayUrl = process.env.CASE_GATEWAY_URL;
 const token = process.env.CASE_TOKEN;
 const investigationId = process.env.INVESTIGATION_ID;
 const runId = process.env.RUN_ID;
+const taskAssignments = new Map<string, string>();
 
 if (!gatewayUrl || !token || !investigationId || !runId) {
   throw new Error("Case-scoped gateway environment is incomplete.");
@@ -82,12 +83,13 @@ const plugin: Plugin = async ({ client }) => ({
     "research.open": gatewayTool("research.open", "Open a durable research question before using an expensive tool. possibleRoutes must be exact semantic tool IDs.", { claimIds: z.array(z.string().uuid()).max(100), question: z.string().min(5).max(2000), priority: z.enum(["HIGH", "MEDIUM", "LOW"]), possibleRoutes: z.array(researchRoute).min(1).max(20) }),
     "research.select_route": gatewayTool("research.select_route", "Select a route using exactly one semantic tool ID already stored in possibleRoutes.", { questionId: z.string().uuid(), route: researchRoute, publicRationale: z.string().min(10).max(500) }),
     "research.update": gatewayTool("research.update", "Update an open durable question. possibleRoutes must be exact semantic tool IDs.", { questionId: z.string().uuid(), priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(), possibleRoutes: z.array(researchRoute).min(1).max(20).optional(), status: z.enum(["OPEN", "IN_PROGRESS"]).optional(), publicRationale: z.string().min(10).max(500) }),
-    "research.resolve": gatewayTool("research.resolve", "Resolve, exhaust, or skip a durable research question.", { questionId: z.string().uuid(), status: z.enum(["RESOLVED", "EXHAUSTED", "SKIPPED"]), resolutionSummary: z.string().min(5).max(2000) }),
+    "research.resolve": gatewayTool("research.resolve", "Resolve, exhaust, or skip a durable research question. EXHAUSTED requires evidence capture or explicit review of every successful citable artifact.", { questionId: z.string().uuid(), status: z.enum(["RESOLVED", "EXHAUSTED", "SKIPPED"]), resolutionSummary: z.string().min(5).max(2000), reviewedArtifactIds: z.array(z.string().uuid()).max(100).optional() }),
     "research.list": gatewayTool("research.list", "Read the current durable research frontier.", {}),
     "research.context": gatewayTool("research.context", "Read complete deterministic case memory for assigned questions. This is read-only, bounded, and excludes provider secrets and raw payloads.", { questionIds: z.array(z.string().uuid()).min(1).max(12), maxBytes: z.number().int().min(128 * 1024).max(512 * 1024).optional() }),
     "artifact.excerpts": gatewayTool("artifact.excerpts", "Search an immutable stored provider artifact locally for exact JSON scalar paths or bounded text windows, without a refetch or provider call.", { artifactId: z.string().uuid(), queries: z.array(z.string().min(1).max(500)).min(1).max(12), maxExcerpts: z.number().int().min(1).max(12).optional(), maxCharacters: z.number().int().min(1).max(300000).optional() }),
+    "artifact.lookup": gatewayTool("artifact.lookup", "List immutable provider artifacts already captured for assigned questions or a source route. PostgreSQL-only metadata lookup; it never refetches and never returns artifact bodies.", { questionIds: z.array(z.string().uuid()).min(1).max(12).optional(), sourceUrl: z.string().url().optional(), providerRoute: z.string().min(1).max(200).optional(), kind: z.string().min(1).max(100).optional() }),
     "research.begin_wave": gatewayTool("research.begin_wave", "Begin the initial research wave or one evidence-justified targeted second wave before native task delegation.", { waveKind: z.enum(["INITIAL", "TARGETED"]), questionIds: z.array(z.string().uuid()).min(1).max(12), escalationReason: z.enum(["MATERIAL_CONTRADICTION", "IDENTITY_AMBIGUITY", "CHRONOLOGY_CONFLICT", "NEW_EVIDENCE_FAMILY", "MATERIAL_UNCERTAINTY"]).optional(), publicRationale: z.string().min(10).max(500) }),
-    "evidence.capture": gatewayTool("evidence.capture", "Create one facet-aligned evidence edge from an exact quote in an immutable non-snippet artifact. SUPPORTS and CONTRADICTS each require exactly one claim and one or more declared facet keys; CONTEXT may have zero or more claim associations and is never citation-eligible. Source authority is assigned by the gateway.", { artifactId: z.string().uuid(), exactQuote: z.string().min(1).max(12000), sourceLocation: z.record(z.string(), z.any()).optional(), relation: z.enum(["SUPPORTS", "CONTRADICTS", "CONTEXT"]), claimIds: z.array(z.string().uuid()).max(100), facetKeys: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/)).max(12), entityIds: z.array(z.string().uuid()).max(100) }),
+    "evidence.capture": gatewayTool("evidence.capture", "Create one facet-aligned evidence edge from exact text stored in an immutable non-snippet artifact. For JSON, exactQuote must be a scalar or bounded excerpt returned by artifact.excerpts, not reconstructed JSON or a key/value serialization. SUPPORTS and CONTRADICTS each require exactly one claim and one or more declared facet keys copied verbatim from that claim's latest research.context facets; never invent synonym keys. CONTEXT may have zero or more claim associations and is never citation-eligible. Source authority is assigned by the gateway.", { artifactId: z.string().uuid(), exactQuote: z.string().min(1).max(12000), sourceLocation: z.record(z.string(), z.any()).optional(), relation: z.enum(["SUPPORTS", "CONTRADICTS", "CONTEXT"]), claimIds: z.array(z.string().uuid()).max(100), facetKeys: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/)).max(12), entityIds: z.array(z.string().uuid()).max(100) }),
     "evidence.link": gatewayTool("evidence.link", "Associate existing evidence with an additional entity only. Create a separate evidence row when the same source supports another claim.", { evidenceId: z.string().uuid(), claimIds: z.array(z.string().uuid()).max(0), entityIds: z.array(z.string().uuid()).max(100) }),
     "case_note": gatewayTool("case_note", "Persist a concise operational rationale safe for the user-visible trace. Never include hidden reasoning.", { phase: z.string().min(1).max(100), status: z.string().min(1).max(100), publicRationale: z.string().min(10).max(500) }),
     "capabilities.list": gatewayTool("capabilities.list", "Read the immutable capability snapshot for this run.", {}),
@@ -96,12 +98,23 @@ const plugin: Plugin = async ({ client }) => ({
     if (input.tool !== "task") return;
     const role = output.args?.subagent_type;
     if (!["professional-investigator", "github-investigator", "web-records-investigator", "social-investigator"].includes(role)) return;
-    await execute("research.authorize_task", { role }, { sessionID: input.sessionID, agent: "lead-investigator", abort: AbortSignal.timeout(10_000) });
+    const prompt = typeof output.args?.prompt === "string" ? output.args.prompt : typeof output.args?.description === "string" ? output.args.description : "";
+    const marker = prompt.match(/ASSIGNMENT_QUESTION_IDS\s*:\s*([^\n]+)/i)?.[1] ?? "";
+    const questionIds = [...marker.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi)].map(([id]) => id);
+    if (questionIds.length < 1 || questionIds.length > 3) throw new Error("Each specialist task must declare one to three question IDs in ASSIGNMENT_QUESTION_IDS.");
+    const assignmentId = crypto.randomUUID();
+    const assignmentText = `\n\nDurable assignment ${assignmentId}: work only on the question IDs in ASSIGNMENT_QUESTION_IDS.`;
+    if (typeof output.args?.prompt === "string") output.args.prompt += assignmentText;
+    else if (typeof output.args?.description === "string") output.args.description += assignmentText;
+    taskAssignments.set(input.callID, assignmentId);
+    await execute("research.authorize_task", { assignmentId, role, questionIds }, { sessionID: input.sessionID, agent: "lead-investigator", abort: AbortSignal.timeout(10_000) });
   },
   "tool.execute.after": async (input, output) => {
     if (input.tool !== "task") return;
     const role = input.args?.subagent_type;
     if (!["professional-investigator", "github-investigator", "web-records-investigator", "social-investigator"].includes(role)) return;
+    const assignmentId = taskAssignments.get(input.callID);
+    if (!assignmentId) return;
     const childSessionId = typeof output.metadata?.sessionId === "string" ? output.metadata.sessionId : undefined;
     if (childSessionId && needsChildHandoffContinuation(output.output)) {
       await execute("case_note", {
@@ -125,7 +138,8 @@ const plugin: Plugin = async ({ client }) => ({
         output.output = childTaskEnvelope(childSessionId, "The bounded child continuation failed. Do not resume or re-delegate this role; preserve durable evidence and resolve or exhaust its remaining questions.");
       }
     }
-    await execute("research.complete_task", { role }, { sessionID: input.sessionID, agent: "lead-investigator", abort: AbortSignal.timeout(10_000) });
+    await execute("research.complete_task", { assignmentId, role }, { sessionID: input.sessionID, agent: "lead-investigator", abort: AbortSignal.timeout(10_000) });
+    taskAssignments.delete(input.callID);
   },
   "experimental.session.compacting": async (_input, output) => {
     const response = await fetch(`${gatewayUrl}/internal/state/compaction`, {

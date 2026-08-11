@@ -13,7 +13,10 @@ const baseOutput: AdjudicationOutput = {
     },
     professionalTimelineSummary: "Acme association is supported for 2023.",
     professionalTimelineEvidenceIds: ["ev-1"],
+    professionalIdentityClaimIds: ["claim-1"],
+    professionalTimelineClaimIds: ["claim-1"],
     strongestEvidenceIds: ["ev-1"],
+    strongestEvidenceByClaim: [{ claimId: "claim-1", facetKeys: ["facet_1"], evidenceIds: ["ev-1"] }],
     materialInconsistencies: [],
     unresolvedMaterialClaimIds: ["claim-2"],
     investigationLimitations: ["No contemporaneous title source was available."],
@@ -171,5 +174,36 @@ test("context authority cannot be described as universal self-representation", (
   assert.throws(
     () => validateAdjudication(output, new Set(["ev-1", "ev-2"]), new Set(["claim-1", "claim-2"]), undefined, undefined, undefined, { CONTEXT: 2, SELF_REPRESENTATION: 1 }),
     /overstates source authority/i,
+  );
+});
+
+test("summary sections cannot cite context evidence or bleed across claim mappings", () => {
+  const evidenceClaims = new Map([
+    ["ev-1", new Set(["claim-1"])],
+    ["ev-2", new Set(["claim-1"])],
+  ]);
+  const evidenceRelations = new Map([
+    ["ev-1", "SUPPORTS" as const],
+    ["ev-2", "CONTEXT" as const],
+  ]);
+  assert.throws(
+    () => validateAdjudication(baseOutput, new Set(["ev-1", "ev-2"]), new Set(["claim-1", "claim-2"]), evidenceClaims, undefined, evidenceRelations),
+    /context and cannot be cited/i,
+  );
+});
+
+test("summary strongest evidence must map to the declared facet", () => {
+  const output = structuredClone(baseOutput);
+  output.summary.strongestEvidenceByClaim = [{ claimId: "claim-1", facetKeys: ["title"], evidenceIds: ["ev-1"] }];
+  const evidenceClaims = new Map([["ev-1", new Set(["claim-1"])]]);
+  const evidenceRelations = new Map([["ev-1", "SUPPORTS" as const]]);
+  const evidenceFacetKeys = new Map([["ev-1", new Set(["tenure"])]]);
+  const claimFacets = new Map([
+    ["claim-1", [{ key: "title", label: "Title", materiality: "HIGH" as const }, { key: "tenure", label: "Tenure", materiality: "HIGH" as const }]],
+    ["claim-2", [{ key: "claim", label: "Claim", materiality: "LOW" as const }]],
+  ]);
+  assert.throws(
+    () => validateAdjudication(output, new Set(["ev-1", "ev-2"]), new Set(["claim-1", "claim-2"]), evidenceClaims, claimFacets, evidenceRelations, undefined, evidenceFacetKeys),
+    /not mapped to a declared facet/i,
   );
 });

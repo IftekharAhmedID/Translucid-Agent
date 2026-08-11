@@ -85,13 +85,37 @@ test("finding batches isolate eligible evidence by durable claim link", () => {
   assert.equal("evidence" in bundle, false);
 });
 
+test("finding packets expose evidence separately for each declared facet", () => {
+  const bundle = buildFindingBatchBundle({
+    claims: [{ id: "claim-1", normalizedClaim: "Employment claim", facets: [{ key: "employer", label: "Acme Labs", materiality: "HIGH" }, { key: "title", label: "Principal Engineer", materiality: "HIGH" }] }],
+    evidence: [
+      { id: "evidence-employer", artifactId: "artifact-1", claimIds: ["claim-1"], relation: "SUPPORTS", facetKeys: ["employer"] },
+      { id: "evidence-title", artifactId: "artifact-1", claimIds: ["claim-1"], relation: "SUPPORTS", facetKeys: ["title"] },
+      { id: "evidence-context", artifactId: "artifact-1", claimIds: ["claim-1"], relation: "CONTEXT", facetKeys: [] },
+    ],
+    artifacts: [{ id: "artifact-1" }],
+    observations: [],
+    researchQuestions: [],
+    critic: { claimConcerns: [], limitations: [] },
+  }, ["claim-1"]);
+  const packet = bundle.claimPackets[0]!;
+  assert.deepEqual(packet.facets, [
+    { key: "employer", label: "Acme Labs", eligibleEvidenceIds: ["evidence-employer"] },
+    { key: "title", label: "Principal Engineer", eligibleEvidenceIds: ["evidence-title"] },
+  ]);
+  assert.deepEqual(packet.contextEvidence.map(({ id }) => id), ["evidence-context"]);
+});
+
 test("summary schema is focused and excludes findings", () => {
   const value = {
     summary: {
       professionalIdentity: { status: "AMBIGUOUS", summary: "Identity remains ambiguous.", evidenceIds: [] },
       professionalTimelineSummary: "The saved observations do not resolve a complete chronology.",
       professionalTimelineEvidenceIds: [],
+      professionalIdentityClaimIds: [],
+      professionalTimelineClaimIds: [],
       strongestEvidenceIds: [],
+      strongestEvidenceByClaim: [],
       materialInconsistencies: [],
       unresolvedMaterialClaimIds: ["claim-1"],
       investigationLimitations: ["A source route was unavailable."],

@@ -27,7 +27,7 @@ test("lead investigator is explicitly bounded and receives structured text rathe
   assert.match(source, /parsedDocument/);
   assert.match(source, /never (?:open|request|read).*raw PDF/i);
   assert.match(source, /single assistant turn/i);
-  assert.match(source, /under 1,200 characters/i);
+  assert.match(source, /no more than three question UUIDs/i);
   assert.match(source, /research\.begin_wave/);
   assert.match(source, /No third wave/i);
   assert.match(source, /exact semantic tool ID/i);

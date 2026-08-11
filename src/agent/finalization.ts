@@ -173,9 +173,17 @@ export function buildFindingBatchBundle(bundle: Record<string, unknown>, claimId
 
 export function buildSummaryBundle(bundle: Record<string, unknown>, findings: FindingOutput[], auditStats?: unknown) {
   const critic = bundle.critic && typeof bundle.critic === "object" ? bundle.critic as Row : {};
+  const evidence = rows(bundle, "evidence").filter(({ relation }) => relation !== "CONTEXT");
+  const claims = rows(bundle, "claims");
   return {
     validatedFindings: findings,
-    acceptedEvidence: rows(bundle, "evidence"),
+    claims: claims.map(({ id, category, normalizedClaim, facets, materiality }) => ({ id, category, normalizedClaim, facets, materiality })),
+    evidenceByClaim: claims.map((claim) => ({
+      claimId: claim.id,
+      facets: claim.facets,
+      evidence: evidence.filter(({ claimIds }) => Array.isArray(claimIds) && claimIds.includes(claim.id)),
+    })),
+    acceptedEvidence: evidence,
     entityResolution: {
       entities: rows(bundle, "entities"),
       identifiers: rows(bundle, "identifiers"),

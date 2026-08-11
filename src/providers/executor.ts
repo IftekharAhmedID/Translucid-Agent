@@ -490,6 +490,8 @@ export class ProviderExecutor {
   private call(request: ParsedToolRequest, context: ExecuteContext, capability: Capability, provider: string, providerRoute: string, networkArguments: Record<string, unknown>, run: (signal: AbortSignal, onAttempt: (attempt: number) => void) => Promise<ProviderNetworkResult>, knownCost?: Pick<ProviderNetworkResult, "costUsd" | "costSource">): Promise<ConcreteProviderResult> {
     return executeConcreteProviderCall({
       context,
+      questionId: request.arguments.questionId,
+      claimIds: request.arguments.claimIds,
       capability,
       semanticTool: request.tool,
       provider,

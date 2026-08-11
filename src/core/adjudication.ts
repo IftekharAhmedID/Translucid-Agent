@@ -155,6 +155,9 @@ export function validateInvestigationSummary(
   knownClaimIds: Set<string>,
   evidenceClaimIds?: Map<string, Set<string>>,
   sourceAuthorityCounts?: Record<string, number>,
+  evidenceRelations?: Map<string, "SUPPORTS" | "CONTRADICTS" | "CONTEXT">,
+  evidenceFacetKeys?: Map<string, Set<string>>,
+  claimFacets?: Map<string, ClaimFacet[]>,
 ): InvestigationSummary {
   const summary = investigationSummarySchema.parse(value);
   assertSafeLanguage(summary);
@@ -162,6 +165,28 @@ export function validateInvestigationSummary(
   assertEvidenceExists(summary.professionalIdentity.evidenceIds, knownEvidenceIds);
   assertEvidenceExists(summary.professionalTimelineEvidenceIds, knownEvidenceIds);
   assertEvidenceExists(summary.strongestEvidenceIds, knownEvidenceIds);
+  assertClaimExists(summary.professionalIdentityClaimIds, knownClaimIds);
+  assertClaimExists(summary.professionalTimelineClaimIds, knownClaimIds);
+  for (const item of summary.strongestEvidenceByClaim) {
+    assertClaimExists([item.claimId], knownClaimIds);
+    assertSummaryEvidenceBelongs(item.evidenceIds, item.claimId, evidenceClaimIds, evidenceRelations);
+    if (claimFacets && evidenceFacetKeys) {
+      const declared = new Set((claimFacets.get(item.claimId) ?? []).map(({ key }) => key));
+      for (const facetKey of item.facetKeys) {
+        if (!declared.has(facetKey)) throw new Error(`Summary strongest evidence referenced unknown facet ${facetKey}.`);
+      }
+      for (const evidenceId of item.evidenceIds) {
+        if (item.facetKeys.length === 0 || !item.facetKeys.some((facetKey) => evidenceFacetKeys.get(evidenceId)?.has(facetKey))) {
+          throw new Error(`Summary strongest evidence ${evidenceId} is not mapped to a declared facet.`);
+        }
+      }
+    }
+  }
+  assertSummaryEvidenceForClaimSet(summary.professionalIdentity.evidenceIds, summary.professionalIdentityClaimIds, evidenceClaimIds, evidenceRelations, "professional identity");
+  assertSummaryEvidenceForClaimSet(summary.professionalTimelineEvidenceIds, summary.professionalTimelineClaimIds, evidenceClaimIds, evidenceRelations, "professional timeline");
+  if (evidenceClaimIds && summary.strongestEvidenceIds.some((evidenceId) => !summary.strongestEvidenceByClaim.some((item) => item.evidenceIds.includes(evidenceId)))) {
+    throw new Error("Every strongest evidence ID must belong to a claim-scoped strongestEvidenceByClaim mapping.");
+  }
   assertClaimExists(summary.unresolvedMaterialClaimIds, knownClaimIds);
   assertClaimExists(summary.materialInconsistencies.map(({ claimId }) => claimId), knownClaimIds);
   for (const inconsistency of summary.materialInconsistencies) {
@@ -182,6 +207,35 @@ export function validateInvestigationSummary(
   return summary;
 }
 
+function assertSummaryEvidenceBelongs(
+  evidenceIds: string[],
+  claimId: string,
+  evidenceClaimIds?: Map<string, Set<string>>,
+  evidenceRelations?: Map<string, "SUPPORTS" | "CONTRADICTS" | "CONTEXT">,
+): void {
+  if (!evidenceClaimIds) return;
+  for (const evidenceId of evidenceIds) {
+    if (!evidenceClaimIds.get(evidenceId)?.has(claimId)) throw new Error(`Summary evidence ${evidenceId} is not linked to claim ${claimId}.`);
+    if (evidenceRelations?.get(evidenceId) === "CONTEXT") throw new Error(`Summary evidence ${evidenceId} is CONTEXT and cannot be cited.`);
+  }
+}
+
+function assertSummaryEvidenceForClaimSet(
+  evidenceIds: string[],
+  claimIds: string[],
+  evidenceClaimIds: Map<string, Set<string>> | undefined,
+  evidenceRelations: Map<string, "SUPPORTS" | "CONTRADICTS" | "CONTEXT"> | undefined,
+  label: string,
+): void {
+  if (!evidenceClaimIds) return;
+  const allowedClaims = new Set(claimIds);
+  for (const evidenceId of evidenceIds) {
+    const linkedClaims = evidenceClaimIds.get(evidenceId) ?? new Set<string>();
+    if (![...linkedClaims].some((claimId) => allowedClaims.has(claimId))) throw new Error(`${label} evidence ${evidenceId} is outside its declared claim mapping.`);
+    if (evidenceRelations?.get(evidenceId) === "CONTEXT") throw new Error(`${label} evidence ${evidenceId} is CONTEXT and cannot be cited.`);
+  }
+}
+
 export function validateAdjudication(
   value: unknown,
   knownEvidenceIds: Set<string>,
@@ -195,7 +249,7 @@ export function validateAdjudication(
   const output = adjudicationOutputSchema.parse(value);
   assertSafeLanguage(output);
   if (knownClaimIds) {
-    validateInvestigationSummary(output.summary, knownEvidenceIds, knownClaimIds, evidenceClaimIds, sourceAuthorityCounts);
+    validateInvestigationSummary(output.summary, knownEvidenceIds, knownClaimIds, evidenceClaimIds, sourceAuthorityCounts, evidenceRelations, evidenceFacetKeys, claimFacets);
     const outputClaimIds = output.findings.map(({ claimId }) => claimId);
     assertClaimExists(outputClaimIds, knownClaimIds);
     if (outputClaimIds.length !== knownClaimIds.size || new Set(outputClaimIds).size !== outputClaimIds.length) {

@@ -74,21 +74,51 @@ test("duplicate concrete provider requests reuse immutable artifacts without con
   const first = await executor.execute(request("First discovery request for the identity claim."), operational(ids));
   const second = await executor.execute(request("Second agent asks for the same network-effective query."), operational(ids));
 
+  const secondClaim = await createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Candidate held the Principal Engineer title.", materiality: "HIGH" });
+  const secondQuestion = await openResearchQuestion({
+    ...ids,
+    claimIds: [secondClaim.id],
+    question: "Does the same profile support the title claim?",
+    priority: "HIGH",
+    possibleRoutes: ["web.search"],
+    createdByAgent: "lead-investigator",
+  });
+  const crossQuestion = await executor.execute({
+    tool: "web.search",
+    arguments: {
+      questionId: secondQuestion.id,
+      claimIds: [secondClaim.id],
+      publicRationale: "Reusing the same network-effective request for a separate assigned question.",
+      query: "Synthetic Candidate identity",
+    },
+  }, operational(ids));
+
   assert.equal(first.status, "OK");
   assert.deepEqual(second.artifactIds, first.artifactIds);
+  assert.deepEqual(crossQuestion.artifactIds, first.artifactIds);
   const [counts] = await sql<Array<{ calls: number; budgetCount: number; cacheHits: number }>>`
     SELECT
       (SELECT count(*)::integer FROM provider_calls WHERE run_id = ${ids.runId} AND result_status = 'OK') AS calls,
       COALESCE((SELECT (budget_counters->>'web.search')::integer FROM runs WHERE id = ${ids.runId}), 0) AS "budgetCount",
       (SELECT count(*)::integer FROM agent_events WHERE run_id = ${ids.runId} AND event_type = 'PROVIDER_CACHE_HIT') AS "cacheHits"
   `;
-  assert.deepEqual(counts, { calls: 1, budgetCount: 1, cacheHits: 1 });
+  assert.deepEqual(counts, { calls: 1, budgetCount: 1, cacheHits: 2 });
   const [reuse] = await sql<Array<{ reusedFromCallId: string | null; resultStatus: string }>>`
     SELECT reused_from_call_id AS "reusedFromCallId", result_status AS "resultStatus"
     FROM provider_calls WHERE run_id = ${ids.runId} AND result_status = 'CACHE_HIT'
   `;
   assert.equal(reuse?.resultStatus, "CACHE_HIT");
   assert.ok(reuse?.reusedFromCallId);
+  const metadata = await sql<Array<{ resultStatus: string; questionId: string | null; claimIds: string[] }>>`
+    SELECT result_status AS "resultStatus", request_metadata->>'questionId' AS "questionId",
+      ARRAY(SELECT jsonb_array_elements_text(request_metadata->'claimIds')) AS "claimIds"
+    FROM provider_calls WHERE run_id = ${ids.runId} ORDER BY created_at
+  `;
+  assert.deepEqual([...metadata], [
+    { resultStatus: "OK", questionId: ids.questionId, claimIds: [ids.claimId] },
+    { resultStatus: "CACHE_HIT", questionId: ids.questionId, claimIds: [ids.claimId] },
+    { resultStatus: "CACHE_HIT", questionId: secondQuestion.id, claimIds: [secondClaim.id] },
+  ]);
 });
 
 test("a stale in-flight request is abandoned and safely retried", async () => {

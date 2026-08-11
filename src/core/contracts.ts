@@ -25,6 +25,9 @@ export const facetCoverageStatusSchema = z.enum(["NO_EVIDENCE", "SELF_ONLY", "SU
 
 export type FacetCoverageStatus = z.infer<typeof facetCoverageStatusSchema>;
 
+export const timelineStateSchema = z.enum(["REPORTED", "SUPPORTED_SELF", "CORROBORATED", "CONFLICTING"]);
+export type TimelineState = z.infer<typeof timelineStateSchema>;
+
 export const investigationStatusSchema = z.enum([
   "QUEUED",
   "RUNNING",
@@ -75,7 +78,10 @@ export const investigationSummarySchema = z
       .strict(),
     professionalTimelineSummary: z.string().min(1).max(8_000),
     professionalTimelineEvidenceIds: z.array(z.string().min(1)).max(100),
+    professionalIdentityClaimIds: z.array(z.string().min(1)).max(100),
+    professionalTimelineClaimIds: z.array(z.string().min(1)).max(100),
     strongestEvidenceIds: z.array(z.string().min(1)).max(100),
+    strongestEvidenceByClaim: z.array(z.object({ claimId: z.string().min(1), facetKeys: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/)).max(12), evidenceIds: z.array(z.string().min(1)).max(100) }).strict()).max(100),
     materialInconsistencies: z
       .array(
         z

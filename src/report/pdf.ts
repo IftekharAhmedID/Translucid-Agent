@@ -39,6 +39,10 @@ export async function generateInvestigationReport(investigationId: string): Prom
     paragraph(summary.professionalTimelineSummary);
     const timelineEvidenceIds = summary.professionalTimelineEvidenceIds as string[];
     if (timelineEvidenceIds?.length) paragraph(`Timeline evidence: ${timelineEvidenceIds.join(", ")}`);
+    const identityClaimIds = summary.professionalIdentityClaimIds as string[];
+    const timelineClaimIds = summary.professionalTimelineClaimIds as string[];
+    if (identityClaimIds?.length) paragraph(`Identity claim scope: ${identityClaimIds.join(", ")}`);
+    if (timelineClaimIds?.length) paragraph(`Timeline claim scope: ${timelineClaimIds.join(", ")}`);
     const inconsistencies = summary.materialInconsistencies as Row[];
     if (inconsistencies?.length) { document.font("Helvetica-Bold").fontSize(10).text("Material inconsistencies"); inconsistencies.forEach((item) => bullet(item.summary)); }
     const unresolved = summary.unresolvedMaterialClaimIds as string[];
@@ -82,7 +86,7 @@ export async function generateInvestigationReport(investigationId: string): Prom
   heading("Professional timeline");
   const observations = detail.observations as Row[];
   if (!observations.length) paragraph("No normalized observations were recorded.");
-  for (const observation of observations) bullet(`${date(observation.validFrom)} to ${date(observation.validTo)} — ${text(observation.field)}: ${text(observation.value)} [artifact ${text(observation.artifactId)}]`);
+  for (const observation of observations) bullet(`${date(observation.validFrom)} to ${date(observation.validTo)} — ${text(observation.field)}: ${text(observation.value)} · ${text(observation.timelineState)} [artifact ${text(observation.artifactId)}]`);
 
   heading("Identity resolution");
   const entities = detail.entities as Row[];
@@ -97,7 +101,8 @@ export async function generateInvestigationReport(investigationId: string): Prom
   if (!evidence.length) paragraph("No evidence was captured.");
   for (const item of evidence) {
     const artifact = artifacts.get(String(item.artifactId));
-    document.font("Helvetica-Bold").fontSize(9).fillColor("#14213D").text(`${text(item.id)} · ${text(item.relation)} · ${text(item.sourceTier)}`);
+    const facetKeys = Array.isArray(item.facetKeys) ? item.facetKeys.join(", ") : "none";
+    document.font("Helvetica-Bold").fontSize(9).fillColor("#14213D").text(`${text(item.id)} · ${text(item.relation)} · ${text(item.sourceTier)} · facets ${facetKeys}`);
     paragraph(`“${text(item.exactQuote)}”`);
     paragraph(`${text(artifact?.sourceUrl) || "Local input"} · retrieved ${date(artifact?.retrievedAt)} · SHA-256 ${text(artifact?.sha256)}`);
   }

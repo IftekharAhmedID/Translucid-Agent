@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { deriveArtifactTrust } from "./source-trust.ts";
+import { deriveArtifactTrust, effectiveAttestationGroup, effectiveSourceAuthority } from "./source-trust.ts";
 
 test("source authority is backend-derived from capture lineage", () => {
   assert.equal(deriveArtifactTrust({ kind: "SEARCH_DISCOVERY", provider: "exa", sourceUrl: "https://api.exa.ai/search", provenance: {}, content: {} }).sourceAuthority, "DISCOVERY_ONLY");
@@ -63,4 +63,17 @@ test("DOI and CVE lineages override provider domains", () => {
   assert.equal(openAlex.independenceGroup, crossref.independenceGroup);
   const cve = deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "nvd", sourceUrl: "https://nvd.nist.gov", provenance: {}, content: { id: "CVE-2025-12345" } });
   assert.equal(cve.independenceGroup, "cve:CVE-2025-12345");
+});
+
+test("effective candidate-domain authority is computed without changing stored artifact authority", () => {
+  const artifact = { sourceAuthority: "CONTEXT", sourceUrl: "https://diegor.it/work", provider: "public-fetch", kind: "SOURCE_CONTENT", independenceGroup: "domain:diegor.it" };
+  const entities = [{ id: "root", type: "PERSON", canonicalName: "Diego Russo" }, { id: "website", type: "WEBSITE", canonicalName: "diegor.it" }];
+  const links = [{ fromEntityId: "root", toEntityId: "website", relationship: "VERIFIED_DOMAIN" }];
+  assert.equal(effectiveSourceAuthority({ artifact, entities, entityLinks: links, rootCandidate: "root" }), "SELF_REPRESENTATION");
+  assert.equal(effectiveAttestationGroup({ artifact, entities, entityLinks: links, rootCandidate: "root" }), "CANDIDATE_SELF");
+  assert.equal(artifact.sourceAuthority, "CONTEXT");
+});
+
+test("package registry records receive institutional authority", () => {
+  assert.equal(deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "pypi", sourceUrl: "https://pypi.org/pypi/example/json", provenance: { providerRoute: "packages.pypi" }, content: {} }).sourceAuthority, "FIRST_PARTY_INSTITUTIONAL");
 });

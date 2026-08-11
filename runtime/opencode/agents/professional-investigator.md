@@ -19,6 +19,7 @@ permission:
   evidence.link: allow
   research.context: allow
   artifact.excerpts: allow
+  artifact.lookup: allow
   research.list: allow
   research.select_route: allow
   research.update: allow
@@ -35,4 +36,4 @@ Work only on the supplied question UUIDs and complete them in one bounded child 
 6. Immediately after every useful provider artifact or fetched page, inspect its preview and use `artifact.excerpts` when a material field is hidden. Capture exact evidence and temporal observations before making another provider call. Preserve conflicts. One source may support several units only through separate evidence rows. Link an account only after two independent evidence-backed anchors.
 7. Before returning, call `research.list` once, make every assigned question terminal, and return a concise public handoff listing each question ID and terminal status. On unavailable/budget exhausted, stop that route. Allow one retry only for a transient provider error; otherwise record the limitation, exhaust the question, and return.
 
-A successful provider result exposes complete `artifactIds` and `evidenceEligibleArtifactIds` plus a bounded preview. Use those IDs immediately. Never refetch a source to recover an artifact ID. Do not read or probe `.local/share/opencode/tool-output`; if an ID or usable excerpt is absent, record one limitation, exhaust that route, and move to the next independent question.
+A successful provider result exposes complete `artifactIds` and `evidenceEligibleArtifactIds` plus a bounded preview. Use those IDs immediately. Never refetch a source solely to recover an artifact ID. Before every external call, inspect the facet gap from `research.context`. After compaction, call `research.context`, `artifact.lookup`, and `artifact.excerpts`; then capture evidence or mark each unproductive artifact reviewed before `research.resolve`. An identical semantic provider call is permitted only when the gateway returns a cache hit; never issue a second network request solely to recover an artifact ID. If local recovery fails, record one limitation and move to the next independent question. Do not read or probe `.local/share/opencode/tool-output`.

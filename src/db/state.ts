@@ -5,8 +5,9 @@ import { claimFacetsSchema, type ClaimFacet, type EntityType, type EscalationRea
 import { auditClaimFacetCoverage } from "../core/facet-coverage.ts";
 import { assessEntityLink, type IdentityAnchor } from "../core/identity.ts";
 import { sha256 } from "../core/input.ts";
-import { deriveArtifactTrust } from "../core/source-trust.ts";
+import { deriveArtifactTrust, effectiveAttestationGroup, effectiveSourceAuthority } from "../core/source-trust.ts";
 import { evidenceQuoteHasClaimAnchor } from "../core/evidence-fit.ts";
+import { deriveTimelineStates, type TimelineState } from "../core/timeline.ts";
 import { getSql } from "./client.ts";
 
 const MAX_CAPTURE_BYTES = 5 * 1024 * 1024;
@@ -66,7 +67,7 @@ export async function getResearchContext(
   if (new Set(questionIds).size !== questionIds.length) throw new Error("research.context question IDs must be unique.");
   const safeMaxBytes = Math.min(Math.max(maxBytes, DEFAULT_CONTEXT_BYTES), MAX_CONTEXT_BYTES);
   const sql = getSql();
-  const [questions, claims, entities, identifiers, links, artifacts, observations, evidence, providerAttempts] = await Promise.all([
+  const [questions, claims, entities, identifiers, links, artifacts, observations, evidence, providerAttempts, runs] = await Promise.all([
     sql`SELECT id, claim_ids AS "claimIds", question, priority, status, possible_routes AS "possibleRoutes", selected_route AS "selectedRoute", resolution_summary AS "resolutionSummary" FROM research_questions WHERE investigation_id = ${investigationId} AND run_id = ${runId} AND id IN ${sql(questionIds)} ORDER BY created_at, id`,
     sql`SELECT id, category, normalized_claim AS "normalizedClaim", facets, materiality, source_span AS "sourceSpan", valid_from AS "validFrom", valid_to AS "validTo", status FROM claims WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
     sql`SELECT id, type, canonical_name AS "canonicalName" FROM entities WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
@@ -74,23 +75,48 @@ export async function getResearchContext(
     sql`SELECT id, from_entity_id AS "fromEntityId", to_entity_id AS "toEntityId", relationship, confidence, evidence_ids AS "evidenceIds" FROM entity_links WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
     sql`SELECT id, kind, provider, source_url AS "sourceUrl", mime_type AS "mimeType", retrieved_at AS "retrievedAt", source_authority AS "sourceAuthority", independence_group AS "independenceGroup", canonical_source_url AS "canonicalSourceUrl" FROM artifacts WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
     sql`SELECT id, artifact_id AS "artifactId", entity_id AS "entityId", field, value_json AS value, observed_at AS "observedAt", source_event_at AS "sourceEventAt", valid_from AS "validFrom", valid_to AS "validTo" FROM observations WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY valid_from NULLS LAST, observed_at, id`,
-    sql`SELECT evidence.id, evidence.artifact_id AS "artifactId", evidence.exact_quote AS "exactQuote", evidence.source_location AS "sourceLocation", evidence.relation, evidence.claim_ids AS "claimIds", evidence.entity_ids AS "entityIds", COALESCE(artifact.source_authority, evidence.source_tier, 'CONTEXT') AS "sourceAuthority", COALESCE(artifact.independence_group, 'LEGACY_ARTIFACT:' || artifact.id::text) AS "independenceGroup" FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id WHERE evidence.investigation_id = ${investigationId} AND evidence.run_id = ${runId} ORDER BY evidence.created_at, evidence.id`,
+    sql`SELECT evidence.id, evidence.artifact_id AS "artifactId", evidence.exact_quote AS "exactQuote", evidence.source_location AS "sourceLocation", evidence.relation, evidence.claim_ids AS "claimIds", evidence.facet_keys AS "facetKeys", evidence.entity_ids AS "entityIds", COALESCE(artifact.source_authority, evidence.source_tier, 'CONTEXT') AS "sourceAuthority", COALESCE(artifact.independence_group, 'LEGACY_ARTIFACT:' || artifact.id::text) AS "independenceGroup" FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id WHERE evidence.investigation_id = ${investigationId} AND evidence.run_id = ${runId} ORDER BY evidence.created_at, evidence.id`,
     sql`SELECT id, capability, provider, semantic_tool AS "semanticTool", provider_route AS "providerRoute", result_status AS "resultStatus", artifact_ids AS "artifactIds", cost_source AS "costSource", created_at AS "createdAt" FROM provider_calls WHERE investigation_id = ${investigationId} AND run_id = ${runId} ORDER BY created_at, id`,
+    sql`SELECT root_entity_id AS "rootEntityId" FROM runs WHERE investigation_id = ${investigationId} AND id = ${runId}`,
   ]);
   if (questions.length !== new Set(questionIds).size) throw new Error("One or more research question IDs do not belong to this run.");
+  const rootCandidate = (runs[0] as Record<string, unknown> | undefined)?.rootEntityId;
+  const effectiveArtifacts: Array<Record<string, unknown> & { id: string; sourceAuthority: string; attestationGroup: string }> = ([...artifacts] as Array<Record<string, unknown>>).map((artifact) => {
+    const sourceAuthority = effectiveSourceAuthority({ artifact, entities: [...entities] as unknown as Array<{ id: string; type?: string; canonicalName?: string; metadata?: Record<string, unknown> }>, entityLinks: [...links] as unknown as Array<{ fromEntityId: string; toEntityId: string; relationship?: string }>, rootCandidate: typeof rootCandidate === "string" ? rootCandidate : null });
+    const attestationGroup = effectiveAttestationGroup({ artifact: { ...artifact, sourceAuthority }, entities: [...entities] as unknown as Array<{ id: string; type?: string; canonicalName?: string; metadata?: Record<string, unknown> }>, entityLinks: [...links] as unknown as Array<{ fromEntityId: string; toEntityId: string; relationship?: string }>, rootCandidate: typeof rootCandidate === "string" ? rootCandidate : null });
+    return { ...artifact, sourceAuthority, attestationGroup, id: String(artifact.id) };
+  });
+  const artifactById = new Map(effectiveArtifacts.map((artifact) => [String(artifact.id), artifact]));
+  const effectiveEvidence = [...evidence].map((edge) => {
+    const artifact = artifactById.get(String(edge.artifactId));
+    return artifact ? { ...edge, sourceAuthority: artifact.sourceAuthority, attestationGroup: artifact.attestationGroup } : edge;
+  });
   const exhaustedRoutes = [...questions].flatMap((question) => question.status === "EXHAUSTED" || question.status === "SKIPPED" ? [{ questionId: question.id, routes: question.possibleRoutes, selectedRoute: question.selectedRoute }] : []);
+  const facetCoverage = (claims as unknown as Array<{ id: string; facets: ClaimFacet[] }>).flatMap((claim) => (Array.isArray(claim.facets) ? claim.facets : []).map((facet) => {
+    const support = (effectiveEvidence as unknown as Array<{ id: string; relation: string; claimIds: string[]; facetKeys: string[]; sourceAuthority: string; attestationGroup: string }>).filter((edge) => edge.relation === "SUPPORTS" && edge.claimIds.includes(claim.id) && edge.facetKeys.includes(facet.key));
+    const contradiction = (effectiveEvidence as unknown as Array<{ id: string; relation: string; claimIds: string[]; facetKeys: string[] }>).filter((edge) => edge.relation === "CONTRADICTS" && edge.claimIds.includes(claim.id) && edge.facetKeys.includes(facet.key));
+    const nonCandidateSupport = support.some(({ sourceAuthority, attestationGroup }: { sourceAuthority: string; attestationGroup: string }) =>
+      sourceAuthority !== "SELF_REPRESENTATION"
+      && sourceAuthority !== "CONTEXT"
+      && sourceAuthority !== "DISCOVERY_ONLY"
+      && attestationGroup !== "CANDIDATE_SELF",
+    );
+    const status = contradiction.length > 0 ? "CONFLICT" : nonCandidateSupport ? "SUPPORTED" : support.length > 0 ? "SELF_ONLY" : "NO_EVIDENCE";
+    return { claimId: claim.id, facetKey: facet.key, supportEvidenceIds: support.map(({ id }) => id), contradictingEvidenceIds: contradiction.map(({ id }) => id), status };
+  }));
   return boundedJson({
     assignedResearchQuestions: [...questions],
     claims: [...claims],
     entities: [...entities],
     identifiers: [...identifiers],
     entityLinks: [...links],
-    artifacts: [...artifacts],
+    artifacts: [...effectiveArtifacts],
     observations: [...observations],
-    evidence: [...evidence],
+    evidence: [...effectiveEvidence],
     providerAttempts: [...providerAttempts],
     knownExhaustedRoutes: exhaustedRoutes,
-  }, safeMaxBytes, ["providerAttempts", "evidence", "observations", "artifacts", "identifiers", "entityLinks", "entities", "claims"]);
+    facetCoverage,
+  }, safeMaxBytes, ["providerAttempts", "evidence", "observations", "artifacts", "identifiers", "entityLinks", "facetCoverage", "entities", "claims"]);
 }
 
 type ArtifactScalar = { path: string; value: string | number | boolean; text: string };
@@ -185,6 +211,75 @@ export async function getArtifactExcerpts(
   const result = { artifactId: artifact.id, sourceUrl: artifact.sourceUrl, sha256: artifact.sha256, excerpts, truncated: matchCount > excerpts.length || excerpts.length < beforeLimitCount };
   if (Buffer.byteLength(JSON.stringify(result)) > 512 * 1024) throw new Error("artifact.excerpts exceeded the hard serialized response limit.");
   return result;
+}
+
+export async function lookupArtifacts(
+  investigationId: string,
+  runId: string,
+  input: { questionIds?: string[]; sourceUrl?: string; providerRoute?: string; kind?: string },
+): Promise<Array<{
+  artifactId: string;
+  kind: string;
+  sourceUrl: string | null;
+  provider: string;
+  providerRoute: string;
+  providerCallId: string;
+  evidenceIds: string[];
+}>> {
+  const questionIds = input.questionIds?.length ? input.questionIds : null;
+  if (!questionIds && !input.sourceUrl && !input.providerRoute && !input.kind) {
+    throw new Error("artifact.lookup requires at least one filter.");
+  }
+  if (questionIds) {
+    const questions = await getSql()<Array<{ id: string }>>`
+      SELECT id FROM research_questions
+      WHERE investigation_id = ${investigationId} AND run_id = ${runId}
+        AND id IN ${getSql()(questionIds)}
+    `;
+    if (questions.length !== new Set(questionIds).size) throw new Error("One or more artifact.lookup question IDs do not belong to this investigation run.");
+  }
+  return getSql()<Array<{
+    artifactId: string;
+    kind: string;
+    sourceUrl: string | null;
+    provider: string;
+    providerRoute: string;
+    providerCallId: string;
+    evidenceIds: string[];
+  }>>`
+    SELECT "artifactId", kind, "sourceUrl", provider, "providerRoute", "providerCallId", "evidenceIds"
+    FROM (
+      SELECT DISTINCT ON (artifact.id)
+        artifact.id AS "artifactId", artifact.kind, artifact.source_url AS "sourceUrl",
+        provider_call.provider, provider_call.provider_route AS "providerRoute",
+        provider_call.id AS "providerCallId",
+        COALESCE((
+          SELECT array_agg(edge.id ORDER BY edge.created_at, edge.id)
+          FROM evidence AS edge
+          WHERE edge.artifact_id = artifact.id
+            AND edge.investigation_id = ${investigationId}
+            AND edge.run_id = ${runId}
+        ), '{}'::uuid[]) AS "evidenceIds",
+        artifact.created_at AS "createdAt"
+      FROM artifacts AS artifact
+      JOIN provider_calls AS provider_call
+        ON artifact.id = ANY(provider_call.artifact_ids)
+      WHERE artifact.investigation_id = ${investigationId}
+        AND artifact.run_id = ${runId}
+        AND provider_call.investigation_id = ${investigationId}
+        AND provider_call.run_id = ${runId}
+        AND provider_call.result_status IN ('OK', 'CACHE_HIT')
+          AND artifact.kind <> 'SEARCH_DISCOVERY'
+          AND artifact.provenance->>'isSearchSnippet' IS DISTINCT FROM 'true'
+        AND (${questionIds}::text[] IS NULL OR provider_call.request_metadata->>'questionId' = ANY(${questionIds}::text[]))
+        AND (${input.sourceUrl ?? null}::text IS NULL OR artifact.source_url = ${input.sourceUrl ?? null})
+        AND (${input.providerRoute ?? null}::text IS NULL OR provider_call.provider_route = ${input.providerRoute ?? null})
+        AND (${input.kind ?? null}::text IS NULL OR artifact.kind = ${input.kind ?? null})
+      ORDER BY artifact.id, provider_call.created_at DESC, provider_call.id DESC
+    ) AS lookup
+    ORDER BY "createdAt", "artifactId"
+    LIMIT 100
+  `;
 }
 
 async function assertRowsBelongToCase(
@@ -432,6 +527,9 @@ export async function captureEvidence(
   if (input.relation !== "CONTEXT" && input.facetKeys.length === 0) {
     throw new Error(`${input.relation} evidence must reference at least one declared claim facet.`);
   }
+  if (input.relation === "CONTEXT" && input.facetKeys.length > 0 && input.claimIds.length === 0) {
+    throw new Error("Context evidence facet keys require at least one referenced claim.");
+  }
   if (new Set(input.facetKeys).size !== input.facetKeys.length) {
     throw new Error("Evidence facet keys must be unique.");
   }
@@ -656,10 +754,12 @@ export async function listTimeline(investigationId: string, runId: string, entit
     validFrom: Date | null;
     validTo: Date | null;
     artifactId: string;
+    timelineState: TimelineState;
   }[]
 > {
-  const rows = await getSql()<
-    {
+  const sql = getSql();
+  const [rows, evidence, entities, links, runs] = await Promise.all([
+    sql<Array<{
       id: string;
       entityId: string;
       field: string;
@@ -669,8 +769,7 @@ export async function listTimeline(investigationId: string, runId: string, entit
       validFrom: Date | null;
       validTo: Date | null;
       artifactId: string;
-    }[]
-  >`
+    }>>`
     SELECT id, entity_id AS "entityId", field, value_json AS value,
       observed_at AS "observedAt", source_event_at AS "sourceEventAt",
       valid_from AS "validFrom", valid_to AS "validTo", artifact_id AS "artifactId"
@@ -678,8 +777,35 @@ export async function listTimeline(investigationId: string, runId: string, entit
     WHERE investigation_id = ${investigationId} AND run_id = ${runId}
       AND (${entityId ?? null}::uuid IS NULL OR entity_id = ${entityId ?? null})
     ORDER BY valid_from NULLS LAST, observed_at, id
-  `;
-  return [...rows];
+  `,
+    sql<Array<{ artifactId: string; relation: "SUPPORTS" | "CONTRADICTS" | "CONTEXT"; sourceAuthority: string | null; independenceGroup: string | null; sourceUrl: string | null; provider: string | null; kind: string | null }>>`
+      SELECT evidence.artifact_id AS "artifactId", evidence.relation,
+        COALESCE(artifact.source_authority, evidence.source_tier, 'CONTEXT') AS "sourceAuthority",
+        COALESCE(artifact.independence_group, 'LEGACY_ARTIFACT:' || artifact.id::text) AS "independenceGroup",
+        artifact.source_url AS "sourceUrl", artifact.provider, artifact.kind
+      FROM evidence JOIN artifacts AS artifact ON artifact.id = evidence.artifact_id
+      WHERE evidence.investigation_id = ${investigationId} AND evidence.run_id = ${runId}
+    `,
+    sql<Array<{ id: string; type: string; canonicalName: string; metadata: Record<string, unknown> }>>`
+      SELECT id, type, canonical_name AS "canonicalName", metadata
+      FROM entities WHERE investigation_id = ${investigationId} AND run_id = ${runId}
+    `,
+    sql<Array<{ fromEntityId: string; toEntityId: string; relationship: string }>>`
+      SELECT from_entity_id AS "fromEntityId", to_entity_id AS "toEntityId", relationship
+      FROM entity_links WHERE investigation_id = ${investigationId} AND run_id = ${runId}
+    `,
+    sql<Array<{ rootCandidate: string | null }>>`
+      SELECT root_entity_id AS "rootCandidate" FROM runs WHERE id = ${runId} AND investigation_id = ${investigationId}
+    `,
+  ]);
+  const rootCandidate = runs[0]?.rootCandidate ?? null;
+  const effectiveEvidence = evidence.map((edge) => {
+    const artifact = { sourceAuthority: edge.sourceAuthority, sourceUrl: edge.sourceUrl, provider: edge.provider, kind: edge.kind, independenceGroup: edge.independenceGroup };
+    const sourceAuthority = effectiveSourceAuthority({ artifact, entities, entityLinks: links, rootCandidate });
+    const attestationGroup = effectiveAttestationGroup({ artifact: { ...artifact, sourceAuthority }, entities, entityLinks: links, rootCandidate });
+    return { artifactId: edge.artifactId, relation: edge.relation, sourceAuthority, attestationGroup };
+  });
+  return deriveTimelineStates(rows, effectiveEvidence);
 }
 
 export async function getEntityGraph(investigationId: string, runId: string): Promise<{
@@ -754,9 +880,16 @@ export async function beginResearchWave(input: CaseIds & {
     if (input.kind === "TARGETED" && (run.waveCount !== 1 || !input.escalationReason)) throw new Error("A targeted second wave requires one completed initial wave and an allowed escalation reason.");
     if (input.kind === "TARGETED") {
       const current = run.waveState.current;
+    const assignments = current && typeof current === "object" && Array.isArray((current as { assignments?: unknown }).assignments)
+      ? (current as { assignments: Array<{ status?: unknown }> }).assignments
+      : [];
+    if (assignments.length > 0) {
+      if (assignments.some((assignment) => assignment.status !== "COMPLETED")) throw new Error("The initial research tasks must finish before a targeted second wave begins.");
+    } else {
       const roles = current && typeof current === "object" && Array.isArray((current as { roles?: unknown }).roles) ? (current as { roles: unknown[] }).roles.map(String) : [];
       const completedRoles = current && typeof current === "object" && Array.isArray((current as { completedRoles?: unknown }).completedRoles) ? (current as { completedRoles: unknown[] }).completedRoles.map(String) : [];
       if (roles.some((role) => !completedRoles.includes(role))) throw new Error("The initial research tasks must finish before a targeted second wave begins.");
+    }
     }
     if (input.kind === "INITIAL") {
       const claims = await transaction<Array<{ id: string; normalizedClaim: string; facets: ClaimFacet[] }>>`
@@ -792,7 +925,7 @@ export async function beginResearchWave(input: CaseIds & {
     if (active.length !== new Set(input.questionIds).size) throw new Error("Every research-wave question must be active in this run.");
     const waveNumber = (run.waveCount + 1) as 1 | 2;
     const priorWaves = Array.isArray(run.waveState.waves) ? run.waveState.waves : [];
-    const wave = { waveNumber, kind: input.kind, questionIds: [...new Set(input.questionIds)], escalationReason: input.escalationReason ?? null, roles: [], completedRoles: [], publicRationale: input.publicRationale, startedAt: new Date().toISOString() };
+    const wave = { waveNumber, kind: input.kind, questionIds: [...new Set(input.questionIds)], escalationReason: input.escalationReason ?? null, roles: [], completedRoles: [], assignments: [], publicRationale: input.publicRationale, startedAt: new Date().toISOString() };
     await transaction`
       UPDATE runs SET research_wave_count = ${waveNumber},
         research_wave_state = ${transaction.json(toJson({ waves: [...priorWaves, wave], current: wave }))},
@@ -803,11 +936,14 @@ export async function beginResearchWave(input: CaseIds & {
 }
 
 export async function authorizeResearchTask(input: CaseIds & {
+  assignmentId: string;
   role: ResearchRole;
+  questionIds: string[];
   agent: string;
   sessionId?: string;
-}): Promise<{ waveNumber: number; role: ResearchRole }> {
+}): Promise<{ waveNumber: number; assignmentId: string; role: ResearchRole; questionIds: string[] }> {
   if (input.agent !== "lead-investigator" || !researchRoles.includes(input.role)) throw new Error("Research task delegation is not authorized for this agent or role.");
+  if (!input.assignmentId || input.questionIds.length < 1 || input.questionIds.length > 3 || new Set(input.questionIds).size !== input.questionIds.length) throw new Error("A research assignment requires one to three unique question IDs.");
   return getSql().begin(async (transaction) => {
     const [run] = await transaction<Array<{ waveCount: number; waveState: Record<string, unknown> }>>`
       SELECT research_wave_count AS "waveCount", research_wave_state AS "waveState"
@@ -816,24 +952,43 @@ export async function authorizeResearchTask(input: CaseIds & {
     if (!run || run.waveCount < 1 || run.waveCount > 2) throw new Error("Begin a durable research wave before delegating tasks.");
     const current = run.waveState.current;
     if (!current || typeof current !== "object") throw new Error("The current research wave is missing.");
+    const activeQuestions = await transaction<Array<{ id: string }>>`
+      SELECT id FROM research_questions
+      WHERE investigation_id = ${input.investigationId} AND run_id = ${input.runId}
+        AND id = ANY(${input.questionIds}::uuid[]) AND status IN ('OPEN', 'IN_PROGRESS')
+    `;
+    if (activeQuestions.length !== input.questionIds.length) throw new Error("Every research assignment question must be active in this run.");
+    const waveQuestionIds = new Set(Array.isArray((current as { questionIds?: unknown }).questionIds) ? (current as { questionIds: unknown[] }).questionIds.map(String) : []);
+    const outsideWave = input.questionIds.find((questionId) => !waveQuestionIds.has(questionId));
+    if (outsideWave) throw new Error(`Research question ${outsideWave} is not assigned to the current wave.`);
     const roles = Array.isArray((current as { roles?: unknown }).roles) ? (current as { roles: unknown[] }).roles.map(String) : [];
-    if (roles.includes(input.role)) throw new Error(`The ${input.role} role has already been delegated in this wave.`);
-    const updatedCurrent = { ...(current as Record<string, unknown>), roles: [...roles, input.role] };
+    const assignments = Array.isArray((current as { assignments?: unknown }).assignments)
+      ? (current as { assignments: Array<{ assignmentId: string; role: ResearchRole; questionIds: string[]; status: string }> }).assignments
+      : [];
+    if (assignments.some((assignment) => assignment.assignmentId === input.assignmentId)) throw new Error(`Research assignment ${input.assignmentId} already exists in this wave.`);
+    const roleAssignments = assignments.filter((assignment) => assignment.role === input.role);
+    if (roleAssignments.length >= 2) throw new Error(`The ${input.role} role has reached the maximum two assignments in this wave.`);
+    const assignedQuestionIds = new Set(assignments.flatMap((assignment) => assignment.questionIds));
+    const overlap = input.questionIds.find((questionId) => assignedQuestionIds.has(questionId));
+    if (overlap) throw new Error(`Research question ${overlap} is already assigned in this wave.`);
+    const assignment = { assignmentId: input.assignmentId, role: input.role, questionIds: [...input.questionIds], status: "AUTHORIZED", authorizedAt: new Date().toISOString(), authorizedBySession: input.sessionId ?? null };
+    const updatedCurrent = { ...(current as Record<string, unknown>), roles: [...new Set([...roles, input.role])], assignments: [...assignments, assignment] };
     const waves = Array.isArray(run.waveState.waves) ? [...run.waveState.waves] : [];
     waves[run.waveCount - 1] = updatedCurrent;
     await transaction`
       UPDATE runs SET research_wave_state = ${transaction.json(toJson({ waves, current: updatedCurrent }))},
         updated_at = now() WHERE id = ${input.runId}
     `;
-    return { waveNumber: run.waveCount, role: input.role };
+    return { waveNumber: run.waveCount, assignmentId: input.assignmentId, role: input.role, questionIds: input.questionIds };
   });
 }
 
 export async function completeResearchTask(input: CaseIds & {
+  assignmentId: string;
   role: ResearchRole;
   agent: string;
   sessionId?: string;
-}): Promise<{ waveNumber: number; role: ResearchRole; completed: true }> {
+}): Promise<{ waveNumber: number; assignmentId: string; role: ResearchRole; completed: true }> {
   if (input.agent !== "lead-investigator" || !researchRoles.includes(input.role)) throw new Error("Research task completion is not authorized for this agent or role.");
   return getSql().begin(async (transaction) => {
     const [run] = await transaction<Array<{ waveCount: number; waveState: Record<string, unknown> }>>`
@@ -842,14 +997,18 @@ export async function completeResearchTask(input: CaseIds & {
     `;
     const current = run?.waveState.current;
     if (!run || !current || typeof current !== "object") throw new Error("The current research wave is missing.");
-    const roles = Array.isArray((current as { roles?: unknown }).roles) ? (current as { roles: unknown[] }).roles.map(String) : [];
-    if (!roles.includes(input.role)) throw new Error(`The ${input.role} role was not authorized in this wave.`);
-    const completed = Array.isArray((current as { completedRoles?: unknown }).completedRoles) ? (current as { completedRoles: unknown[] }).completedRoles.map(String) : [];
-    const updatedCurrent = { ...(current as Record<string, unknown>), completedRoles: [...new Set([...completed, input.role])] };
+    const assignments = Array.isArray((current as { assignments?: unknown }).assignments)
+      ? (current as { assignments: Array<{ assignmentId: string; role: ResearchRole; status: string }> }).assignments
+      : [];
+    const assignmentIndex = assignments.findIndex((assignment) => assignment.assignmentId === input.assignmentId && assignment.role === input.role);
+    if (assignmentIndex < 0) throw new Error(`Research assignment ${input.assignmentId} was not authorized in this wave.`);
+    const updatedAssignments = assignments.map((assignment, index) => index === assignmentIndex ? { ...assignment, status: "COMPLETED", completedAt: new Date().toISOString() } : assignment);
+    const completedRoles = [...new Set(updatedAssignments.filter((assignment) => assignment.status === "COMPLETED").map((assignment) => assignment.role))];
+    const updatedCurrent = { ...(current as Record<string, unknown>), assignments: updatedAssignments, completedRoles };
     const waves = Array.isArray(run.waveState.waves) ? [...run.waveState.waves] : [];
     waves[run.waveCount - 1] = updatedCurrent;
     await transaction`UPDATE runs SET research_wave_state = ${transaction.json(toJson({ waves, current: updatedCurrent }))}, updated_at = now() WHERE id = ${input.runId}`;
-    return { waveNumber: run.waveCount, role: input.role, completed: true };
+    return { waveNumber: run.waveCount, assignmentId: input.assignmentId, role: input.role, completed: true };
   });
 }
 
@@ -859,6 +1018,7 @@ export async function resolveResearchQuestion(
     selectedRoute: string;
     status: Extract<ResearchQuestionStatus, "RESOLVED" | "EXHAUSTED" | "SKIPPED">;
     resolutionSummary: string;
+    reviewedArtifactIds?: string[];
   },
 ): Promise<{
   id: string;
@@ -866,25 +1026,77 @@ export async function resolveResearchQuestion(
   selectedRoute: string;
   resolvedAt: Date;
 }> {
-  const [row] = await getSql()<
-    {
+  return getSql().begin(async (transaction) => {
+    const [question] = await transaction<Array<{ id: string; claimIds: string[] }>>`
+      SELECT id, claim_ids AS "claimIds"
+      FROM research_questions
+      WHERE id = ${input.questionId}
+        AND investigation_id = ${input.investigationId}
+        AND run_id = ${input.runId}
+      FOR UPDATE
+    `;
+    if (!question) throw new Error("Research question not found.");
+    const reviewedArtifactIds = [...new Set(input.reviewedArtifactIds ?? [])];
+    if (input.status === "EXHAUSTED") {
+      const successfulArtifacts = await transaction<Array<{ id: string }>>`
+        SELECT DISTINCT artifact.id
+        FROM provider_calls AS provider_call
+        JOIN LATERAL unnest(provider_call.artifact_ids) AS captured(id) ON true
+        JOIN artifacts AS artifact ON artifact.id = captured.id
+        WHERE provider_call.investigation_id = ${input.investigationId}
+          AND provider_call.run_id = ${input.runId}
+          AND provider_call.request_metadata->>'questionId' = ${input.questionId}
+          AND provider_call.result_status IN ('OK', 'CACHE_HIT')
+          AND artifact.investigation_id = ${input.investigationId}
+          AND artifact.run_id = ${input.runId}
+          AND artifact.kind <> 'SEARCH_DISCOVERY'
+          AND artifact.provenance->>'isSearchSnippet' IS DISTINCT FROM 'true'
+        ORDER BY artifact.id
+      `;
+      const successfulIds = successfulArtifacts.map(({ id }) => id);
+      const invalidReviewed = reviewedArtifactIds.filter((id) => !successfulIds.includes(id));
+      if (invalidReviewed.length > 0) throw new Error(`REVIEWED_ARTIFACT_NOT_ELIGIBLE: ${invalidReviewed.join(", ")}`);
+      const evidenceArtifacts = successfulIds.length > 0
+        ? await transaction<Array<{ id: string }>>`
+          SELECT DISTINCT artifact_id AS id
+          FROM evidence
+          WHERE investigation_id = ${input.investigationId}
+            AND run_id = ${input.runId}
+            AND artifact_id = ANY(${successfulIds}::uuid[])
+        `
+        : [];
+      const evidencedIds = new Set(evidenceArtifacts.map(({ id }) => id));
+      const unreviewed = successfulIds.filter((id) => !evidencedIds.has(id) && !reviewedArtifactIds.includes(id));
+      if (unreviewed.length > 0) throw new Error(`UNREVIEWED_ARTIFACTS: ${unreviewed.join(", ")}`);
+      await transaction`
+        INSERT INTO agent_events (
+          investigation_id, run_id, phase, agent, event_type, status,
+          budget_delta, public_rationale, payload
+        ) VALUES (
+          ${input.investigationId}, ${input.runId}, 'RESEARCH', 'gateway', 'RESEARCH_ARTIFACTS_REVIEWED', 'COMPLETED',
+          '{}'::jsonb, 'Every successful evidence-eligible artifact for an exhausted question had durable evidence or an explicit local review.',
+          ${transaction.json(toJson({ questionId: input.questionId, artifactIds: successfulIds, evidencedArtifactIds: [...evidencedIds], reviewedArtifactIds }))}
+        )
+      `;
+    }
+    const [row] = await transaction<Array<{
       id: string;
       status: ResearchQuestionStatus;
       selectedRoute: string;
       resolvedAt: Date;
-    }[]
-  >`
-    UPDATE research_questions
-    SET selected_route = ${input.selectedRoute}, status = ${input.status},
-        resolution_summary = ${input.resolutionSummary}, resolved_at = now(),
-        updated_at = now()
-    WHERE id = ${input.questionId}
-      AND investigation_id = ${input.investigationId}
-      AND run_id = ${input.runId}
-    RETURNING id, status, selected_route AS "selectedRoute", resolved_at AS "resolvedAt"
-  `;
-  if (!row) throw new Error("Research question not found.");
-  return row;
+    }>>`
+      UPDATE research_questions
+      SET selected_route = ${input.selectedRoute}, status = ${input.status},
+          resolution_summary = ${input.resolutionSummary}, resolved_at = now(),
+          updated_at = now()
+      WHERE id = ${input.questionId}
+        AND investigation_id = ${input.investigationId}
+        AND run_id = ${input.runId}
+      RETURNING id, status, selected_route AS "selectedRoute", resolved_at AS "resolvedAt"
+    `;
+    if (!row) throw new Error("Research question not found.");
+    return row;
+  });
 }
 
 export async function selectResearchRoute(input: CaseIds & {
@@ -949,6 +1161,40 @@ export async function reconcileResearchFrontier(
   runId: string,
 ): Promise<{ reconciledCount: number; activeCount: 0 }> {
   return getSql().begin(async (transaction) => {
+    const activeQuestions = await transaction<Array<{ id: string }>>`
+      SELECT id FROM research_questions
+      WHERE investigation_id = ${investigationId} AND run_id = ${runId}
+        AND status IN ('OPEN', 'IN_PROGRESS')
+      FOR UPDATE
+    `;
+    const activeQuestionIds = activeQuestions.map(({ id }) => id);
+    const successfulArtifacts = activeQuestionIds.length > 0
+      ? await transaction<Array<{ questionId: string; artifactId: string }>>`
+        SELECT DISTINCT provider_call.request_metadata->>'questionId' AS "questionId", artifact.id AS "artifactId"
+        FROM provider_calls AS provider_call
+        JOIN LATERAL unnest(provider_call.artifact_ids) AS captured(id) ON true
+        JOIN artifacts AS artifact ON artifact.id = captured.id
+        WHERE provider_call.investigation_id = ${investigationId}
+          AND provider_call.run_id = ${runId}
+          AND provider_call.request_metadata->>'questionId' = ANY(${activeQuestionIds}::text[])
+          AND provider_call.result_status IN ('OK', 'CACHE_HIT')
+          AND artifact.investigation_id = ${investigationId}
+          AND artifact.run_id = ${runId}
+          AND artifact.kind <> 'SEARCH_DISCOVERY'
+          AND artifact.provenance->>'isSearchSnippet' IS DISTINCT FROM 'true'
+      `
+      : [];
+    const successfulArtifactIds = [...new Set(successfulArtifacts.map(({ artifactId }) => artifactId))];
+    const evidencedArtifactIds = successfulArtifactIds.length > 0
+      ? await transaction<Array<{ id: string }>>`
+        SELECT DISTINCT artifact_id AS id FROM evidence
+        WHERE investigation_id = ${investigationId} AND run_id = ${runId}
+          AND artifact_id = ANY(${successfulArtifactIds}::uuid[])
+      `
+      : [];
+    const evidenced = new Set(evidencedArtifactIds.map(({ id }) => id));
+    const unreviewed = successfulArtifactIds.filter((id) => !evidenced.has(id));
+    if (unreviewed.length > 0) throw new Error(`UNREVIEWED_ARTIFACTS: ${unreviewed.join(", ")}`);
     const reconciled = await transaction<Array<{ id: string }>>`
       UPDATE research_questions
       SET status = 'EXHAUSTED', resolution_summary = ${RESEARCH_RECONCILIATION_LIMITATION},
