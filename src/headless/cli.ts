@@ -8,7 +8,8 @@ import { ProviderExecutor } from "../providers/executor.ts";
 import { E2BRuntime } from "../runtime/e2b.ts";
 import { getPinnedLocalManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
-import { MemoryRunBudget } from "./budget.ts";
+import { currentCheckpointConfigs } from "./checkpoint-config.ts";
+import { openPersistentRunBudget } from "./checkpoint.ts";
 import { parseInvestigationArguments } from "./cli-options.ts";
 import { HeadlessInvestigationController } from "./controller.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
@@ -104,7 +105,18 @@ async function main(): Promise<void> {
       startedAt,
       runId,
     });
-    const budget = new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 300, repositoryClones: 3, socialProfiles: 1 });
+    const expectedManifestHash = await getPinnedLocalManifestHash();
+    const researchModel = process.env.RESEARCH_MODEL ?? "deepseek-v4-flash";
+    const compilerModel = process.env.FINALIZER_MODEL ?? "deepseek-v4-pro";
+    const checkpointConfigs = await currentCheckpointConfigs({
+      repositoryRoot: process.cwd(),
+      runtime: options.runtime,
+      providerMode: options.providerMode,
+      researchModel,
+      compilerModel,
+      runtimeManifestHash: expectedManifestHash,
+    });
+    const budget = await openPersistentRunBudget(workspace.root, { modelUsd: 5, providerUsd: 10, externalNetworkCalls: 300, repositoryClones: 3, socialProfiles: 1 });
     const providerExecutor = new ProviderExecutor(providerEnvironment(options.providerMode), createFileProviderBackend({ sourceStore: workspace.sourceStore, budget, deadlineAt: deadlineAt.getTime() }));
     const researchProvider = process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
     const finalizerProvider = process.env.FINALIZER_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
@@ -113,7 +125,7 @@ async function main(): Promise<void> {
       runId,
       deadlineAt: deadlineAt.getTime(),
       allowedTools: new Set([...toolNames, "source.excerpts"]),
-      allowedModels: new Set([process.env.RESEARCH_MODEL ?? "deepseek-v4-flash", process.env.FINALIZER_MODEL ?? "deepseek-v4-pro", "mimo-v2.5-free"]),
+      allowedModels: new Set([researchModel, compilerModel, "mimo-v2.5-free"]),
       agentTools: agentToolAllowlist(),
       executor: providerExecutor,
       sourceStore: workspace.sourceStore,
@@ -122,7 +134,7 @@ async function main(): Promise<void> {
       researchUpstreamUrl: upstream(researchProvider),
       finalizerUpstreamUrl: upstream(finalizerProvider),
       finalizerProvider,
-      finalizerModel: process.env.FINALIZER_MODEL ?? "deepseek-v4-pro",
+      finalizerModel: compilerModel,
       fixtureCompletion: (body, agent) => fixture(body, agent),
       onModelRequest: ({ agent, estimatedInputTokens }) => {
         if (agent === "evidence-compiler" || agent === "evidence-auditor") process.stderr.write(`Run ${runId}: ${agent} request estimated input tokens ${estimatedInputTokens}.\n`);
@@ -137,7 +149,6 @@ async function main(): Promise<void> {
       runtime = new E2BRuntime({ apiKey: process.env.E2B_API_KEY, templateId: process.env.E2B_TEMPLATE_ID });
     } else runtime = new LocalDockerRuntime();
     const password = randomBytes(24).toString("base64url");
-    const expectedManifestHash = await getPinnedLocalManifestHash();
     process.stderr.write(`Run ${runId}: starting ${options.runtime.toLowerCase()} OpenCode runtime.\n`);
     handle = await runtime.start({
       investigationId: runId,
@@ -171,11 +182,13 @@ async function main(): Promise<void> {
       startedAt,
       inputSha256: workspace.inputSha256,
       classification: options.classification,
-      researchModel: process.env.RESEARCH_MODEL ?? "deepseek-v4-flash",
-      compilerModel: process.env.FINALIZER_MODEL ?? "deepseek-v4-pro",
-      auditorModel: process.env.FINALIZER_MODEL ?? "deepseek-v4-pro",
+      researchModel,
+      compilerModel,
+      auditorModel: compilerModel,
       finalizerProvider,
       registerExcerptAllowance: gateway.registerExcerptAllowance,
+      researchCheckpointConfig: checkpointConfigs.research,
+      dossierCheckpointConfig: checkpointConfigs.dossier,
       onLeadStarted: async (sessionId) => {
         process.stderr.write(`Run ${runId}: lead session ${sessionId} is visible${options.watch ? " in the attached TUI" : ` with npm run attach -- ${runId}`}.\n`);
         if (options.watch && handle) watchProcess = attachTui(handle, password, sessionId);

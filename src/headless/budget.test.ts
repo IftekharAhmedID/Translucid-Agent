@@ -10,8 +10,8 @@ test("enforces model, provider, network, and route ceilings atomically", async (
     budget.recordNetworkCall("web.fetch"),
     budget.recordNetworkCall("github.clone"),
   ]);
-  budget.reserveModel(1.25);
-  budget.recordProvider(2.5);
+  await budget.reserveModel(1.25);
+  await budget.recordProvider(2.5);
 
   assert.deepEqual(budget.snapshot(), {
     modelUsd: 1.25,
@@ -26,8 +26,33 @@ test("enforces model, provider, network, and route ceilings atomically", async (
   await assert.rejects(() => routeBudget.recordNetworkCall("github.clone"), /repository clone budget/i);
 });
 
-test("rejects provider and model reservations beyond their ceilings", () => {
+test("rejects provider and model reservations beyond their ceilings", async () => {
   const budget = new MemoryRunBudget({ modelUsd: 1, providerUsd: 1, externalNetworkCalls: 10, repositoryClones: 3, socialProfiles: 1 });
-  assert.throws(() => budget.reserveModel(1.01), /model budget/i);
-  assert.throws(() => budget.recordProvider(1.01), /provider budget/i);
+  await assert.rejects(() => budget.reserveModel(1.01), /model budget/i);
+  await assert.rejects(() => budget.recordProvider(1.01), /provider budget/i);
+});
+
+test("restores cumulative usage and persists every successful reservation", async () => {
+  const persisted = [] as Array<ReturnType<MemoryRunBudget["snapshot"]>>;
+  const budget = new MemoryRunBudget(
+    { modelUsd: 5, providerUsd: 10, externalNetworkCalls: 5, repositoryClones: 3, socialProfiles: 1 },
+    {
+      initial: { modelUsd: 1, providerUsd: 2, externalNetworkCalls: 1, routeCounts: { "web.fetch": 1 } },
+      onChange: (snapshot) => { persisted.push(structuredClone(snapshot)); },
+    },
+  );
+
+  await budget.reserveModel(0.5);
+  await budget.recordProvider(1);
+  await budget.recordNetworkCall("github.rest");
+  await budget.flush();
+
+  assert.deepEqual(budget.snapshot(), {
+    modelUsd: 1.5,
+    providerUsd: 3,
+    externalNetworkCalls: 2,
+    routeCounts: { "github.rest": 1, "web.fetch": 1 },
+  });
+  assert.equal(persisted.length, 3);
+  assert.deepEqual(persisted.at(-1), budget.snapshot());
 });

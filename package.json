@@ -8,6 +8,7 @@
   },
   "scripts": {
     "investigate": "node --env-file-if-exists=.env --import tsx src/headless/cli.ts",
+    "finalize": "node --env-file-if-exists=.env --import tsx src/headless/finalize-cli.ts",
     "dev:legacy": "next dev --hostname 127.0.0.1",
     "runner:legacy": "node --env-file-if-exists=.env --import tsx src/runner/index.ts",
     "gateway:legacy": "node --env-file-if-exists=.env --import tsx src/gateway/server.ts",

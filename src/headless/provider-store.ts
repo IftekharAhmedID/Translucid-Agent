@@ -64,9 +64,9 @@ export function createFileProviderBackend(options: Options): ProviderCallBackend
       toolCounts.set(input.semanticTool, toolCount + 1);
       await options.budget.recordNetworkCall(input.providerRoute);
       const reserved = input.knownCost?.costUsd ?? 0;
-      if (reserved > 0) options.budget.recordProvider(reserved);
+      if (reserved > 0) await options.budget.recordProvider(reserved);
       const result = await input.run(AbortSignal.timeout(providerDeadlineMs(input.providerRoute, options.deadlineAt)), () => undefined);
-      if (result.costUsd > reserved) options.budget.recordProvider(result.costUsd - reserved);
+      if (result.costUsd > reserved) await options.budget.recordProvider(result.costUsd - reserved);
       const artifactInputs = result.artifacts ?? [{
         kind: "PROVIDER_RESPONSE",
         sourceUrl: result.sourceUrl,

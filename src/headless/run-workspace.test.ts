@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import PDFDocument from "pdfkit";
 
-import { createRunWorkspace, removeRunDiagnostics, sealRunFailure } from "./run-workspace.ts";
+import { createRunWorkspace, openRunWorkspace, removeRunDiagnostics, sealRunFailure } from "./run-workspace.ts";
 
 async function writeSyntheticPdf(path: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -141,6 +141,29 @@ test("requires an input and refuses to overwrite an existing run", async () => {
       createRunWorkspace({ outputDirectory: directory, submissionPath: submission, classification: "SYNTHETIC", runtime: "LOCAL", runId: "duplicate" }),
       /already exists/i,
     );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("opens an existing run without changing its immutable input", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-open-run-"));
+  try {
+    const submission = join(directory, "submission.txt");
+    await writeFile(submission, "Synthetic Candidate worked at Acme Labs.");
+    const created = await createRunWorkspace({
+      outputDirectory: directory,
+      submissionPath: submission,
+      classification: "SYNTHETIC",
+      runtime: "LOCAL",
+      runId: "existing-run",
+      startedAt: "2026-08-11T12:00:00.000Z",
+    });
+    const opened = await openRunWorkspace(created.root);
+    assert.equal(opened.runId, "existing-run");
+    assert.equal(opened.runtime, "LOCAL");
+    assert.equal(opened.classification, "SYNTHETIC");
+    assert.equal(opened.inputSha256, created.inputSha256);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

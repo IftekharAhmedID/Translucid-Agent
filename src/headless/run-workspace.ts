@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { z } from "zod";
 
 import { normalizeSubmission, sha256, validatePdfBytes } from "../core/input.ts";
 import { extractPdf } from "../../runtime/extract-input.ts";
@@ -23,6 +24,19 @@ export type RunWorkspace = {
   startedAt: string;
   sourceStore: FileSourceStore;
 };
+
+export type ExistingRunWorkspace = RunWorkspace & {
+  classification: "SYNTHETIC" | "PUBLIC_PROFESSIONAL";
+  runtime: "LOCAL" | "E2B";
+};
+
+const existingManifestSchema = z.object({
+  runId: z.string().min(1),
+  classification: z.enum(["SYNTHETIC", "PUBLIC_PROFESSIONAL"]),
+  runtime: z.enum(["LOCAL", "E2B"]),
+  startedAt: z.string().min(1),
+  inputSha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).loose();
 
 export async function removeRunDiagnostics(root: string): Promise<void> {
   for (const path of [".bun", ".cache", ".config", ".local", ".npm", ".opencode", ".work", "output"]) {
@@ -123,6 +137,23 @@ export async function createRunWorkspace(input: RunWorkspaceInput): Promise<RunW
   await writeFile(join(inputDirectory, "manifest.json"), JSON.stringify(manifest, null, 2), { flag: "wx", mode: 0o600 });
   const sourceStore = await FileSourceStore.open(root);
   return { runId, root, inputSha256, startedAt, sourceStore };
+}
+
+export async function openRunWorkspace(rootPath: string): Promise<ExistingRunWorkspace> {
+  const root = resolve(rootPath);
+  const manifest = existingManifestSchema.parse(JSON.parse(await readFile(join(root, "input", "manifest.json"), "utf8")));
+  if (safeRunId(manifest.runId) !== basename(root)) throw new Error("Run directory name does not match its immutable input manifest.");
+  await readFile(join(root, "input", "document.json"));
+  const sourceStore = await FileSourceStore.open(root);
+  return {
+    runId: manifest.runId,
+    root,
+    inputSha256: manifest.inputSha256,
+    startedAt: manifest.startedAt,
+    sourceStore,
+    classification: manifest.classification,
+    runtime: manifest.runtime,
+  };
 }
 
 type FailureInput = {

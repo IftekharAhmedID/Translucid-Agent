@@ -45,7 +45,7 @@ type GatewayInput = {
   deadlineAt: number;
   allowedTools: Set<string>;
   allowedModels: Set<string>;
-  executor: ProviderExecutor;
+  executor?: ProviderExecutor;
   sourceStore: FileSourceStore;
   budget: MemoryRunBudget;
   providerMode: "fixture" | "live";
@@ -103,6 +103,7 @@ export function createHeadlessGateway(input: GatewayInput) {
           return json(response, 200, excerpt);
         }
         if (!toolNames.includes(name as (typeof toolNames)[number])) throw new GatewayError(403, "State and database tools are unavailable in headless runs.");
+        if (!input.executor) throw new GatewayError(403, "Research providers are unavailable during finalization-only recovery.");
         const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
         const result = await input.executor.executeHeadless({ tool: name, arguments: body.arguments }, {
           runId: input.runId,
@@ -119,7 +120,7 @@ export function createHeadlessGateway(input: GatewayInput) {
         const remainingMs = input.deadlineAt - Date.now();
         if (remainingMs <= 0) throw new GatewayError(401, "Investigation deadline reached.");
         input.onModelRequest?.({ agent, estimatedInputTokens: estimateModelInputTokens(body) });
-        input.budget.reserveModel(modelCostReservation(body, model));
+        await input.budget.reserveModel(modelCostReservation(body, model));
         await proxyModelCompletion({
           request,
           response,
