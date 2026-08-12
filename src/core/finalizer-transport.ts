@@ -13,12 +13,12 @@ function normalizedModel(model: string): string {
   return model.split("/").at(-1)?.toLowerCase() ?? model.toLowerCase();
 }
 
-export function finalizerOutputTransport(provider: "ZEN" | "GO", model: string): FinalizerOutputTransport {
-  // OpenCode's native structured output forces a tool choice. GO's DeepSeek V4
-  // thinking models accept automatic tools but reject forced tool_choice.
-  return provider === "GO" && normalizedModel(model).startsWith("deepseek-v4-")
-    ? "JSON_OBJECT"
-    : "NATIVE_JSON_SCHEMA";
+export function finalizerOutputTransport(...args: ["ZEN" | "GO", string]): FinalizerOutputTransport {
+  // The installed OpenCode SDK rejects its native schema envelope before the
+  // request reaches either provider. Keep finalizers on the compatible JSON
+  // path; host-side schemas remain the authoritative validation gate.
+  void args;
+  return "JSON_OBJECT";
 }
 
 export function prepareFinalizerUpstreamBody(
@@ -28,6 +28,9 @@ export function prepareFinalizerUpstreamBody(
   if (!input.agent || !finalizerAgents.has(input.agent)) return body;
   if (input.agent === "evidence-compiler" && JSON.stringify(body.messages ?? "").includes(FINALIZER_TEXT_MODE_MARKER)) return body;
   if (finalizerOutputTransport(input.provider, input.model) !== "JSON_OBJECT") return body;
+  // MiMo's Go endpoint accepts the JSON-only instruction but rejects the
+  // optional OpenAI response_format object. Host-side parsing remains strict.
+  if (normalizedModel(input.model).startsWith("mimo-")) return body;
   const requestedTokens = Number(body.max_tokens ?? body.max_completion_tokens);
   const maxTokens = Number.isFinite(requestedTokens) && requestedTokens > 0
     ? Math.max(requestedTokens, 16_384)

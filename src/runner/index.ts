@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 
 import { OpenCodeInvestigationController } from "../agent/controller.ts";
 import { getConfig } from "../core/config.ts";
+import { PAID_GO_MODEL_IDS } from "../core/model-catalog.ts";
 import { assertProviderModeAllowsClassification } from "../core/provider-boundary.ts";
 import { getSql } from "../db/client.ts";
 import { claimRuns, heartbeatRun, insertAgentEvent, persistRunCapabilitySnapshot, type ClaimedRun } from "../db/investigations.ts";
@@ -85,7 +86,7 @@ async function runOne(run: ClaimedRun, runnerId: string, expectedManifestHash: s
       investigationId: run.investigationId,
       runId: run.id,
       allowedTools: [...toolNames, ...stateToolNames, "state.compaction"],
-      allowedModels: [...new Set([`opencode/${config.researchModel}`, `opencode/${config.finalizerModel}`, "opencode/mimo-v2.5-pro", "opencode/mimo-v2.5-free"])],
+      allowedModels: [...new Set([`opencode/${config.researchModel}`, ...PAID_GO_MODEL_IDS.map((model) => `opencode/${model}`)])],
       ttlMs: Math.max(1_000, Math.min(config.investigationTimeoutMs, run.deadlineAt.getTime() - Date.now())),
     });
     const openCodePassword = randomBytes(24).toString("base64url");

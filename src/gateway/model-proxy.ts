@@ -5,10 +5,11 @@ import { decodeJsonToolNames, encodeModelToolNames, SseToolNameDecoder } from ".
 import { writeFixtureCompletion, type Completion } from "./fixture-model.ts";
 
 export function modelCostReservation(body: Record<string, unknown>, model: string): number {
-  if (model === "mimo-v2.5-free") return 0;
   const estimatedInputTokens = estimateModelInputTokens(body);
   const maximumOutputTokens = Math.min(Number(body.max_tokens ?? body.max_completion_tokens ?? 32_000), 384_000);
-  const rates = model === "deepseek-v4-pro" ? { input: 0.435, output: 0.87 } : model === "mimo-v2.5-pro" ? { input: 0.3, output: 1.2 } : { input: 0.14, output: 0.28 };
+  const rates = model === "deepseek-v4-pro" || model === "mimo-v2.5-pro"
+    ? { input: 0.435, output: 0.87 }
+    : { input: 0.14, output: 0.28 };
   return (estimatedInputTokens * rates.input + maximumOutputTokens * rates.output) / 1_000_000;
 }
 
@@ -57,6 +58,11 @@ export async function proxyModelCompletion(input: {
   } catch (error) {
     clearTimeout(timeout);
     throw error;
+  }
+  if (!upstream.ok) {
+    const detail = (await upstream.text()).slice(0, 2_000);
+    clearTimeout(timeout);
+    throw new Error(`LLM upstream returned HTTP ${upstream.status}: ${detail}`);
   }
   input.response.writeHead(upstream.status, {
     "content-type": upstream.headers.get("content-type") ?? "application/json",

@@ -4,6 +4,7 @@ import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { toolNames } from "../providers/contracts.ts";
+import { PAID_GO_MODEL_IDS } from "../core/model-catalog.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
 import { E2BRuntime } from "../runtime/e2b.ts";
 import { getPinnedLocalManifestHash, getPinnedResearchManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
@@ -108,7 +109,7 @@ async function main(): Promise<void> {
     const expectedManifestHash = await getPinnedLocalManifestHash();
     const researchManifestHash = await getPinnedResearchManifestHash();
     const researchModel = process.env.RESEARCH_MODEL ?? "deepseek-v4-flash";
-    const compilerModel = process.env.FINALIZER_MODEL ?? "deepseek-v4-pro";
+    const compilerModel = process.env.FINALIZER_MODEL ?? "mimo-v2.5-pro";
     const checkpointConfigs = await currentCheckpointConfigs({
       repositoryRoot: process.cwd(),
       runtime: options.runtime,
@@ -126,7 +127,7 @@ async function main(): Promise<void> {
       runId,
       deadlineAt: deadlineAt.getTime(),
       allowedTools: new Set([...toolNames, "source.excerpts"]),
-      allowedModels: new Set([researchModel, compilerModel, "mimo-v2.5-pro", "mimo-v2.5-free"]),
+      allowedModels: new Set([researchModel, ...PAID_GO_MODEL_IDS]),
       agentTools: agentToolAllowlist(),
       executor: providerExecutor,
       sourceStore: workspace.sourceStore,

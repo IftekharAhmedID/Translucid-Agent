@@ -152,10 +152,10 @@ test("controller never reconstructs handoffs from messages or injects duplicate 
   assert.doesNotMatch(source, /session\.messages|document\.txt|exactStoredBody|sourceBundle/);
 });
 
-test("finalizers use native schemas when supported and JSON objects for GO DeepSeek thinking models", () => {
+test("finalizers use the compatible JSON-object prompt on both provider routes", () => {
   const native = finalizerPromptPayload("ZEN", "deepseek-v4-pro", "Compile.", investigationDraftSchema);
-  assert.equal(native.format?.type, "json_schema");
-  assert.equal(native.parts[0].text, "Compile.");
+  assert.equal(native.format, undefined);
+  assert.match(native.parts[0].text, /Return only one complete JSON object/);
 
   const compatible = finalizerPromptPayload("GO", "deepseek-v4-pro", "Compile.", investigationDraftSchema);
   assert.equal(compatible.format, undefined);

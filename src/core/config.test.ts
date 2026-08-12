@@ -11,7 +11,7 @@ test("configuration defaults to the safe synthetic fixture runtime", () => {
   assert.equal(config.dataClassification, "SYNTHETIC");
   assert.equal(config.researchOpenCodeProvider, "GO");
   assert.equal(config.finalizerOpenCodeProvider, "GO");
-  assert.equal(config.finalizerModel, "deepseek-v4-pro");
+  assert.equal(config.finalizerModel, "mimo-v2.5-pro");
   assert.equal(config.researchOpenCodeUpstreamUrl, "https://opencode.ai/zen/go/v1/chat/completions");
   assert.equal(config.finalizerOpenCodeUpstreamUrl, "https://opencode.ai/zen/go/v1/chat/completions");
   assert.equal(config.reasoningVariant, "medium");

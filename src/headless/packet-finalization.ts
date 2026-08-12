@@ -66,7 +66,11 @@ type Input = {
 export type PacketFinalizationArtifact = { dossier: PacketDossier; markdown: string };
 
 function sourceRefsFromMetadata(sources: Array<Record<string, unknown>>): Set<string> {
-  return new Set(sources.flatMap((source) => typeof source.ref === "string" ? [source.ref] : []));
+  return new Set(sources.flatMap((source) => {
+    if (typeof source.ref !== "string") return [];
+    const authority = typeof source.sourceAuthority === "string" ? source.sourceAuthority : "CONTEXT";
+    return authority === "CONTEXT" || authority === "DISCOVERY_ONLY" ? [] : [source.ref];
+  }));
 }
 
 async function writeAtomic(path: string, value: string): Promise<void> {

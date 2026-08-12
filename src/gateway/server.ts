@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 
 import { buildCompactionContext } from "../agent/compaction.ts";
 import { getConfig } from "../core/config.ts";
+import { PAID_GO_MODEL_SET } from "../core/model-catalog.ts";
 import { getSql } from "../db/client.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
 import { toolNames } from "../providers/contracts.ts";
@@ -13,7 +14,7 @@ import { modelCostReservation, proxyModelCompletion } from "./model-proxy.ts";
 
 const MAX_TOOL_BODY = 1024 * 1024;
 const MAX_MODEL_BODY = 16 * 1024 * 1024;
-const MODEL_IDS = new Set(["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-pro", "mimo-v2.5-free"]);
+const MODEL_IDS = PAID_GO_MODEL_SET;
 
 function bearer(request: IncomingMessage): string {
   const header = request.headers.authorization;

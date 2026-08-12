@@ -3,6 +3,7 @@ import { open, readFile, readdir, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { E2BRuntime } from "../runtime/e2b.ts";
+import { PAID_GO_MODEL_IDS } from "../core/model-catalog.ts";
 import { getPinnedLocalManifestHash, getPinnedResearchManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
 import { currentCheckpointConfigs } from "./checkpoint-config.ts";
@@ -21,7 +22,7 @@ import { createHeadlessGateway } from "./gateway.ts";
 import { renderInvestigationReport } from "./report.ts";
 import { openRunWorkspace, removeRunDiagnostics, sealRunFailure, type ExistingRunWorkspace } from "./run-workspace.ts";
 
-const RUN_TIMEOUT_MS = 20 * 60_000;
+const RUN_TIMEOUT_MS = 60 * 60_000;
 const ceilings = { modelUsd: 5, providerUsd: 10, externalNetworkCalls: 300, repositoryClones: 3, socialProfiles: 1 } as const;
 
 async function exists(path: string): Promise<boolean> {
@@ -90,7 +91,7 @@ async function main(): Promise<void> {
   if (existingManifest.research.config.runtime !== workspace.runtime) throw new Error("Research checkpoint runtime differs from the immutable input manifest.");
   const expectedManifestHash = await getPinnedLocalManifestHash();
   const researchManifestHash = await getPinnedResearchManifestHash();
-  const compilerModel = process.env.FINALIZER_MODEL ?? "deepseek-v4-pro";
+  const compilerModel = process.env.FINALIZER_MODEL ?? "mimo-v2.5-pro";
   const checkpointConfigs = await currentCheckpointConfigs({
     repositoryRoot: process.cwd(),
     runtime: workspace.runtime,
@@ -112,7 +113,7 @@ async function main(): Promise<void> {
     runId: workspace.runId,
     deadlineAt: deadlineAt.getTime(),
     allowedTools: new Set(["source.excerpts"]),
-    allowedModels: new Set([compilerModel]),
+    allowedModels: new Set([compilerModel, ...PAID_GO_MODEL_IDS]),
     agentTools: new Map([
       ["evidence-compiler", new Set(["source.excerpts"])],
       ["evidence-auditor", new Set(["source.excerpts"])],
