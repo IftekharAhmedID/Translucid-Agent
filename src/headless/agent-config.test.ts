@@ -58,6 +58,11 @@ test("headless OpenCode loads only the headless plugin and keeps shell and edits
   assert.doesNotMatch(plugin, /internal\/sources\/index/);
 });
 
+test("headless OpenCode leaves enough client time for the longest packet request", async () => {
+  const config = JSON.parse(await readFile(join(root, "opencode.json"), "utf8")) as { provider: { translucid: { options: { timeout: number } } } };
+  assert.ok(config.provider.translucid.options.timeout >= 600_000);
+});
+
 test("exactly five headless skills are copied and discoverable only by permitted agents", async () => {
   const expectedSkills = ["employment-chronology", "entity-resolution", "public-record-verification", "source-evaluation", "technical-contribution"];
   assert.deepEqual((await readdir(join(root, "skills"))).sort(), expectedSkills);

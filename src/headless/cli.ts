@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 
 import { toolNames } from "../providers/contracts.ts";
 import { PAID_GO_MODEL_IDS } from "../core/model-catalog.ts";
+import { loadModelRequestTimeouts } from "../core/config.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
 import { E2BRuntime } from "../runtime/e2b.ts";
 import { getPinnedLocalManifestHash, getPinnedResearchManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
@@ -137,6 +138,7 @@ async function main(): Promise<void> {
       finalizerUpstreamUrl: upstream(finalizerProvider),
       finalizerProvider,
       finalizerModel: compilerModel,
+      modelRequestTimeouts: loadModelRequestTimeouts(process.env),
       fixtureCompletion: (body, agent) => fixture(body, agent),
       onModelRequest: ({ agent, estimatedInputTokens }) => {
         if (agent === "evidence-compiler" || agent === "evidence-auditor") process.stderr.write(`Run ${runId}: ${agent} request estimated input tokens ${estimatedInputTokens}.\n`);

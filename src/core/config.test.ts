@@ -23,6 +23,34 @@ test("configuration defaults to the safe synthetic fixture runtime", () => {
   assert.equal(config.runtimeDefault, "LOCAL");
   assert.equal(config.pdlLiveEnabled, false);
   assert.equal(config.runnerConcurrency, 4);
+  assert.deepEqual(config.modelRequestTimeouts, {
+    researchMs: 360_000,
+    coverageMs: 480_000,
+    packetMs: 600_000,
+    summaryMs: 360_000,
+    auditMs: 600_000,
+    safetyReserveMs: 15_000,
+  });
+});
+
+test("configuration allows stage-aware model request timeout overrides", () => {
+  const config = loadConfig({
+    DATABASE_URL: "postgres://example.test/translucid",
+    MODEL_RESEARCH_TIMEOUT_MS: "420000",
+    MODEL_COVERAGE_TIMEOUT_MS: "500000",
+    MODEL_PACKET_TIMEOUT_MS: "610000",
+    MODEL_SUMMARY_TIMEOUT_MS: "370000",
+    MODEL_AUDIT_TIMEOUT_MS: "620000",
+    MODEL_REQUEST_SAFETY_RESERVE_MS: "20000",
+  });
+  assert.deepEqual(config.modelRequestTimeouts, {
+    researchMs: 420_000,
+    coverageMs: 500_000,
+    packetMs: 610_000,
+    summaryMs: 370_000,
+    auditMs: 620_000,
+    safetyReserveMs: 20_000,
+  });
 });
 
 test("configuration accepts the explicit public-professional boundary", () => {

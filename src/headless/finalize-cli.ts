@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { E2BRuntime } from "../runtime/e2b.ts";
 import { PAID_GO_MODEL_IDS } from "../core/model-catalog.ts";
+import { loadModelRequestTimeouts } from "../core/config.ts";
 import { getPinnedLocalManifestHash, getPinnedResearchManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
 import { currentCheckpointConfigs } from "./checkpoint-config.ts";
@@ -124,6 +125,7 @@ async function main(): Promise<void> {
     finalizerUpstreamUrl: upstream(finalizerProvider),
     finalizerProvider,
     finalizerModel: compilerModel,
+    modelRequestTimeouts: loadModelRequestTimeouts(process.env),
     fixtureCompletion: (body, agent) => fixture(body, agent),
   });
   let runtime: InvestigatorRuntime | undefined;

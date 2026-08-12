@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import { estimateModelInputTokens, modelCostReservation, proxyModelCompletion } from "../gateway/model-proxy.ts";
+import type { ModelRequestTimeouts } from "../core/config.ts";
 import { toolNames } from "../providers/contracts.ts";
 import type { ProviderExecutor } from "../providers/executor.ts";
 import type { MemoryRunBudget } from "./budget.ts";
@@ -55,6 +56,7 @@ type GatewayInput = {
   finalizerUpstreamUrl?: string;
   finalizerProvider?: "ZEN" | "GO";
   finalizerModel?: string;
+  modelRequestTimeouts?: ModelRequestTimeouts;
   fixtureCompletion?: (body: Record<string, unknown>, agent: string, model: string) => Promise<{ content?: string; toolCall?: { name: string; arguments: Record<string, unknown> } }>;
   onModelRequest?: (request: { agent: string; estimatedInputTokens: number }) => void;
 };
@@ -140,6 +142,7 @@ export function createHeadlessGateway(input: GatewayInput) {
           finalizerProvider: input.finalizerProvider ?? "GO",
           finalizerModel: input.finalizerModel ?? "deepseek-v4-pro",
           finalizerAgents,
+          requestTimeouts: input.modelRequestTimeouts,
           fixtureCompletion: () => input.fixtureCompletion?.(body, agent, model) ?? Promise.resolve({ content: "Headless fixture model completed." }),
         });
         return;

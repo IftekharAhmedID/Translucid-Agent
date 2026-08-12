@@ -115,6 +115,7 @@ async function handleModel(request: IncomingMessage, response: ServerResponse): 
     finalizerUpstreamUrl: config.finalizerOpenCodeUpstreamUrl,
     finalizerProvider: config.finalizerOpenCodeProvider,
     finalizerModel: config.finalizerModel,
+    requestTimeouts: config.modelRequestTimeouts,
     finalizerAgents: new Set(["evidence-critic", "fresh-adjudicator"]),
     fixtureCompletion: () => fixtureCompletion(body, investigationId, runId),
   });

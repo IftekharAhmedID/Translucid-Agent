@@ -11,6 +11,35 @@ const optionalNonNegativeNumber = z.preprocess(
   z.coerce.number().nonnegative().optional(),
 );
 
+export type ModelRequestTimeouts = {
+  researchMs: number;
+  coverageMs: number;
+  packetMs: number;
+  summaryMs: number;
+  auditMs: number;
+  safetyReserveMs: number;
+};
+
+export const DEFAULT_MODEL_REQUEST_TIMEOUTS: ModelRequestTimeouts = {
+  researchMs: 360_000,
+  coverageMs: 480_000,
+  packetMs: 600_000,
+  summaryMs: 360_000,
+  auditMs: 600_000,
+  safetyReserveMs: 15_000,
+};
+
+const modelRequestTimeoutFields = {
+  MODEL_RESEARCH_TIMEOUT_MS: positiveInteger(DEFAULT_MODEL_REQUEST_TIMEOUTS.researchMs),
+  MODEL_COVERAGE_TIMEOUT_MS: positiveInteger(DEFAULT_MODEL_REQUEST_TIMEOUTS.coverageMs),
+  MODEL_PACKET_TIMEOUT_MS: positiveInteger(DEFAULT_MODEL_REQUEST_TIMEOUTS.packetMs),
+  MODEL_SUMMARY_TIMEOUT_MS: positiveInteger(DEFAULT_MODEL_REQUEST_TIMEOUTS.summaryMs),
+  MODEL_AUDIT_TIMEOUT_MS: positiveInteger(DEFAULT_MODEL_REQUEST_TIMEOUTS.auditMs),
+  MODEL_REQUEST_SAFETY_RESERVE_MS: positiveInteger(DEFAULT_MODEL_REQUEST_TIMEOUTS.safetyReserveMs),
+};
+
+const modelRequestTimeoutSchema = z.object(modelRequestTimeoutFields);
+
 const environmentSchema = z
   .object({
     DATABASE_URL: z.string().min(1),
@@ -60,10 +89,23 @@ const environmentSchema = z
     BRIGHTDATA_COST_USD_PER_RECORD: optionalNonNegativeNumber,
     MODEL_BUDGET_USD: nonNegativeNumber(5),
     PROVIDER_BUDGET_USD: nonNegativeNumber(10),
+    ...modelRequestTimeoutFields,
   })
   .passthrough();
 
 export type AppConfig = ReturnType<typeof loadConfig>;
+
+export function loadModelRequestTimeouts(environment: Record<string, string | undefined>): ModelRequestTimeouts {
+  const parsed = modelRequestTimeoutSchema.parse(environment);
+  return {
+    researchMs: parsed.MODEL_RESEARCH_TIMEOUT_MS,
+    coverageMs: parsed.MODEL_COVERAGE_TIMEOUT_MS,
+    packetMs: parsed.MODEL_PACKET_TIMEOUT_MS,
+    summaryMs: parsed.MODEL_SUMMARY_TIMEOUT_MS,
+    auditMs: parsed.MODEL_AUDIT_TIMEOUT_MS,
+    safetyReserveMs: parsed.MODEL_REQUEST_SAFETY_RESERVE_MS,
+  };
+}
 
 export function loadConfig(environment: Record<string, string | undefined>) {
   const parsed = environmentSchema.parse(environment);
@@ -143,6 +185,14 @@ export function loadConfig(environment: Record<string, string | undefined>) {
     },
     modelBudgetUsd: parsed.MODEL_BUDGET_USD,
     providerBudgetUsd: parsed.PROVIDER_BUDGET_USD,
+    modelRequestTimeouts: {
+      researchMs: parsed.MODEL_RESEARCH_TIMEOUT_MS,
+      coverageMs: parsed.MODEL_COVERAGE_TIMEOUT_MS,
+      packetMs: parsed.MODEL_PACKET_TIMEOUT_MS,
+      summaryMs: parsed.MODEL_SUMMARY_TIMEOUT_MS,
+      auditMs: parsed.MODEL_AUDIT_TIMEOUT_MS,
+      safetyReserveMs: parsed.MODEL_REQUEST_SAFETY_RESERVE_MS,
+    },
   };
 }
 

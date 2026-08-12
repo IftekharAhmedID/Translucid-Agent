@@ -17,7 +17,7 @@
       "options": {
         "baseURL": "{env:CASE_GATEWAY_URL}/internal/llm/v1",
         "apiKey": "{env:CASE_TOKEN}",
-        "timeout": 300000
+        "timeout": 720000
       },
       "models": {
         "deepseek-v4-flash": {

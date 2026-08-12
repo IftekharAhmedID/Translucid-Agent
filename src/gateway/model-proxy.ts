@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+import { DEFAULT_MODEL_REQUEST_TIMEOUTS, type ModelRequestTimeouts } from "../core/config.ts";
 import { prepareFinalizerUpstreamBody } from "../core/finalizer-transport.ts";
 import { decodeJsonToolNames, encodeModelToolNames, SseToolNameDecoder } from "./model-tool-names.ts";
 import { writeFixtureCompletion, type Completion } from "./fixture-model.ts";
@@ -17,6 +18,38 @@ export function estimateModelInputTokens(body: Record<string, unknown>): number 
   return Math.ceil(JSON.stringify(body.messages ?? []).length / 4);
 }
 
+export type ModelRequestStage = "RESEARCH" | "COVERAGE" | "PACKET" | "SUMMARY" | "AUDIT";
+
+export function modelRequestStage(agent: string, body: Record<string, unknown>): ModelRequestStage {
+  if (agent === "evidence-auditor" || agent === "evidence-critic" || agent === "fresh-adjudicator") return "AUDIT";
+  if (agent !== "evidence-compiler") return "RESEARCH";
+  const serialized = JSON.stringify(body.messages ?? body);
+  if (serialized.includes("MODE: COVERAGE_ONLY")) return "COVERAGE";
+  if (serialized.includes("MODE: EVIDENCE_PACKET")) return "PACKET";
+  if (serialized.includes("MODE: SUMMARY_TIMELINE")) return "SUMMARY";
+  return "SUMMARY";
+}
+
+export function modelRequestTimeoutMs(input: {
+  agent: string;
+  body: Record<string, unknown>;
+  remainingMs: number;
+  requestTimeouts?: ModelRequestTimeouts;
+}): number {
+  const timeouts = input.requestTimeouts ?? DEFAULT_MODEL_REQUEST_TIMEOUTS;
+  const stage = modelRequestStage(input.agent, input.body);
+  const stageLimit = stage === "RESEARCH"
+    ? timeouts.researchMs
+    : stage === "COVERAGE"
+      ? timeouts.coverageMs
+      : stage === "PACKET"
+        ? timeouts.packetMs
+        : stage === "SUMMARY"
+          ? timeouts.summaryMs
+          : timeouts.auditMs;
+  return Math.max(1, Math.min(stageLimit, input.remainingMs - timeouts.safetyReserveMs));
+}
+
 export async function proxyModelCompletion(input: {
   request: IncomingMessage;
   response: ServerResponse;
@@ -31,6 +64,7 @@ export async function proxyModelCompletion(input: {
   finalizerProvider: "ZEN" | "GO";
   finalizerModel: string;
   finalizerAgents: Set<string>;
+  requestTimeouts?: ModelRequestTimeouts;
   fixtureCompletion: () => Promise<Completion>;
 }): Promise<void> {
   if (input.providerMode === "fixture") {
@@ -40,7 +74,7 @@ export async function proxyModelCompletion(input: {
   if (!input.upstreamKey) throw new Error("OPENCODE_API_KEY is not configured on the host gateway.");
   const encoded = encodeModelToolNames(input.body);
   const upstreamAbort = new AbortController();
-  const timeout = setTimeout(() => upstreamAbort.abort(new DOMException("Investigation deadline reached.", "TimeoutError")), Math.min(input.remainingMs, 300_000));
+  const timeout = setTimeout(() => upstreamAbort.abort(new DOMException("Model request deadline reached.", "TimeoutError")), modelRequestTimeoutMs(input));
   input.request.once("aborted", () => upstreamAbort.abort(new DOMException("Runtime request disconnected.", "AbortError")));
   input.response.once("close", () => upstreamAbort.abort(new DOMException("Runtime response disconnected.", "AbortError")));
   let upstream: Response;
