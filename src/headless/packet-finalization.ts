@@ -21,7 +21,7 @@ import {
   packetDossierToDraft,
   splitClaimPackets,
   validateCoveragePlan,
-  validatePacket,
+  validatePacketEvidence,
   coveragePlanSchema,
   packetSchema,
   summaryTimelineOutputSchema,
@@ -167,7 +167,7 @@ export async function runPacketizedFinalization(input: Input): Promise<{ result:
           warnings,
           repairDefects,
         }, packetSchema, packetAllowance, { "source.excerpts": true, skill: true });
-        packetResults[index] = validatePacket(value, packets[index]!, allowedSourceRefs);
+        packetResults[index] = await validatePacketEvidence(value, packets[index]!, input.sourceStore, allowedSourceRefs);
       }
     };
     await Promise.all([worker(), worker()]);

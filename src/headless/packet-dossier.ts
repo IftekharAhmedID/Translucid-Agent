@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+import { effectiveSourceAuthority } from "../core/source-trust.ts";
+import { auditClaimFacetCoverage } from "../core/facet-coverage.ts";
+import type { FileSourceStore } from "./source-store.ts";
 import { investigationDraftSchema, type InvestigationDraft } from "./result-contract.ts";
 
 const key = z.string().min(1).max(200);
@@ -128,6 +131,10 @@ export function validateCoveragePlan(value: unknown, input: InputDocument): Cove
       const actual = spanText(page, claim.sourceSpan.lineStart, claim.sourceSpan.lineEnd);
       if (actual !== claim.sourceSpan.text) throw new Error(`Claim ${claim.key} source span lines do not match input text.`);
     }
+    const facetCoverage = auditClaimFacetCoverage(claim.statement, claim.facets);
+    if (!facetCoverage.complete) {
+      throw new Error(`Material claim clause has no declared facet on ${claim.key}: ${facetCoverage.uncovered.map(({ clause }) => clause).join(" | ")}`);
+    }
   }
 
   const covered = new Map<string, CoverageItem>();
@@ -202,6 +209,31 @@ export function validatePacket(value: unknown, outlines: ClaimOutline[], allowed
     if (evidence.facetKeys.some((facet) => !declared.has(facet))) throw new Error(`Evidence ${evidence.key} references a neighboring or unknown facet.`);
     if (!allowedSourceRefs.has(evidence.sourceRef)) throw new Error(`Evidence ${evidence.key} references unknown source ${evidence.sourceRef}.`);
     if (!evidence.sourceLocation.path) throw new Error(`Evidence ${evidence.key} is missing an exact source path.`);
+  }
+  return packet;
+}
+
+export async function validatePacketEvidence(
+  value: unknown,
+  outlines: ClaimOutline[],
+  sourceStore: FileSourceStore,
+  allowedSourceRefs: ReadonlySet<string>,
+): Promise<Packet> {
+  const packet = validatePacket(value, outlines, allowedSourceRefs);
+  for (const evidence of packet.evidence) {
+    const source = await sourceStore.get(evidence.sourceRef);
+    const authority = effectiveSourceAuthority({ artifact: source });
+    if (authority === "CONTEXT" || authority === "DISCOVERY_ONLY") {
+      throw new Error(`Evidence ${evidence.key} source ${evidence.sourceRef} is not evidence-eligible.`);
+    }
+    const exact = await sourceStore.verifyExactQuote({
+      sourceRef: evidence.sourceRef,
+      path: evidence.sourceLocation.path,
+      exactQuote: evidence.exactQuote,
+    });
+    if (!exact.valid) {
+      throw new Error(`Evidence ${evidence.key} exact quote is not present at exact source path ${evidence.sourceLocation.path} in immutable source ${evidence.sourceRef}.`);
+    }
   }
   return packet;
 }

@@ -57,6 +57,7 @@ export type SourceExcerptResult = {
 };
 
 export type BoundedSourceBody = { sourceRef: string; text: string; truncated: boolean };
+export type ExactQuoteCheck = { sourceRef: string; path: string; valid: boolean };
 
 type Manifest = z.infer<typeof manifestSchema>;
 type FlatValue = { path: string; text: string };
@@ -230,6 +231,19 @@ export class FileSourceStore {
       }
     }
     return { sourceRef: source.ref, excerpts, truncated: matchCount > excerpts.length || remaining <= 0 };
+  }
+
+  async verifyExactQuote(input: { sourceRef: string; path: string; exactQuote: string }): Promise<ExactQuoteCheck> {
+    const source = await this.get(input.sourceRef);
+    const raw = await readFile(join(this.root, source.relativePath), "utf8");
+    let valid = false;
+    if (source.mimeType.includes("json")) {
+      const leaves = flatten(JSON.parse(raw));
+      valid = leaves.some((leaf) => leaf.path === input.path && leaf.text.includes(input.exactQuote));
+    } else if (input.path === "$") {
+      valid = raw.includes(input.exactQuote);
+    }
+    return { sourceRef: source.ref, path: input.path, valid };
   }
 
   async readBounded(sourceRef: string, maxCharacters = 80_000): Promise<BoundedSourceBody> {

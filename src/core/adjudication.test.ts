@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { repairFacetFindingBatch, validateAdjudication } from "./adjudication.ts";
+import { assertSafeInvestigationLanguage, repairFacetFindingBatch, validateAdjudication } from "./adjudication.ts";
 import type { AdjudicationOutput } from "./contracts.ts";
 
 const baseOutput: AdjudicationOutput = {
@@ -48,6 +48,15 @@ const baseOutput: AdjudicationOutput = {
 test("adjudication accepts evidence-backed non-ranking output", () => {
   const result = validateAdjudication(baseOutput, new Set(["ev-1", "ev-2"]));
   assert.equal(result.summary.professionalIdentity.status, "PARTIAL");
+});
+
+test("adjudication accepts explicit negation of absence-based accusations", () => {
+  assert.doesNotThrow(() => assertSafeInvestigationLanguage({
+    text: "The absence of a record is treated as unresolved, not as contradiction or deception.",
+  }));
+  assert.throws(() => assertSafeInvestigationLanguage({
+    text: "The absence of a record proves deception.",
+  }), /deception/i);
 });
 
 test("adjudication rejects unknown evidence IDs", () => {

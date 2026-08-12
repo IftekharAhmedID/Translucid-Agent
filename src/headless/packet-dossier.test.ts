@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -8,10 +11,12 @@ import {
   packetSchema,
   splitClaimPackets,
   validateCoveragePlan,
+  validatePacketEvidence,
   validatePacket,
   type CoveragePlan,
   type PacketDossier,
 } from "./packet-dossier.ts";
+import { FileSourceStore } from "./source-store.ts";
 
 function inputDocument() {
   return {
@@ -101,6 +106,12 @@ test("coverage validation requires every non-empty input line and exact spans", 
   assert.throws(() => validateCoveragePlan(detachedOutline, inputDocument()), /source span.*claimed coverage/i);
 });
 
+test("coverage validation rejects a material claim clause without a facet before packet compilation", () => {
+  const value = structuredClone(plan());
+  value.claims[0]!.statement = "Ada Lovelace was a Principal Engineer at Example Corp and built software using Java and Vanilla JavaScript.";
+  assert.throws(() => validateCoveragePlan(value, inputDocument()), /material claim clause|facet/i);
+});
+
 test("contact and heading exclusions remain non-claims even when their text contains factual keywords", () => {
   const value = coveragePlanSchema.parse({
     claims: [{ ...plan().claims[0]!, sourceSpan: { page: 1, lineStart: 3, lineEnd: 3, text: "Python, TypeScript" } }],
@@ -133,6 +144,34 @@ test("packet validation rejects missing facets and unknown sources", () => {
   const unknownSource = structuredClone(packet());
   unknownSource.evidence[0]!.sourceRef = "S2";
   assert.throws(() => validatePacket(unknownSource, outline, new Set(["S1"])), /unknown source/i);
+});
+
+test("packet evidence validation requires exact immutable source bytes at the declared path", async () => {
+  const root = await mkdtemp(join(tmpdir(), "translucid-packet-evidence-"));
+  try {
+    const sourceStore = await FileSourceStore.open(root);
+    await sourceStore.capture({
+      kind: "PROVIDER_RESPONSE",
+      provider: "fixture",
+      providerRoute: "web.fetch",
+      sourceUrl: "https://example.test/record",
+      mimeType: "application/json",
+      content: { record: { text: "Principal Engineer at Example Corp" } },
+      provenance: { immutable: true },
+    });
+    const value = packet();
+    value.evidence[0]!.sourceLocation = { path: "record.text" };
+    value.evidence[0]!.exactQuote = "Principal Engineer at Other Corp";
+    await assert.rejects(
+      () => validatePacketEvidence(value, plan().claims, sourceStore, new Set(["S1"])),
+      /exact source path|source location/i,
+    );
+    value.evidence[0]!.exactQuote = "Principal Engineer at Example Corp";
+    assert.doesNotThrow(() => validatePacket(value, plan().claims, new Set(["S1"])));
+    await assert.doesNotReject(() => validatePacketEvidence(value, plan().claims, sourceStore, new Set(["S1"])));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("merged dossier preserves packet semantics and has a stable fingerprint", () => {

@@ -13,8 +13,9 @@ const prohibitedDecisionLanguage =
   /\b(candidate\s+score|hire\s+(?:the\s+)?candidate|reject\s+(?:the\s+)?candidate|fraud\s+probability|candidate\s+ranking|hiring\s+recommendation)\b/i;
 const protectedTraitLanguage =
   /\b(race|ethnicity|religion|religious|sex|gender|sexual orientation|pregnancy|pregnant|disability|disabled|age|national origin|genetic information)\b/i;
-const absenceAsDeception =
-  /\b(?:missing|absent|absence|lack(?:ing)?|no evidence)\b.{0,80}\b(?:decepti(?:on|ve)|dishonest(?:y)?|fraud(?:ulent)?|lied|lying)\b/i;
+const absenceLanguage = /\b(?:missing|absent|absence|lack(?:ing)?|no evidence)\b/i;
+const accusationLanguage = /\b(?:decepti(?:on|ve)|dishonest(?:y)?|fraud(?:ulent)?|lied|lying)\b/i;
+const explicitNegation = /\b(?:not|never|cannot|can't|does not|doesn't|is not|isn't|rather than)\b/i;
 
 function collectStrings(value: unknown): string[] {
   if (typeof value === "string") return [value];
@@ -43,7 +44,18 @@ function assertSafeLanguage(value: unknown): void {
   const strings = collectStrings(value);
   if (strings.some((text) => prohibitedDecisionLanguage.test(text))) throw new Error("Adjudication contains prohibited decision language.");
   if (strings.some((text) => protectedTraitLanguage.test(text))) throw new Error("Adjudication contains protected-trait language.");
-  if (strings.some((text) => absenceAsDeception.test(text))) throw new Error("Adjudication describes missing evidence as deception.");
+  if (strings.some((text) => absenceAsDeception(text))) throw new Error("Adjudication describes missing evidence as deception.");
+}
+
+function absenceAsDeception(text: string): boolean {
+  return text.split(/[.!?;\n]+/u).some((clause) => {
+    const absence = absenceLanguage.exec(clause);
+    if (!absence) return false;
+    const accusation = accusationLanguage.exec(clause.slice(absence.index + absence[0].length));
+    if (!accusation) return false;
+    const bridge = clause.slice(absence.index + absence[0].length, absence.index + absence[0].length + accusation.index);
+    return !explicitNegation.test(bridge);
+  });
 }
 
 export function assertSafeInvestigationLanguage(value: unknown): void {
