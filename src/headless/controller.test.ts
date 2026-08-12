@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { buildFinalizerContext, describeSdkError, extractTextOutput, finalizerPromptPayload, finalizerTextPromptPayload, readCompletedResearchMemos, resultForAudit, waitForResearchIdle } from "./controller.ts";
+import { waitForFinalizerAssistant } from "./finalization-controller.ts";
 import { investigationDraftSchema, type InvestigationResult } from "./result-contract.ts";
 import { FileSourceStore } from "./source-store.ts";
 
@@ -164,9 +165,45 @@ test("finalizers use native schemas when supported and JSON objects for GO DeepS
 
 test("dossier finalizers explicitly request text output", () => {
   const payload = finalizerTextPromptPayload("Build the dossier.");
-  assert.equal(payload.format.type, "text");
+  assert.equal("format" in payload, false);
   assert.equal(payload.system, "TRANSLUCID_FINALIZER_TEXT_MODE");
   assert.equal(payload.parts[0].text, "Build the dossier.");
+});
+
+test("finalizer polling tolerates a long-running async session and returns its latest assistant message", async () => {
+  const statuses = ["busy", "retry", undefined] as const;
+  let statusIndex = 0;
+  let messageReads = 0;
+  const message = { info: { role: "assistant" }, parts: [{ type: "text", text: "TL_SUMMARY {}" }] };
+
+  const result = await waitForFinalizerAssistant({
+    readStatus: async () => statuses[Math.min(statusIndex++, statuses.length - 1)],
+    readMessages: async () => {
+      messageReads += 1;
+      return [message];
+    },
+    deadlineAt: Date.now() + 1_000,
+    signal: new AbortController().signal,
+    intervalMs: 0,
+  });
+
+  assert.equal(result, message);
+  assert.equal(messageReads, 1);
+  assert.equal(statusIndex, 3);
+});
+
+test("finalizer polling fails when an idle session has no assistant response", async () => {
+  await assert.rejects(
+    waitForFinalizerAssistant({
+      readStatus: async () => "idle",
+      readMessages: async () => [],
+      deadlineAt: Date.now() + 50,
+      signal: new AbortController().signal,
+      intervalMs: 0,
+      initialGraceMs: 0,
+    }),
+    /no assistant response/i,
+  );
 });
 
 test("extracts dossier text without treating it as structured JSON", () => {

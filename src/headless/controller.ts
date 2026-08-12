@@ -192,6 +192,7 @@ export class HeadlessInvestigationController {
         warnings,
         researchCheckpointConfig: input.researchCheckpointConfig,
         dossierCheckpointConfig: input.dossierCheckpointConfig,
+        deadlineAt: input.deadlineAt.getTime(),
       });
       return { result, leadSessionId: lead.id, childSessions };
     } finally {

@@ -54,6 +54,7 @@ export type FinalizationPipelineInput = {
   compilerModel: string;
   auditorModel: string;
   finalizerProvider: "ZEN" | "GO";
+  deadlineAt: number;
   registerExcerptAllowance: (sessionId: string, characters: number) => void;
   researchMemos: string;
   warnings: string[];
@@ -96,15 +97,41 @@ export function finalizerPromptPayload<T>(provider: "ZEN" | "GO", model: string,
 export function finalizerTextPromptPayload(prompt: string) {
   return {
     system: FINALIZER_TEXT_MODE_MARKER,
-    format: { type: "text" as const },
     parts: [{ type: "text" as const, text: prompt }],
   };
 }
 
 type AssistantMessage = {
-  info: { role: string; error?: unknown };
+  info: { role: string; error?: { name?: string; [key: string]: unknown } };
   parts: Array<{ type: string; text?: string }>;
 };
+
+export async function waitForFinalizerAssistant(input: {
+  readStatus: () => Promise<"busy" | "retry" | "idle" | undefined>;
+  readMessages: () => Promise<ReadonlyArray<AssistantMessage>>;
+  deadlineAt: number;
+  signal: AbortSignal;
+  intervalMs?: number;
+  initialGraceMs?: number;
+}): Promise<AssistantMessage> {
+  const now = Date.now;
+  const startedAt = now();
+  let observedBusy = false;
+  while (now() < input.deadlineAt) {
+    input.signal.throwIfAborted();
+    const status = await input.readStatus();
+    if (status === "busy" || status === "retry") observedBusy = true;
+    const idle = status === "idle" || status === undefined;
+    if (idle && (observedBusy || now() - startedAt >= (input.initialGraceMs ?? 30_000))) {
+      const message = [...await input.readMessages()].reverse().find((candidate) => candidate.info.role === "assistant");
+      if (message) return message;
+      throw new Error("Finalizer session became idle with no assistant response.");
+    }
+    const interval = input.intervalMs ?? 500;
+    if (interval > 0) await new Promise((resolve) => setTimeout(resolve, interval));
+  }
+  throw new DOMException("Finalization deadline reached.", "TimeoutError");
+}
 
 export function extractTextOutput(message: AssistantMessage): string {
   if (message.info.role !== "assistant") throw new Error("Session did not return an assistant response.");
@@ -203,18 +230,37 @@ export async function runFinalizationPipeline(input: FinalizationPipelineInput):
     await writeResearchCheckpoint(input.root, { warnings, budget: input.budget.snapshot(), config: input.researchCheckpointConfig });
   }
 
-  const promptText = async (title: string, prompt: string, excerptAllowance: number): Promise<string> => {
-    const model = input.compilerModel;
-    const session = unwrap(await client.session.create({ directory, title, agent: "evidence-compiler", model: { id: model, providerID: "translucid", variant: "medium" } }, { signal: input.signal }), "evidence-compiler session creation");
+  const promptSession = async (
+    agent: "evidence-compiler" | "evidence-auditor",
+    title: string,
+    payload: Record<string, unknown>,
+    excerptAllowance: number,
+  ): Promise<AssistantMessage> => {
+    const model = agent === "evidence-compiler" ? input.compilerModel : input.auditorModel;
+    const session = unwrap(await client.session.create({ directory, title, agent, model: { id: model, providerID: "translucid", variant: "medium" } }, { signal: input.signal }), `${agent} session creation`);
     input.registerExcerptAllowance(session.id, excerptAllowance);
-    const message = unwrap(await client.session.prompt({
+    const launch = await client.session.promptAsync({
       sessionID: session.id,
       directory,
-      agent: "evidence-compiler",
+      agent,
       model: { providerID: "translucid", modelID: model },
       variant: "medium",
-      ...finalizerTextPromptPayload(prompt),
-    }, { signal: input.signal }), "evidence-compiler prompt");
+      ...payload,
+    }, { signal: input.signal });
+    if (launch.error) throw new Error(`${agent} prompt failed: ${describeSdkError(launch.error)}`);
+    return waitForFinalizerAssistant({
+      readStatus: async () => {
+        const statuses = unwrap(await client.session.status({ directory }, { signal: input.signal }), `${agent} session status`);
+        return statuses[session.id]?.type;
+      },
+      readMessages: async () => unwrap(await client.session.messages({ sessionID: session.id, directory, limit: 20 }, { signal: input.signal }), `${agent} session messages`) as unknown as ReadonlyArray<AssistantMessage>,
+      deadlineAt: input.deadlineAt,
+      signal: input.signal,
+    });
+  };
+
+  const promptText = async (title: string, prompt: string, excerptAllowance: number): Promise<string> => {
+    const message = await promptSession("evidence-compiler", title, finalizerTextPromptPayload(prompt), excerptAllowance);
     return extractTextOutput(message);
   };
 
@@ -226,18 +272,8 @@ export async function runFinalizationPipeline(input: FinalizationPipelineInput):
     tools?: Record<string, boolean>,
   ): Promise<T> => {
     const model = agent === "evidence-compiler" ? input.compilerModel : input.auditorModel;
-    const session = unwrap(await client.session.create({ directory, title, agent, model: { id: model, providerID: "translucid", variant: "medium" } }, { signal: input.signal }), `${agent} session creation`);
-    input.registerExcerptAllowance(session.id, agent === "evidence-auditor" ? 30_000 : 0);
     const payload = finalizerPromptPayload(input.finalizerProvider, model, prompt, schema);
-    const message = unwrap(await client.session.prompt({
-      sessionID: session.id,
-      directory,
-      agent,
-      model: { providerID: "translucid", modelID: model },
-      variant: "medium",
-      tools,
-      ...payload,
-    }, { signal: input.signal }), `${agent} prompt`);
+    const message = await promptSession(agent, title, { tools, ...payload }, agent === "evidence-auditor" ? 30_000 : 0);
     return schema.parse(extractStructuredOutput(message));
   };
 

@@ -167,6 +167,7 @@ async function main(): Promise<void> {
       compilerModel,
       auditorModel: compilerModel,
       finalizerProvider,
+      deadlineAt: deadlineAt.getTime(),
       registerExcerptAllowance: gateway.registerExcerptAllowance,
       researchMemos: memos,
       warnings: manifest.research.warnings,
