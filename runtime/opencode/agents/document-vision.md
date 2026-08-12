@@ -1,7 +1,7 @@
 ---
 description: Extracts text from authorized sparse PDF page renders only.
 mode: subagent
-model: translucid/mimo-v2.5-free
+model: translucid/mimo-v2.5-pro
 permission:
   "*": deny
 ---

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 
 import { PAID_GO_MODEL_IDS, PAID_GO_MODEL_SET } from "./model-catalog.ts";
@@ -15,4 +17,15 @@ test("MiMo V2.5 Pro uses the documented Go reservation", () => {
   const body = { messages: [{ role: "user", content: "x" }], max_tokens: 1_000 };
   assert.ok(modelCostReservation(body, "mimo-v2.5-pro") > 0);
   assert.equal(modelCostReservation(body, "mimo-v2.5-pro"), modelCostReservation(body, "deepseek-v4-pro"));
+});
+
+test("document vision uses the paid MiMo model in both OpenCode runtimes", async () => {
+  for (const runtime of ["runtime/headless-opencode", "runtime/opencode"]) {
+    const agent = await readFile(join(process.cwd(), runtime, "agents", "document-vision.md"), "utf8");
+    assert.match(agent, /^model: translucid\/mimo-v2\.5-pro$/m, runtime);
+    assert.doesNotMatch(agent, /mimo-v2\.5-free/);
+    const config = JSON.parse(await readFile(join(process.cwd(), runtime, "opencode.json"), "utf8")) as { provider?: { translucid?: { models?: Record<string, unknown> } } };
+    assert.ok(config.provider?.translucid?.models?.["mimo-v2.5-pro"], runtime);
+    assert.equal(config.provider?.translucid?.models?.["mimo-v2.5-free"], undefined, runtime);
+  }
 });

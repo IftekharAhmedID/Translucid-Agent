@@ -39,14 +39,6 @@
           "tool_call": true,
           "modalities": { "input": ["text", "image"], "output": ["text"] },
           "limit": { "context": 200000, "output": 32000 }
-        },
-        "mimo-v2.5-free": {
-          "name": "MiMo V2.5 Free",
-          "attachment": true,
-          "reasoning": true,
-          "tool_call": true,
-          "modalities": { "input": ["text", "image"], "output": ["text"] },
-          "limit": { "context": 200000, "output": 32000 }
         }
       }
     }
