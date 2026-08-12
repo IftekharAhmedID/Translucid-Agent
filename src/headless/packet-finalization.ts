@@ -48,7 +48,7 @@ export type FinalizationDefect = {
 };
 
 class FinalizationError extends Error {
-  constructor(readonly defects: FinalizationDefect[]) {
+  constructor(readonly defects: FinalizationDefect[], readonly partial?: { coverage?: CoveragePlan; packets?: Array<Packet | undefined> }) {
     super(defects.map((defect) => `${defect.stage}: ${defect.message}`).join("; "));
   }
 }
@@ -228,10 +228,10 @@ export async function runPacketizedFinalization(input: Input): Promise<{ result:
     }
   };
 
-  const buildPackets = async (coverage: CoveragePlan, repairDefects: FinalizationDefect[], existing?: Packet[], repairPacketIndex?: number): Promise<Packet[]> => {
+  const buildPackets = async (coverage: CoveragePlan, repairDefects: FinalizationDefect[], existing?: Array<Packet | undefined>, repairPacketIndex?: number): Promise<Packet[]> => {
     const packets = splitClaimPackets(coverage.claims, 5);
     if (repairPacketIndex !== undefined) {
-      if (!existing || existing.length !== packets.length) throw new FinalizationError([{
+      if (!existing || existing.length !== packets.length || existing.some((packet, index) => index !== repairPacketIndex && !packet)) throw new FinalizationError([{
         stage: "PACKET",
         code: "PACKET_REPAIR_SCOPE_UNAVAILABLE",
         message: "A packet-local repair was requested without a complete valid packet set.",
@@ -240,9 +240,9 @@ export async function runPacketizedFinalization(input: Input): Promise<{ result:
         evidenceKeys: [],
         repairable: false,
       }]);
-      const repaired = [...existing];
+      const repaired = [...existing] as Array<Packet | undefined>;
       repaired[repairPacketIndex] = await buildPacket(coverage, repairPacketIndex, repairDefects, 15_000);
-      return repaired;
+      return repaired as Packet[];
     }
     const packetAllowance = packets.length ? Math.floor((repairDefects.length ? 15_000 : 60_000) / packets.length) : 0;
     const packetResults: Array<Packet | undefined> = new Array(packets.length);
@@ -260,7 +260,10 @@ export async function runPacketizedFinalization(input: Input): Promise<{ result:
       }
     };
     await Promise.all([worker(), worker()]);
-    if (packetDefects.length) throw new FinalizationError(packetDefects.sort((left, right) => (left.packetIndex ?? 0) - (right.packetIndex ?? 0)));
+    if (packetDefects.length) throw new FinalizationError(
+      packetDefects.sort((left, right) => (left.packetIndex ?? 0) - (right.packetIndex ?? 0)),
+      { packets: packetResults },
+    );
     return packetResults as Packet[];
   };
 
@@ -296,10 +299,22 @@ export async function runPacketizedFinalization(input: Input): Promise<{ result:
     }
   };
 
-  const compile = async (repairDefects: FinalizationDefect[], existingCoverage?: CoveragePlan, existingPackets?: Packet[], repairPacketIndex?: number, compilerAttempt: 1 | 2 = 1): Promise<{ coverage: CoveragePlan; packets: Packet[]; current: { dossier: PacketDossier; result: InvestigationResult } }> => {
+  const compile = async (repairDefects: FinalizationDefect[], existingCoverage?: CoveragePlan, existingPackets?: Array<Packet | undefined>, repairPacketIndex?: number, compilerAttempt: 1 | 2 = 1): Promise<{ coverage: CoveragePlan; packets: Packet[]; current: { dossier: PacketDossier; result: InvestigationResult } }> => {
     const coverage = existingCoverage ?? await buildCoverage(repairDefects);
-    const packets = await buildPackets(coverage, repairDefects, existingPackets, repairPacketIndex);
-    const summary = await buildSummary(coverage, packets, repairDefects);
+    let packets: Packet[];
+    try {
+      packets = await buildPackets(coverage, repairDefects, existingPackets, repairPacketIndex);
+    } catch (error) {
+      if (error instanceof FinalizationError) throw new FinalizationError(error.defects, { coverage, packets: error.partial?.packets });
+      throw error;
+    }
+    let summary: z.infer<typeof summaryTimelineOutputSchema>;
+    try {
+      summary = await buildSummary(coverage, packets, repairDefects);
+    } catch (error) {
+      if (error instanceof FinalizationError) throw new FinalizationError(error.defects, { coverage, packets });
+      throw error;
+    }
     const current = await assemble(coverage, packets, summary, repairDefects, compilerAttempt);
     return { coverage, packets, current };
   };
@@ -308,7 +323,7 @@ export async function runPacketizedFinalization(input: Input): Promise<{ result:
   let auditorAttempts: 1 | 2 = 1;
   let repairUsed = false;
   let coverage: CoveragePlan | undefined;
-  let packets: Packet[] | undefined;
+  let packets: Array<Packet | undefined> | undefined;
   let current: { dossier: PacketDossier; result: InvestigationResult };
   if (reusablePacketDossier) {
     const dossier = reusablePacketDossier;
@@ -336,6 +351,10 @@ export async function runPacketizedFinalization(input: Input): Promise<{ result:
       current = compiled.current;
     } catch (error) {
       const defects = defectsFrom(error);
+      if (error instanceof FinalizationError) {
+        coverage = error.partial?.coverage;
+        packets = error.partial?.packets;
+      }
       const scope = repairScope(defects);
       if (!scope) throw error;
       repairUsed = true;
@@ -349,9 +368,10 @@ export async function runPacketizedFinalization(input: Input): Promise<{ result:
         const compiled = await compile(defects, coverage, packets, defects[0]!.packetIndex, 2);
         packets = compiled.packets;
         current = compiled.current;
-      } else if (scope === "SUMMARY" && coverage && packets) {
-        const summary = await buildSummary(coverage, packets, defects);
-        current = await assemble(coverage, packets, summary, defects, 2);
+      } else if (scope === "SUMMARY" && coverage && packets && packets.every((packet): packet is Packet => Boolean(packet))) {
+        const completePackets = packets;
+        const summary = await buildSummary(coverage, completePackets, defects);
+        current = await assemble(coverage, completePackets, summary, defects, 2);
       } else {
         throw error;
       }
@@ -389,18 +409,20 @@ export async function runPacketizedFinalization(input: Input): Promise<{ result:
   const firstAuditDefects = await runAudit("Independent evidence audit");
   if (firstAuditDefects.length) {
     const scope = repairScope(firstAuditDefects);
-    if (repairUsed || !scope || !coverage || !packets) {
+    if (repairUsed || !scope || !coverage || !packets || packets.some((packet) => !packet)) {
       throw new FinalizationError(firstAuditDefects);
     }
+    const completePackets = packets.filter((packet): packet is Packet => Boolean(packet));
     repairUsed = true;
     compilerAttempts = 2;
     if (scope === "PACKET" && firstAuditDefects[0]!.packetIndex !== undefined) {
-      packets = await buildPackets(coverage, firstAuditDefects, packets, firstAuditDefects[0]!.packetIndex);
-      const summary = await buildSummary(coverage, packets, firstAuditDefects);
-      current = await assemble(coverage, packets, summary, firstAuditDefects, 2);
+      const repairedPackets = await buildPackets(coverage, firstAuditDefects, completePackets, firstAuditDefects[0]!.packetIndex);
+      packets = repairedPackets;
+      const summary = await buildSummary(coverage, repairedPackets, firstAuditDefects);
+      current = await assemble(coverage, repairedPackets, summary, firstAuditDefects, 2);
     } else if (scope === "SUMMARY") {
-      const summary = await buildSummary(coverage, packets, firstAuditDefects);
-      current = await assemble(coverage, packets, summary, firstAuditDefects, 2);
+      const summary = await buildSummary(coverage, completePackets, firstAuditDefects);
+      current = await assemble(coverage, completePackets, summary, firstAuditDefects, 2);
     } else {
       throw new FinalizationError(firstAuditDefects);
     }
