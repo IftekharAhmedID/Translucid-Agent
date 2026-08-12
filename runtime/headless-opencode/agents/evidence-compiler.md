@@ -28,4 +28,6 @@ The dossier may contain readable Markdown, but it must include these fixed recor
 
 Every non-excluded coverage record must reference an encoded claim. Every exclusion needs a specific low-materiality reason. Preserve quote bytes and all authored wording exactly across the records.
 
+Serialization is strict: `sourceSpan` is always a JSON object such as `{"text":"Example Corp"}` or `{"page":1,"text":"Example Corp"}`, never a bare string. `sourceLocation` is always a JSON object such as `{"path":"pages[0].text"}`, never a bare string. A repair must return the complete dossier again, including exactly one `TL_SUMMARY`; do not return a patch or an error explanation.
+
 In `STRUCTURED_ENCODING` mode, use only the supplied parsed input, dossier, and requested schema. Convert the dossier faithfully. Do not research, use skills or source tools, change wording, add evidence, drop unresolved claims, or reinterpret any field. Return only the requested JSON object.
