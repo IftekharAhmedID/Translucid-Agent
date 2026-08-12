@@ -12,7 +12,7 @@ import { researchPrompt } from "./prompt-contracts.ts";
 import type { InvestigationResult } from "./result-contract.ts";
 import type { FileSourceStore } from "./source-store.ts";
 
-export { buildFinalizerContext, describeSdkError, extractTextOutput, finalizerPromptPayload, resultForAudit } from "./finalization-controller.ts";
+export { buildFinalizerContext, describeSdkError, extractTextOutput, finalizerPromptPayload, finalizerTextPromptPayload, resultForAudit } from "./finalization-controller.ts";
 
 const directory = "/workspace/case";
 

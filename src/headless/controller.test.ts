@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { buildFinalizerContext, describeSdkError, extractTextOutput, finalizerPromptPayload, readCompletedResearchMemos, resultForAudit, waitForResearchIdle } from "./controller.ts";
+import { buildFinalizerContext, describeSdkError, extractTextOutput, finalizerPromptPayload, finalizerTextPromptPayload, readCompletedResearchMemos, resultForAudit, waitForResearchIdle } from "./controller.ts";
 import { investigationDraftSchema, type InvestigationResult } from "./result-contract.ts";
 import { FileSourceStore } from "./source-store.ts";
 
@@ -160,6 +160,13 @@ test("finalizers use native schemas when supported and JSON objects for GO DeepS
   assert.equal(compatible.format, undefined);
   assert.match(compatible.parts[0].text, /Return only one complete JSON object/);
   assert.match(compatible.parts[0].text, /"claims"/);
+});
+
+test("dossier finalizers explicitly request text output", () => {
+  const payload = finalizerTextPromptPayload("Build the dossier.");
+  assert.equal(payload.format.type, "text");
+  assert.equal(payload.system, "TRANSLUCID_FINALIZER_TEXT_MODE");
+  assert.equal(payload.parts[0].text, "Build the dossier.");
 });
 
 test("extracts dossier text without treating it as structured JSON", () => {

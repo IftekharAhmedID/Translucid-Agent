@@ -6,7 +6,7 @@ import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { z } from "zod";
 
 import { extractStructuredOutput } from "../agent/structured-output.ts";
-import { finalizerOutputTransport } from "../core/finalizer-transport.ts";
+import { FINALIZER_TEXT_MODE_MARKER, finalizerOutputTransport } from "../core/finalizer-transport.ts";
 import type { RunHandle } from "../runtime/types.ts";
 import type { MemoryRunBudget } from "./budget.ts";
 import {
@@ -90,6 +90,14 @@ export function finalizerPromptPayload<T>(provider: "ZEN" | "GO", model: string,
       type: "text" as const,
       text: `${prompt}\n\nReturn only one complete JSON object. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}`,
     }],
+  };
+}
+
+export function finalizerTextPromptPayload(prompt: string) {
+  return {
+    system: FINALIZER_TEXT_MODE_MARKER,
+    format: { type: "text" as const },
+    parts: [{ type: "text" as const, text: prompt }],
   };
 }
 
@@ -205,7 +213,7 @@ export async function runFinalizationPipeline(input: FinalizationPipelineInput):
       agent: "evidence-compiler",
       model: { providerID: "translucid", modelID: model },
       variant: "medium",
-      parts: [{ type: "text", text: prompt }],
+      ...finalizerTextPromptPayload(prompt),
     }, { signal: input.signal }), "evidence-compiler prompt");
     return extractTextOutput(message);
   };

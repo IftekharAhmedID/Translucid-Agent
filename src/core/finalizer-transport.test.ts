@@ -34,6 +34,17 @@ test("only GO DeepSeek finalizer agents receive json_object response format", ()
   );
 });
 
+test("plain-text dossier requests bypass JSON-object compatibility formatting", () => {
+  const body = {
+    model: "deepseek-v4-pro",
+    messages: [{ role: "system", content: "TRANSLUCID_FINALIZER_TEXT_MODE" }],
+  };
+  assert.deepEqual(
+    prepareFinalizerUpstreamBody(body, { agent: "evidence-compiler", provider: "GO", model: "deepseek-v4-pro" }),
+    body,
+  );
+});
+
 test("GO finalizers preserve a larger requested output allowance", () => {
   const body = { model: "deepseek-v4-flash", max_tokens: 32_000 };
   assert.equal(

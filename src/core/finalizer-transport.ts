@@ -1,5 +1,7 @@
 export type FinalizerOutputTransport = "NATIVE_JSON_SCHEMA" | "JSON_OBJECT";
 
+export const FINALIZER_TEXT_MODE_MARKER = "TRANSLUCID_FINALIZER_TEXT_MODE";
+
 const finalizerAgents = new Set([
   "evidence-critic",
   "fresh-adjudicator",
@@ -24,6 +26,7 @@ export function prepareFinalizerUpstreamBody(
   input: { agent?: string; provider: "ZEN" | "GO"; model: string },
 ): Record<string, unknown> {
   if (!input.agent || !finalizerAgents.has(input.agent)) return body;
+  if (input.agent === "evidence-compiler" && JSON.stringify(body.messages ?? "").includes(FINALIZER_TEXT_MODE_MARKER)) return body;
   if (finalizerOutputTransport(input.provider, input.model) !== "JSON_OBJECT") return body;
   const requestedTokens = Number(body.max_tokens ?? body.max_completion_tokens);
   const maxTokens = Number.isFinite(requestedTokens) && requestedTokens > 0
