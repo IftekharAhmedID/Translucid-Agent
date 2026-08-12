@@ -18,7 +18,9 @@ cd /opt/investigator
 if [ "${TRANSLUCID_RUNTIME_MODE:-legacy}" != "headless" ]; then
   ./node_modules/.bin/tsx runtime/extract-input.ts
 fi
-./node_modules/.bin/tsx scripts/runtime-manifest.ts --output /workspace/case/runtime-manifest.json
+if [ ! -f /workspace/case/runtime-manifest.json ]; then
+  ./node_modules/.bin/tsx scripts/runtime-manifest.ts --output /workspace/case/runtime-manifest.json
+fi
 
 cd /workspace/case
 exec /opt/investigator/node_modules/.bin/opencode serve --hostname 0.0.0.0 --port 4096

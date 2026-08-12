@@ -20,7 +20,7 @@ In `EVIDENCE_DOSSIER` mode, use only the supplied parsed input, research memos, 
 The dossier may contain readable Markdown, but it must include these fixed records. Put each marker at the start of its own line followed by exactly one JSON object. Do not wrap marker lines in a code fence.
 
 - `TL_CLAIM`: `{key, category, statement, materiality, sourceSpan, explanation}`
-- `TL_FACET`: `{claimKey, key, label, materiality, note}`
+- `TL_FACET`: `{claimKey, key, label, materiality, note}`; `key` must be a lower-snake-case ASCII identifier matching `^[a-z][a-z0-9_]{0,63}$`
 - `TL_EVIDENCE`: `{key, claimKey, facetKeys, relation, sourceRef, exactQuote, sourceLocation}` where `sourceLocation.path` is the exact path returned by `source.excerpts`
 - `TL_SUMMARY`: exactly one complete summary object with every authored summary field
 - `TL_TIMELINE`: one complete object for every timeline item

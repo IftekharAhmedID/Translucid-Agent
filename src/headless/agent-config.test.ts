@@ -85,6 +85,7 @@ test("exactly five headless skills are copied and discoverable only by permitted
 
   const start = await readFile(join(process.cwd(), "runtime", "start.sh"), "utf8");
   assert.match(start, /headless-opencode\/skills/);
+  assert.match(start, /if \[ ! -f \/workspace\/case\/runtime-manifest\.json \]/);
 });
 
 test("lead uses a bounded checklist and the three default specialists with conditional social research", async () => {
