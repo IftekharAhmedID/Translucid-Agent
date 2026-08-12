@@ -205,6 +205,71 @@ test("a direct contradiction remains CONTRADICTED with STRONG evidence", async (
   }
 });
 
+test("contradicted facet strength uses only contradiction evidence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-result-relation-strength-"));
+  try {
+    const { store, sourceRef } = await directWorkStore(directory);
+    const self = await store.capture({
+      kind: "PROVIDER_RESPONSE",
+      provider: "linkdapi",
+      providerRoute: "linkdapi.profile",
+      sourceUrl: "https://www.linkedin.com/in/example",
+      mimeType: "application/json",
+      content: { role: { title: "Staff Software Engineer" } },
+      provenance: {},
+    });
+    const contradicted = draft(sourceRef);
+    contradicted.evidence[0]!.relation = "SUPPORTS";
+    contradicted.evidence.push({
+      key: "employment-title-contradiction",
+      claimKey: "employment",
+      facetKeys: ["title"],
+      relation: "CONTRADICTS",
+      sourceRef: self.ref,
+      exactQuote: "Staff Software Engineer",
+      sourceLocation: { path: "role.title" },
+    });
+    const result = await canonicalizeInvestigationResult(contradicted, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 });
+
+    assert.deepEqual(
+      result.claims[0]?.facets.find(({ key }) => key === "title"),
+      {
+        key: "title",
+        label: "Title: Staff Software Engineer",
+        materiality: "HIGH",
+        status: "CONTRADICTED",
+        strength: "WEAK",
+        evidenceIds: ["E2", "E3"],
+        note: "The source states the title.",
+      },
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("unresolved facets and fully unresolved claims have null strength", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-result-unresolved-strength-"));
+  try {
+    const { store, sourceRef } = await directWorkStore(directory);
+    const unresolved = draft(sourceRef);
+    unresolved.evidence = [];
+    unresolved.summary.professionalIdentity.evidenceKeys = [];
+    unresolved.summary.timelineEvidenceKeys = [];
+    unresolved.summary.strongestEvidenceByClaim = [];
+    unresolved.timeline[0]!.evidenceKeys = [];
+    const result = await canonicalizeInvestigationResult(unresolved, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 });
+
+    assert.equal(result.claims[0]?.strength, null);
+    assert.deepEqual(result.claims[0]?.facets.map(({ status, strength }) => ({ status, strength })), [
+      { status: "UNRESOLVED", strength: null },
+      { status: "UNRESOLVED", strength: null },
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("rejects a quote that does not exist in the immutable source", async () => {
   const directory = await mkdtemp(join(tmpdir(), "translucid-result-quote-"));
   try {

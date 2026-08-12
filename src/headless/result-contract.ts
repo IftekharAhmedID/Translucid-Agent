@@ -99,14 +99,14 @@ export type InvestigationResult = {
     materiality: InvestigationDraft["claims"][number]["materiality"];
     sourceSpan: { page?: number; text: string };
     verdict: "CORROBORATED" | "PARTIALLY_CORROBORATED" | "CONTRADICTED" | "UNRESOLVED";
-    strength: EvidenceStrength;
+    strength: EvidenceStrength | null;
     explanation: string;
     facets: Array<{
       key: string;
       label: string;
       materiality: "HIGH" | "MEDIUM" | "LOW";
       status: "SUPPORTED" | "CONTRADICTED" | "UNRESOLVED";
-      strength: EvidenceStrength;
+      strength: EvidenceStrength | null;
       evidenceIds: string[];
       note: string;
     }>;
@@ -211,9 +211,11 @@ function evidenceStrength(evidence: Array<{ sourceAuthority: Exclude<SourceAutho
   return "WEAK";
 }
 
-function materialFloorStrength(facets: Array<{ materiality: "HIGH" | "MEDIUM" | "LOW"; strength: EvidenceStrength }>): EvidenceStrength {
-  const tier = (["HIGH", "MEDIUM", "LOW"] as const).find((materialityValue) => facets.some((facet) => facet.materiality === materialityValue));
-  const strengths = facets.filter((facet) => facet.materiality === tier).map((facet) => facet.strength);
+function materialFloorStrength(facets: Array<{ materiality: "HIGH" | "MEDIUM" | "LOW"; strength: EvidenceStrength | null }>): EvidenceStrength | null {
+  const resolved = facets.filter((facet): facet is typeof facet & { strength: EvidenceStrength } => facet.strength !== null);
+  const tier = (["HIGH", "MEDIUM", "LOW"] as const).find((materialityValue) => resolved.some((facet) => facet.materiality === materialityValue));
+  if (!tier) return null;
+  const strengths = resolved.filter((facet) => facet.materiality === tier).map((facet) => facet.strength);
   return strengths.includes("WEAK") ? "WEAK" : strengths.includes("MODERATE") ? "MODERATE" : "STRONG";
 }
 
@@ -306,7 +308,12 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
     const facets = claim.facets.map((facet) => {
       const matching = claimEvidence.filter((item) => item.facetKeys.includes(facet.key));
       const expected = expectedFacetStatus(matching.map((item) => item.relation));
-      return { ...facet, status: expected, strength: evidenceStrength(matching), evidenceIds: matching.map((item) => evidenceIds.get(item.key)!) };
+      const statusEvidence = expected === "SUPPORTED"
+        ? matching.filter((item) => item.relation === "SUPPORTS")
+        : expected === "CONTRADICTED"
+          ? matching.filter((item) => item.relation === "CONTRADICTS")
+          : [];
+      return { ...facet, status: expected, strength: statusEvidence.length ? evidenceStrength(statusEvidence) : null, evidenceIds: matching.map((item) => evidenceIds.get(item.key)!) };
     });
     return {
       id: claimIds.get(claim.key)!,

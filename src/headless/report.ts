@@ -6,6 +6,10 @@ function numericId(value: string): number {
   return Number(value.replace(/^\D+/, ""));
 }
 
+function displayStrength(value: InvestigationResult["claims"][number]["strength"]): string {
+  return value ?? "—";
+}
+
 export async function renderInvestigationReport(result: InvestigationResult): Promise<Buffer> {
   const recordedStart = new Date(result.run.startedAt);
   if (!Number.isFinite(recordedStart.getTime())) throw new Error("Run start time is invalid.");
@@ -59,10 +63,10 @@ export async function renderInvestigationReport(result: InvestigationResult): Pr
   heading("Claim-level findings");
   const claims = [...result.claims].sort((left, right) => numericId(left.id) - numericId(right.id));
   for (const claim of claims) {
-    subheading(`${claim.id} · ${claim.verdict} · ${claim.strength}`);
+    subheading(`${claim.id} · ${claim.verdict} · ${displayStrength(claim.strength)}`);
     paragraph(claim.statement);
     paragraph(claim.explanation);
-    for (const facet of claim.facets) bullet(`${facet.status} · ${facet.strength} · ${facet.label} — ${facet.note} [evidence: ${facet.evidenceIds.join(", ") || "none"}]`);
+    for (const facet of claim.facets) bullet(`${facet.status} · ${displayStrength(facet.strength)} · ${facet.label} — ${facet.note} [evidence: ${facet.evidenceIds.join(", ") || "none"}]`);
   }
 
   heading("Professional timeline");

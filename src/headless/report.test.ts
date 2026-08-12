@@ -89,3 +89,20 @@ test("renders deterministic PDF bytes from the canonical result only", async () 
   assert.match(pages.join("\n"), /SUPPORTED · STRONG · Title/);
   assert.match(pages.join("\n"), /github\.com\/example\/project/);
 });
+
+test("renders unresolved null strength as a dash", async () => {
+  const unresolved = structuredClone(result);
+  unresolved.claims[0]!.verdict = "UNRESOLVED";
+  unresolved.claims[0]!.strength = null;
+  unresolved.claims[0]!.facets[0]!.status = "UNRESOLVED";
+  unresolved.claims[0]!.facets[0]!.strength = null;
+  unresolved.claims[0]!.facets[0]!.evidenceIds = [];
+
+  const bytes = await renderInvestigationReport(unresolved);
+  const pdf = await getDocument({ data: new Uint8Array(bytes), disableFontFace: true, useSystemFonts: false }).promise;
+  const page = await pdf.getPage(1);
+  const content = await page.getTextContent();
+  const text = content.items.flatMap((item) => "str" in item ? [item.str] : []).join(" ");
+  assert.match(text, /UNRESOLVED · —/);
+  assert.doesNotMatch(text, /UNRESOLVED · (?:null|WEAK)/);
+});
