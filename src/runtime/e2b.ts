@@ -25,6 +25,7 @@ export class E2BRuntime implements InvestigatorRuntime {
     const sandbox = await Sandbox.create(this.config.templateId, {
       apiKey: this.config.apiKey,
       timeoutMs: input.timeoutMs,
+      secure: true,
       envs: {
         CASE_GATEWAY_URL: input.gatewayUrl,
         CASE_TOKEN: input.caseToken,
@@ -42,10 +43,14 @@ export class E2BRuntime implements InvestigatorRuntime {
       for (const file of await workspaceFiles(input.caseDirectory)) await sandbox.files.write(file.path, Uint8Array.from(file.data).buffer);
       await sandbox.commands.run("/opt/investigator/runtime/start.sh", { background: true, timeoutMs: input.timeoutMs });
       const openCodeUrl = `https://${sandbox.getHost(4096)}`;
+      const trafficAccessToken = sandbox.trafficAccessToken;
+      if (!trafficAccessToken) throw new Error("Secure E2B sandbox did not return a traffic-access token.");
       const accessHeaders = {
         authorization: `Basic ${Buffer.from(`opencode:${input.openCodePassword}`).toString("base64")}`,
-        ...(sandbox.trafficAccessToken ? { "e2b-traffic-access-token": sandbox.trafficAccessToken } : {}),
+        "e2b-traffic-access-token": trafficAccessToken,
       };
+      const unauthenticatedAccess = await fetch(`${openCodeUrl}/global/health`, { signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
+      if (unauthenticatedAccess?.ok) throw new Error("Secure E2B OpenCode endpoint accepted unauthenticated traffic.");
       await waitForHttp(openCodeUrl, accessHeaders);
       const manifest = JSON.parse(await sandbox.files.read("/workspace/case/runtime-manifest.json")) as { manifestHash: string };
       if (!input.expectedManifestHash || manifest.manifestHash !== input.expectedManifestHash) throw new Error("E2B runtime manifest does not equal the pinned local manifest.");
