@@ -287,6 +287,37 @@ test("rejects a quote that does not exist in the immutable source", async () => 
   }
 });
 
+test("rejects an exact quote assigned to the wrong immutable source location", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-result-location-"));
+  try {
+    const { store, sourceRef } = await directWorkStore(directory);
+    const invalid = draft(sourceRef);
+    invalid.evidence[0]!.sourceLocation = { path: "role.team" };
+    await assert.rejects(
+      canonicalizeInvestigationResult(invalid, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+      /exact quote.*location.*role\.team/i,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects a timeline interval whose end precedes its start", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-result-temporal-"));
+  try {
+    const { store, sourceRef } = await directWorkStore(directory);
+    const invalid = draft(sourceRef);
+    invalid.timeline[0]!.validFrom = "2025-01-01";
+    invalid.timeline[0]!.validTo = "2024-01-01";
+    await assert.rejects(
+      canonicalizeInvestigationResult(invalid, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+      /timeline.*end.*precedes.*start/i,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("rejects neighboring-facet evidence and context citations", async () => {
   const directory = await mkdtemp(join(tmpdir(), "translucid-result-scope-"));
   try {

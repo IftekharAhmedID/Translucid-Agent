@@ -8,7 +8,7 @@ import { MemoryRunBudget, type BudgetCeilings, type BudgetSnapshot } from "./bud
 import { dossierFingerprint, parseEvidenceDossier, type DossierInventory } from "./dossier.ts";
 
 export const RESEARCH_CONTRACT_VERSION = "headless-research-v1";
-export const FINALIZER_IMPLEMENTATION_VERSION = "dossier-finalizer-v1";
+export const FINALIZER_IMPLEMENTATION_VERSION = "dossier-finalizer-v2";
 export const RESULT_SCHEMA_VERSION = "1.1";
 export const HANDOFF_MANIFEST_PATH = ".work/finalization/handoff-manifest.json";
 export const DOSSIER_PATH = ".work/finalization/evidence-dossier.md";
@@ -246,6 +246,21 @@ export async function openPersistentRunBudget(root: string, ceilings: BudgetCeil
   const snapshot = initial ?? { modelUsd: 0, providerUsd: 0, externalNetworkCalls: 0, routeCounts: {} };
   await atomicJson(path, snapshot);
   return new MemoryRunBudget(ceilings, { initial: snapshot, onChange: (next) => atomicJson(path, next) });
+}
+
+export async function archivePriorFailure(root: string, now = new Date()): Promise<string | undefined> {
+  const source = join(root, "failure.json");
+  const archive = join(root, ".work", "finalization", "failures");
+  await mkdir(archive, { recursive: true, mode: 0o700 });
+  const stamp = now.toISOString().replace(/[:.]/g, "-");
+  const destination = join(archive, `failure-${stamp}-${randomUUID()}.json`);
+  try {
+    await rename(source, destination);
+    return destination;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
 }
 
 export async function hashBundle(root: string, relativePaths: string[], virtualValues: Record<string, string> = {}): Promise<string> {

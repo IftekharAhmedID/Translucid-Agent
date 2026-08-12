@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, readdir, rename, stat } from "node:fs/promises";
+import { open, readFile, readdir, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { E2BRuntime } from "../runtime/e2b.ts";
@@ -8,6 +8,7 @@ import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
 import { currentCheckpointConfigs } from "./checkpoint-config.ts";
 import {
   loadValidDossierCheckpoint,
+  archivePriorFailure,
   openPersistentRunBudget,
   readHandoffManifest,
   validateResearchCheckpoint,
@@ -71,16 +72,6 @@ async function researchMemos(root: string): Promise<string> {
   return (await Promise.all(files.map((file) => readFile(join(directory, file), "utf8")))).join("\n\n");
 }
 
-async function archiveFailure(root: string): Promise<boolean> {
-  const source = join(root, "failure.json");
-  if (!await exists(source)) return false;
-  const archive = join(root, ".work", "finalization", "failures");
-  await mkdir(archive, { recursive: true, mode: 0o700 });
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  await rename(source, join(archive, `failure-${stamp}.json`));
-  return true;
-}
-
 async function runtimeFor(workspace: ExistingRunWorkspace): Promise<InvestigatorRuntime> {
   if (workspace.runtime === "LOCAL") return new LocalDockerRuntime();
   if (!process.env.E2B_API_KEY || !process.env.E2B_TEMPLATE_ID) throw new Error("E2B finalization requires E2B_API_KEY and E2B_TEMPLATE_ID.");
@@ -109,7 +100,7 @@ async function main(): Promise<void> {
   const reusableDossier = await loadValidDossierCheckpoint(workspace.root, manifest, checkpointConfigs.dossier);
   const budget = await openPersistentRunBudget(workspace.root, ceilings, manifest.research.budget);
   const memos = await researchMemos(workspace.root);
-  const archivedFailure = await archiveFailure(workspace.root);
+  const archivedFailure = Boolean(await archivePriorFailure(workspace.root));
 
   const finalizerProvider = process.env.FINALIZER_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
   const fixture = createHeadlessFixtureCompletion();

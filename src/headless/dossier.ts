@@ -9,6 +9,7 @@ export const EVIDENCE_DOSSIER_FORMAT_VERSION = "1";
 const key = z.string().min(1).max(200);
 const facetKey = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 const materiality = z.enum(["HIGH", "MEDIUM", "LOW"]);
+const sourceLocation = z.object({ path: z.string().min(1).max(2_000) }).catchall(z.unknown());
 const sourceSpan = z.object({
   page: z.number().int().positive().optional(),
   text: z.string().min(1).max(20_000),
@@ -38,7 +39,7 @@ const evidenceRecordSchema = z.object({
   relation: z.enum(["SUPPORTS", "CONTRADICTS"]),
   sourceRef: z.string().regex(/^S[1-9]\d*$/),
   exactQuote: z.string().min(1).max(80_000),
-  sourceLocation: z.record(z.string(), z.unknown()),
+  sourceLocation,
 }).strict();
 
 const summaryRecordSchema = investigationDraftSchema.shape.summary;
@@ -210,6 +211,12 @@ function validateInventory(inventory: DossierInventory, allowedSourceRefs: Reado
     if (item.disposition !== "EXCLUDED_LOW_MATERIALITY" && !claims.has(item.claimKey)) {
       throw new Error(`Coverage item references unknown claim ${item.claimKey}.`);
     }
+  }
+  const coveredClaims = new Set(inventory.coverage
+    .filter((item) => item.disposition !== "EXCLUDED_LOW_MATERIALITY")
+    .map((item) => item.claimKey));
+  for (const claimKey of claims) {
+    if (!coveredClaims.has(claimKey)) throw new Error(`Claim ${claimKey} has no non-excluded coverage record.`);
   }
 }
 

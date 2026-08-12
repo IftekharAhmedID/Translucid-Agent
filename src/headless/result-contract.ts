@@ -10,6 +10,7 @@ const key = z.string().min(1).max(200);
 const facetKey = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 const materiality = z.enum(["HIGH", "MEDIUM", "LOW"]);
 const facetStatus = z.string().min(1).max(100);
+const sourceLocation = z.object({ path: z.string().min(1).max(2_000) }).catchall(z.unknown());
 
 export const investigationDraftSchema = z.object({
   summary: z.object({
@@ -56,7 +57,7 @@ export const investigationDraftSchema = z.object({
     relation: z.enum(["SUPPORTS", "CONTRADICTS"]),
     sourceRef: z.string().regex(/^S[1-9]\d*$/),
     exactQuote: z.string().min(1).max(80_000),
-    sourceLocation: z.record(z.string(), z.unknown()),
+    sourceLocation,
   }).strict()).max(5_000),
   timeline: z.array(z.object({
     label: z.string().min(1).max(1_000),
@@ -272,7 +273,9 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
     const sourceAuthority = effectiveSourceAuthority({ artifact: source });
     if (sourceAuthority === "CONTEXT" || sourceAuthority === "DISCOVERY_ONLY") throw new Error(`${sourceAuthority} source ${source.ref} cannot be cited as evidence.`);
     const excerpt = await context.sourceStore.excerpts({ sourceRef: source.ref, queries: [item.exactQuote], maxCharacters: Math.min(80_000, item.exactQuote.length + 2_000) });
-    if (!excerpt.excerpts.some(({ text }) => text.includes(item.exactQuote))) throw new Error(`Evidence ${item.key} exact quote is not present in immutable source ${source.ref}.`);
+    if (!excerpt.excerpts.some(({ path, text }) => path === item.sourceLocation.path && text.includes(item.exactQuote))) {
+      throw new Error(`Evidence ${item.key} exact quote is not present at source location ${item.sourceLocation.path} in immutable source ${source.ref}.`);
+    }
     preparedEvidence.push({
       ...item,
       sourceAuthority,
@@ -381,6 +384,11 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
   };
 
   const timeline: InvestigationResult["timeline"] = draft.timeline.map((item) => {
+    const validFrom = item.validFrom ? Date.parse(item.validFrom) : Number.NaN;
+    const validTo = item.validTo ? Date.parse(item.validTo) : Number.NaN;
+    if (Number.isFinite(validFrom) && Number.isFinite(validTo) && validTo < validFrom) {
+      throw new Error(`Timeline ${item.label} end precedes its start.`);
+    }
     mapKnown(item.claimKeys, claimIds, "timeline claim");
     assertEvidenceWithinClaims(item.evidenceKeys, item.claimKeys, "Timeline");
     const timelineEvidence = item.evidenceKeys.map((value) => evidenceByKey.get(value)!).map((item) => evidence.find((candidate) => candidate.id === evidenceIds.get(item.key))!);

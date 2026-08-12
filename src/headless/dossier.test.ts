@@ -146,6 +146,9 @@ test("detects mutations to model-authored claim, facet, evidence, summary, and t
     ["claim", (value) => { value.claims[0]!.statement = "Mutated statement"; }],
     ["facet", (value) => { value.claims[0]!.facets[0]!.label = "Mutated facet"; }],
     ["evidence", (value) => { value.evidence[0]!.exactQuote = "Mutated quote"; }],
+    ["evidence", (value) => { value.evidence[0]!.relation = "CONTRADICTS"; }],
+    ["evidence", (value) => { value.evidence[0]!.sourceRef = "S2"; }],
+    ["evidence", (value) => { value.evidence[0]!.sourceLocation = { path: "mutated.path" }; }],
     ["summary", (value) => { value.summary.professionalTimelineSummary = "Mutated summary"; }],
     ["timeline", (value) => { value.timeline[0]!.validTo = "2025"; }],
   ];
@@ -194,5 +197,24 @@ test("rejects unknown TL markers instead of silently ignoring them", () => {
   assert.throws(
     () => parseEvidenceDossier(`${dossierText()}TL_INVENTED {"value":true}\n`, new Set(["S1"])),
     /unknown dossier marker/i,
+  );
+});
+
+test("rejects a claim omitted from the material coverage ledger", () => {
+  const items = records();
+  const secondClaim = structuredClone(items.find((record) => record.type === "TL_CLAIM")!);
+  assert.equal(secondClaim.type, "TL_CLAIM");
+  secondClaim.value.key = "education";
+  secondClaim.value.category = "EDUCATION";
+  secondClaim.value.statement = "Ada earned a degree from Example University.";
+  secondClaim.value.sourceSpan = { text: "Example University" };
+  const secondFacet = structuredClone(items.find((record) => record.type === "TL_FACET")!);
+  assert.equal(secondFacet.type, "TL_FACET");
+  secondFacet.value.claimKey = "education";
+  secondFacet.value.key = "institution";
+  secondFacet.value.label = "Institution: Example University";
+  assert.throws(
+    () => parseEvidenceDossier(dossierText([...items, secondClaim, secondFacet]), new Set(["S1"])),
+    /education.*no non-excluded coverage/i,
   );
 });

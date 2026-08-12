@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   DOSSIER_PATH,
   FINALIZER_IMPLEMENTATION_VERSION,
+  archivePriorFailure,
   loadValidDossierCheckpoint,
   openPersistentRunBudget,
   RESEARCH_CONTRACT_VERSION,
@@ -108,6 +109,20 @@ test("restores and atomically advances a persisted cumulative budget", async () 
     const resumed = await openPersistentRunBudget(root, ceilings);
     assert.equal(resumed.snapshot().modelUsd, 1.5);
     assert.equal((JSON.parse(await readFile(join(root, ".work", "finalization", "budget.json"), "utf8")) as { modelUsd: number }).modelUsd, 1.5);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("archives a prior failure before a finalization retry", async () => {
+  const { root } = await fixtureRun();
+  try {
+    await writeFile(join(root, "failure.json"), JSON.stringify({ code: "OLD_FAILURE" }));
+    const archived = await archivePriorFailure(root, new Date("2026-08-11T12:00:00.000Z"));
+    assert.ok(archived);
+    assert.deepEqual(JSON.parse(await readFile(archived, "utf8")), { code: "OLD_FAILURE" });
+    await assert.rejects(() => readFile(join(root, "failure.json")), /ENOENT/);
+    assert.equal(await archivePriorFailure(root), undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
