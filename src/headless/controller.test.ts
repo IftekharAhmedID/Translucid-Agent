@@ -168,6 +168,7 @@ test("extracts dossier text without treating it as structured JSON", () => {
     parts: [{ type: "reasoning", text: "ignored" }, { type: "text", text: "TL_CLAIM {}" }],
   }), "TL_CLAIM {}");
   assert.throws(() => extractTextOutput({ info: { role: "assistant" }, parts: [] }), /no text/i);
+  assert.throws(() => extractTextOutput({ info: { role: "assistant", error: { name: "APIError", status: 429, message: "rate limited" } }, parts: [] }), /APIError.*429.*rate limited/i);
 });
 
 test("encoder prompts disable excerpts and skills and auditor context excludes raw research memos", async () => {

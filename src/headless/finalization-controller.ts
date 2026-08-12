@@ -94,13 +94,13 @@ export function finalizerPromptPayload<T>(provider: "ZEN" | "GO", model: string,
 }
 
 type AssistantMessage = {
-  info: { role: string; error?: { name?: string } };
+  info: { role: string; error?: unknown };
   parts: Array<{ type: string; text?: string }>;
 };
 
 export function extractTextOutput(message: AssistantMessage): string {
   if (message.info.role !== "assistant") throw new Error("Session did not return an assistant response.");
-  if (message.info.error) throw new Error(`OPENCODE_MESSAGE_ERROR:${message.info.error.name ?? "UnknownError"}`);
+  if (message.info.error) throw new Error(`OPENCODE_MESSAGE_ERROR:${describeSdkError(message.info.error)}`);
   const text = message.parts
     .filter((part) => part.type === "text" && typeof part.text === "string")
     .map((part) => part.text)
