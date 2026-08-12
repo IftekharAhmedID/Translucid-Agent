@@ -122,10 +122,12 @@ export async function waitForFinalizerAssistant(input: {
     const status = await input.readStatus();
     if (status === "busy" || status === "retry") observedBusy = true;
     const idle = status === "idle" || status === undefined;
-    if (idle && (observedBusy || now() - startedAt >= (input.initialGraceMs ?? 30_000))) {
+    if (idle) {
       const message = [...await input.readMessages()].reverse().find((candidate) => candidate.info.role === "assistant");
       if (message) return message;
-      throw new Error("Finalizer session became idle with no assistant response.");
+      if (status === "idle" && (observedBusy || now() - startedAt >= (input.initialGraceMs ?? 30_000))) {
+        throw new Error("Finalizer session became idle with no assistant response.");
+      }
     }
     const interval = input.intervalMs ?? 500;
     if (interval > 0) await new Promise((resolve) => setTimeout(resolve, interval));
