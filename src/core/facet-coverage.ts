@@ -12,7 +12,7 @@ const materialSignals = new Set([
 ]);
 
 function tokens(value: string): Set<string> {
-  return new Set((value.toLocaleLowerCase("en-US").match(/[a-z][a-z0-9+#.-]{2,}/g) ?? []).filter((token) => !ignored.has(token)));
+  return new Set((value.toLocaleLowerCase("en-US").match(/[a-z][a-z0-9+#.-]{2,}|\d[\dA-Za-z+.#-]*\d/g) ?? []).filter((token) => !ignored.has(token)));
 }
 
 function splitClauses(value: string): string[] {
@@ -35,6 +35,13 @@ export type FacetCoverageAudit = {
   complete: boolean;
   uncovered: FacetCoverageIssue[];
 };
+
+export function assertSelfContainedFacetLabels(claimKey: string, facets: Array<{ key: string; label: string }>): void {
+  for (const facet of facets) {
+    const concreteTokens = tokens(facet.label);
+    if (concreteTokens.size < 2) throw new Error(`Facet ${facet.key} on claim ${claimKey} must use a self-contained assertion, not a generic field name.`);
+  }
+}
 
 export function auditClaimFacetCoverage(normalizedClaim: string, facets: ClaimFacet[]): FacetCoverageAudit {
   const facetTokens = facets.map((facet) => ({ facet, tokens: tokens(facet.label) }));

@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { assertSafeInvestigationLanguage } from "../core/adjudication.ts";
 import { facetEvidenceCompatible } from "../core/evidence-fit.ts";
-import { auditClaimFacetCoverage } from "../core/facet-coverage.ts";
+import { assertSelfContainedFacetLabels, auditClaimFacetCoverage } from "../core/facet-coverage.ts";
 import { effectiveAttestationGroup, effectiveSourceAuthority, type SourceAuthority } from "../core/source-trust.ts";
 import type { FileSourceStore } from "./source-store.ts";
 
@@ -241,6 +241,7 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
   unique(draft.evidence.map((item) => item.key), "evidence key");
   for (const claim of draft.claims) {
     unique(claim.facets.map((facet) => facet.key), `facet key on claim ${claim.key}`);
+    assertSelfContainedFacetLabels(claim.key, claim.facets);
     const coverage = auditClaimFacetCoverage(claim.statement, claim.facets);
     if (!coverage.complete) throw new Error(`Material claim clause has no declared facet on ${claim.key}: ${coverage.uncovered.map(({ clause }) => clause).join(" | ")}`);
   }
@@ -272,8 +273,8 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
     if (!source) throw new Error(`Evidence ${item.key} references unknown source ${item.sourceRef}.`);
     const sourceAuthority = effectiveSourceAuthority({ artifact: source });
     if (sourceAuthority === "CONTEXT" || sourceAuthority === "DISCOVERY_ONLY") throw new Error(`${sourceAuthority} source ${source.ref} cannot be cited as evidence.`);
-    const excerpt = await context.sourceStore.excerpts({ sourceRef: source.ref, queries: [item.exactQuote], maxCharacters: Math.min(80_000, item.exactQuote.length + 2_000) });
-    if (!excerpt.excerpts.some(({ path, text }) => path === item.sourceLocation.path && text.includes(item.exactQuote))) {
+    const exactQuote = await context.sourceStore.verifyExactQuote({ sourceRef: source.ref, path: item.sourceLocation.path, exactQuote: item.exactQuote });
+    if (!exactQuote.valid) {
       throw new Error(`Evidence ${item.key} exact quote is not present at source location ${item.sourceLocation.path} in immutable source ${source.ref}.`);
     }
     preparedEvidence.push({

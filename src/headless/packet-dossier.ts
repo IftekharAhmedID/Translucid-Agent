@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { effectiveSourceAuthority } from "../core/source-trust.ts";
-import { auditClaimFacetCoverage } from "../core/facet-coverage.ts";
+import { assertSelfContainedFacetLabels, auditClaimFacetCoverage } from "../core/facet-coverage.ts";
 import type { FileSourceStore } from "./source-store.ts";
 import { investigationDraftSchema, type InvestigationDraft } from "./result-contract.ts";
 
@@ -125,6 +125,7 @@ export function validateCoveragePlan(value: unknown, input: InputDocument): Cove
   const claimByKey = new Map(plan.claims.map((claim) => [claim.key, claim]));
   for (const claim of plan.claims) {
     assertUnique(claim.facets.map((facet) => facet.key), `facet key on ${claim.key}`);
+    assertSelfContainedFacetLabels(claim.key, claim.facets);
     const page = pages.get(claim.sourceSpan.page);
     if (!page) throw new Error(`Claim ${claim.key} references unknown page ${claim.sourceSpan.page}.`);
     if (page) {

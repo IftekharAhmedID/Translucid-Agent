@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { auditClaimFacetCoverage } from "./facet-coverage.ts";
+import { assertSelfContainedFacetLabels, auditClaimFacetCoverage } from "./facet-coverage.ts";
 
 test("facet coverage accepts coherent employment clauses with self-contained labels", () => {
   const result = auditClaimFacetCoverage(
@@ -27,4 +27,12 @@ test("facet coverage flags a material clause that has no declared facet", () => 
   assert.equal(result.complete, false);
   assert.equal(result.uncovered.length, 1);
   assert.match(result.uncovered[0]!.clause, /release automation/i);
+});
+
+test("facet labels cannot be generic field names", () => {
+  assert.throws(
+    () => assertSelfContainedFacetLabels("employment", [{ key: "title", label: "role" }]),
+    /facet title.*self-contained/i,
+  );
+  assert.doesNotThrow(() => assertSelfContainedFacetLabels("employment", [{ key: "title", label: "Title: Principal Engineer" }]));
 });
