@@ -175,6 +175,7 @@ async function main(): Promise<void> {
       compilerModel: process.env.FINALIZER_MODEL ?? "deepseek-v4-pro",
       auditorModel: process.env.FINALIZER_MODEL ?? "deepseek-v4-pro",
       finalizerProvider,
+      registerExcerptAllowance: gateway.registerExcerptAllowance,
       onLeadStarted: async (sessionId) => {
         process.stderr.write(`Run ${runId}: lead session ${sessionId} is visible${options.watch ? " in the attached TUI" : ` with npm run attach -- ${runId}`}.\n`);
         if (options.watch && handle) watchProcess = attachTui(handle, password, sessionId);

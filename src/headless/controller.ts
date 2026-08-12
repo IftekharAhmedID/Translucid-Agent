@@ -47,6 +47,7 @@ type Input = {
   compilerModel: string;
   auditorModel: string;
   finalizerProvider: "ZEN" | "GO";
+  registerExcerptAllowance: (sessionId: string, characters: number) => void;
   onLeadStarted?: (sessionId: string) => void | Promise<void>;
   onProgress?: (message: string) => void;
 };
@@ -321,9 +322,10 @@ export class HeadlessInvestigationController {
       warnings.push(...compilerBase.warnings);
       const memoSourceRefs = new Set(compilerBase.citedSources.flatMap((source) => typeof source.ref === "string" ? [source.ref] : []));
 
-      const promptText = async (title: string, prompt: string): Promise<string> => {
+      const promptText = async (title: string, prompt: string, excerptAllowance: number): Promise<string> => {
         const model = input.compilerModel;
         const session = unwrap(await client.session.create({ directory, title, agent: "evidence-compiler", model: { id: model, providerID: "translucid", variant: "medium" } }, { signal: input.signal }), "evidence-compiler session creation");
+        input.registerExcerptAllowance(session.id, excerptAllowance);
         const message = unwrap(await client.session.prompt({
           sessionID: session.id,
           directory,
@@ -344,6 +346,7 @@ export class HeadlessInvestigationController {
       ): Promise<T> => {
         const model = agent === "evidence-compiler" ? input.compilerModel : input.auditorModel;
         const session = unwrap(await client.session.create({ directory, title, agent, model: { id: model, providerID: "translucid", variant: "medium" } }, { signal: input.signal }), `${agent} session creation`);
+        input.registerExcerptAllowance(session.id, agent === "evidence-auditor" ? 30_000 : 0);
         const payload = finalizerPromptPayload(input.finalizerProvider, model, prompt, schema);
         const message = unwrap(await client.session.prompt({
           sessionID: session.id,
@@ -377,6 +380,7 @@ export class HeadlessInvestigationController {
           const text = await promptText(
             `Evidence dossier ${attempt}`,
             `MODE: EVIDENCE_DOSSIER\n\nCreate a complete evidence dossier from the parsed input and preserved research. Human-readable Markdown is allowed, but every model-authored claim, facet, evidence item, summary field, timeline item, and coverage disposition must also appear in the fixed one-line TL_* record format defined by your agent instructions. Build TL_COVERAGE directly from every material assertion in the parsed input; the lead memo is advisory and may be absent. Exact quotes must occur verbatim in memo-cited immutable sources. Use source.excerpts when needed.\n\n${JSON.stringify({ ...compilerBase, repairDefects: defects, previousDossier: previousDossier?.text ?? lastDossierText })}`,
+            attempt === 1 ? 60_000 : 15_000,
           );
           lastDossierText = text;
           const inventory = parseEvidenceDossier(text, memoSourceRefs);

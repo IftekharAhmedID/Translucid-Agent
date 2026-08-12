@@ -63,7 +63,37 @@ test("authorizes one run-scoped token and exposes only headless tools", async ()
       body: JSON.stringify({ tool: "source.excerpts", arguments: { sourceRef: "S1", queries: ["Principal Engineer"] } }),
     });
     assert.equal(excerpt.status, 200);
-    assert.match(await excerpt.text(), /Principal Engineer/);
+    const excerptBody = await excerpt.json() as {
+      excerpts: Array<{ text: string }>;
+      returnedCharacters: number;
+      remainingCharacters: number | null;
+      truncated: boolean;
+      budgetExhausted: boolean;
+    };
+    assert.match(excerptBody.excerpts[0]?.text ?? "", /Principal Engineer/);
+    assert.ok(excerptBody.returnedCharacters > 0);
+    assert.equal(excerptBody.remainingCharacters, null);
+    assert.equal(excerptBody.budgetExhausted, false);
+
+    gateway.registerExcerptAllowance("encoder-session", 0);
+    const encoderExcerpt = await fetch(`${origin}/internal/tools/execute`, {
+      method: "POST",
+      headers: { ...headers, "x-opencode-agent": "evidence-compiler" },
+      body: JSON.stringify({
+        tool: "source.excerpts",
+        arguments: { sourceRef: "S1", queries: ["Principal Engineer"] },
+        operational: { agent: "evidence-compiler", sessionId: "encoder-session" },
+      }),
+    });
+    assert.equal(encoderExcerpt.status, 200);
+    assert.deepEqual(await encoderExcerpt.json(), {
+      sourceRef: "S1",
+      excerpts: [],
+      returnedCharacters: 0,
+      remainingCharacters: 0,
+      truncated: true,
+      budgetExhausted: true,
+    });
 
     const forbidden = await fetch(`${origin}/internal/tools/execute`, {
       method: "POST",

@@ -173,6 +173,8 @@ test("extracts dossier text without treating it as structured JSON", () => {
 test("encoder prompts disable excerpts and skills and auditor context excludes raw research memos", async () => {
   const source = await readFile(new URL("./controller.ts", import.meta.url), "utf8");
   assert.match(source, /\{ "source\.excerpts": false, skill: false \}/);
+  assert.match(source, /attempt === 1 \? 60_000 : 15_000/);
+  assert.match(source, /agent === "evidence-auditor" \? 30_000 : 0/);
   const auditorPrompt = source.slice(source.indexOf("Independently audit this deterministically validated result"));
   assert.doesNotMatch(auditorPrompt, /researchMemos: compilerBase\.researchMemos/);
   assert.match(auditorPrompt, /evidenceDossier: dossier\.text/);

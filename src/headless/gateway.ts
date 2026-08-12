@@ -5,6 +5,7 @@ import { estimateModelInputTokens, modelCostReservation, proxyModelCompletion } 
 import { toolNames } from "../providers/contracts.ts";
 import type { ProviderExecutor } from "../providers/executor.ts";
 import type { MemoryRunBudget } from "./budget.ts";
+import { SessionExcerptAllowances } from "./excerpt-allowance.ts";
 import type { FileSourceStore } from "./source-store.ts";
 
 const MAX_TOOL_BODY = 1024 * 1024;
@@ -60,6 +61,7 @@ type GatewayInput = {
 export function createHeadlessGateway(input: GatewayInput) {
   const token = randomBytes(32).toString("base64url");
   const tokenDigest = digest(token);
+  const excerptAllowances = new SessionExcerptAllowances();
   let active = true;
 
   const authorize = (request: IncomingMessage, kind: "tool" | "model", name: string): void => {
@@ -85,10 +87,20 @@ export function createHeadlessGateway(input: GatewayInput) {
         authorize(request, "tool", name);
         if (name === "source.excerpts") {
           const args = body.arguments && typeof body.arguments === "object" ? body.arguments as Record<string, unknown> : {};
+          const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
+          const sessionId = typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session";
           const sourceRef = typeof args.sourceRef === "string" ? args.sourceRef : "";
           const queries = Array.isArray(args.queries) ? args.queries.filter((value): value is string => typeof value === "string") : [];
-          const maxCharacters = typeof args.maxCharacters === "number" ? args.maxCharacters : undefined;
-          return json(response, 200, await input.sourceStore.excerpts({ sourceRef, queries, ...(maxCharacters === undefined ? {} : { maxCharacters }) }));
+          const requestedCharacters = typeof args.maxCharacters === "number" && Number.isFinite(args.maxCharacters)
+            ? Math.min(60_000, Math.max(1, Math.floor(args.maxCharacters)))
+            : 60_000;
+          const excerpt = await excerptAllowances.execute(
+            sessionId,
+            sourceRef,
+            requestedCharacters,
+            (maximumCharacters) => input.sourceStore.excerpts({ sourceRef, queries, maxCharacters: maximumCharacters }),
+          );
+          return json(response, 200, excerpt);
         }
         if (!toolNames.includes(name as (typeof toolNames)[number])) throw new GatewayError(403, "State and database tools are unavailable in headless runs.");
         const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
@@ -137,5 +149,10 @@ export function createHeadlessGateway(input: GatewayInput) {
     }
   });
 
-  return { server, token, cancel: () => { active = false; } };
+  return {
+    server,
+    token,
+    registerExcerptAllowance: (sessionId: string, characters: number) => excerptAllowances.register(sessionId, characters),
+    cancel: () => { active = false; },
+  };
 }
