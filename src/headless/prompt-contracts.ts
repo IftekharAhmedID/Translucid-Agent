@@ -14,7 +14,7 @@ export const PACKET_PROMPT_CONTRACT = "MODE: EVIDENCE_PACKET\n\nCompile exactly 
 
 export const SUMMARY_TIMELINE_PROMPT_CONTRACT = "MODE: SUMMARY_TIMELINE\n\nReturn only a summary and timeline object for the supplied merged claims and evidence. Reference only known claim and evidence keys. Do not add or change claims, facets, evidence, verdicts, strengths, source authority, or identifiers. No tools, memos, or source fetches.";
 
-export const AUDITOR_PROMPT_CONTRACT = "Independently audit this deterministically validated result against the parsed input and evidence dossier. Do not research or call tools; immutable source bytes and exact quotations have already been host-verified. Mark REPAIR_REQUIRED only for a material defect. Warnings do not require repair.";
+export const AUDITOR_PROMPT_CONTRACT = "Independently audit this deterministically validated result against the parsed input and evidence dossier. Do not research or call tools; immutable source bytes and exact quotations have already been host-verified. Mark REPAIR_REQUIRED only for a material defect. Warnings do not require repair. Every material defect must declare stage PACKET, SUMMARY, or CANONICAL; packet defects must include zero-based packetIndex plus affected claimKeys/evidenceKeys. If a defect cannot be scoped to one packet or the summary, report it as stage AUDIT so the host fails closed rather than regenerating valid work.";
 
 export function researchPrompt(deadline: string): string {
   return `${RESEARCH_PROMPT_CONTRACT} The research deadline is ${deadline}.`;

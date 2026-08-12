@@ -26,6 +26,8 @@ import {
   packetSchema,
   summaryTimelineOutputSchema,
   renderEvidenceDossierMarkdown,
+  type CoveragePlan,
+  type Packet,
   type PacketDossier,
 } from "./packet-dossier.ts";
 import { AUDITOR_PROMPT_CONTRACT, COVERAGE_PROMPT_CONTRACT, PACKET_PROMPT_CONTRACT, SUMMARY_TIMELINE_PROMPT_CONTRACT, promptWithPayload } from "./prompt-contracts.ts";
@@ -33,9 +35,35 @@ import { canonicalizeInvestigationResult, type InvestigationResult } from "./res
 import type { FileSourceStore } from "./source-store.ts";
 
 const directory = "/workspace/case";
+export type FinalizationStage = "COVERAGE" | "PACKET" | "SUMMARY" | "CANONICAL" | "AUDIT";
+
+export type FinalizationDefect = {
+  stage: FinalizationStage;
+  code: string;
+  message: string;
+  packetIndex?: number;
+  claimKeys: string[];
+  evidenceKeys: string[];
+  repairable: boolean;
+};
+
+class FinalizationError extends Error {
+  constructor(readonly defects: FinalizationDefect[]) {
+    super(defects.map((defect) => `${defect.stage}: ${defect.message}`).join("; "));
+  }
+}
+
 const auditSchema = z.object({
   status: z.enum(["PASSED", "REPAIR_REQUIRED"]),
-  defects: z.array(z.object({ severity: z.enum(["MATERIAL", "WARNING"]), code: z.string().min(1), message: z.string().min(1) }).strict()).max(100),
+  defects: z.array(z.object({
+    severity: z.enum(["MATERIAL", "WARNING"]),
+    code: z.string().min(1),
+    message: z.string().min(1),
+    stage: z.enum(["PACKET", "SUMMARY", "CANONICAL", "AUDIT"]).optional(),
+    packetIndex: z.number().int().nonnegative().optional(),
+    claimKeys: z.array(z.string().min(1)).max(100).default([]),
+    evidenceKeys: z.array(z.string().min(1)).max(100).default([]),
+  }).strict()).max(100),
 }).strict();
 
 type Input = {
@@ -83,6 +111,41 @@ async function writeAtomic(path: string, value: string): Promise<void> {
     await rm(temporary, { force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+function defect(stage: FinalizationStage, error: unknown, options: Partial<Omit<FinalizationDefect, "stage" | "message">> = {}): FinalizationError {
+  if (error instanceof FinalizationError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  return new FinalizationError([{
+    stage,
+    code: `${stage}_VALIDATION_FAILED`,
+    message,
+    claimKeys: [],
+    evidenceKeys: [],
+    repairable: stage === "COVERAGE" || stage === "PACKET" || stage === "SUMMARY",
+    ...options,
+  }]);
+}
+
+function defectsFrom(error: unknown): FinalizationDefect[] {
+  return error instanceof FinalizationError ? error.defects : [{
+    stage: "CANONICAL",
+    code: "FINALIZATION_FAILED",
+    message: error instanceof Error ? error.message : String(error),
+    claimKeys: [],
+    evidenceKeys: [],
+    repairable: false,
+  }];
+}
+
+export function repairScope(defects: FinalizationDefect[]): "COVERAGE" | "PACKET" | "SUMMARY" | undefined {
+  if (!defects.length || defects.some((item) => !item.repairable)) return undefined;
+  const stages = new Set(defects.map((item) => item.stage));
+  if (stages.size !== 1) return undefined;
+  const [stage] = [...stages];
+  if (stage === "COVERAGE" || stage === "SUMMARY") return stage;
+  if (stage === "PACKET" && defects.length === 1 && defects[0]!.packetIndex !== undefined) return stage;
+  return undefined;
 }
 
 export async function runPacketizedFinalization(input: Input): Promise<{ result: InvestigationResult; artifact: PacketFinalizationArtifact; compilerAttempts: 1 | 2; auditorAttempts: 1 | 2 }> {
@@ -133,91 +196,221 @@ export async function runPacketizedFinalization(input: Input): Promise<{ result:
   };
 
   const parsedInput = base.input as { pages?: unknown[] };
-  const packetRun = async (repairDefects: string[] = []): Promise<{ dossier: PacketDossier; result: InvestigationResult }> => {
-    if (!repairDefects.length && reusablePacketDossier) {
-      const dossier = reusablePacketDossier;
-      reusablePacketDossier = undefined;
-      const draft = packetDossierToDraft(dossier);
-      const result = await canonicalizeInvestigationResult(draft, {
-        run: provisionalRun,
-        sourceStore: input.sourceStore,
-        compilerAttempts: 1,
-        auditorAttempts: 1,
-        warnings,
-        providerCalls: input.budget.snapshot().externalNetworkCalls,
-      });
-      return { dossier, result };
+  const buildCoverage = async (repairDefects: FinalizationDefect[]): Promise<CoveragePlan> => {
+    try {
+      const value = await promptJson("evidence-compiler", "Exhaustive coverage outline", COVERAGE_PROMPT_CONTRACT, {
+        input: parsedInput,
+        repairDefects: repairDefects.map(({ message }) => message),
+      }, coveragePlanSchema, 0, { "source.excerpts": false, skill: false });
+      return validateCoveragePlan(value, parsedInput as never);
+    } catch (error) {
+      throw defect("COVERAGE", error);
     }
-    const coverageValue = await promptJson("evidence-compiler", "Exhaustive coverage outline", COVERAGE_PROMPT_CONTRACT, { input: parsedInput, repairDefects }, coveragePlanSchema, 0, { "source.excerpts": false, skill: false });
-    const coverage = validateCoveragePlan(coverageValue, parsedInput as never);
-    const outlines = coverage.claims;
-    const packets = splitClaimPackets(outlines, 5);
+  };
+
+  const buildPacket = async (coverage: CoveragePlan, packetIndex: number, repairDefects: FinalizationDefect[], allowance: number): Promise<Packet> => {
+    const packets = splitClaimPackets(coverage.claims, 5);
+    try {
+      const value = await promptJson("evidence-compiler", `Evidence packet ${packetIndex + 1}/${packets.length}`, PACKET_PROMPT_CONTRACT, {
+        input: parsedInput,
+        claimOutlines: packets[packetIndex],
+        researchMemos: base.researchMemos,
+        citedSources: base.citedSources,
+        warnings,
+        repairDefects: repairDefects.map(({ message }) => message),
+      }, packetSchema, allowance, { "source.excerpts": true, skill: true });
+      return await validatePacketEvidence(value, packets[packetIndex]!, input.sourceStore, allowedSourceRefs);
+    } catch (error) {
+      throw defect("PACKET", error, {
+        packetIndex,
+        claimKeys: packets[packetIndex]?.map(({ key }) => key) ?? [],
+      });
+    }
+  };
+
+  const buildPackets = async (coverage: CoveragePlan, repairDefects: FinalizationDefect[], existing?: Packet[], repairPacketIndex?: number): Promise<Packet[]> => {
+    const packets = splitClaimPackets(coverage.claims, 5);
+    if (repairPacketIndex !== undefined) {
+      if (!existing || existing.length !== packets.length) throw new FinalizationError([{
+        stage: "PACKET",
+        code: "PACKET_REPAIR_SCOPE_UNAVAILABLE",
+        message: "A packet-local repair was requested without a complete valid packet set.",
+        packetIndex: repairPacketIndex,
+        claimKeys: packets[repairPacketIndex]?.map(({ key }) => key) ?? [],
+        evidenceKeys: [],
+        repairable: false,
+      }]);
+      const repaired = [...existing];
+      repaired[repairPacketIndex] = await buildPacket(coverage, repairPacketIndex, repairDefects, 15_000);
+      return repaired;
+    }
     const packetAllowance = packets.length ? Math.floor((repairDefects.length ? 15_000 : 60_000) / packets.length) : 0;
-    const packetResults: unknown[] = new Array(packets.length);
+    const packetResults: Array<Packet | undefined> = new Array(packets.length);
+    const packetDefects: FinalizationDefect[] = [];
     let next = 0;
     const worker = async () => {
       while (true) {
         const index = next++;
         if (index >= packets.length) return;
-        const value = await promptJson("evidence-compiler", `Evidence packet ${index + 1}/${packets.length}`, PACKET_PROMPT_CONTRACT, {
-          input: parsedInput,
-          claimOutlines: packets[index],
-          researchMemos: base.researchMemos,
-          citedSources: base.citedSources,
-          warnings,
-          repairDefects,
-        }, packetSchema, packetAllowance, { "source.excerpts": true, skill: true });
-        packetResults[index] = await validatePacketEvidence(value, packets[index]!, input.sourceStore, allowedSourceRefs);
+        try {
+          packetResults[index] = await buildPacket(coverage, index, repairDefects, packetAllowance);
+        } catch (error) {
+          packetDefects.push(...defectsFrom(error));
+        }
       }
     };
     await Promise.all([worker(), worker()]);
-    const summaryOutput = await promptJson("evidence-compiler", "Summary and timeline", SUMMARY_TIMELINE_PROMPT_CONTRACT, {
-      input: parsedInput,
-      claims: packetResults.flatMap((packet) => (packet as { claims: unknown[] }).claims),
-      evidence: packetResults.flatMap((packet) => (packet as { evidence: unknown[] }).evidence),
-      repairDefects,
-    }, summaryTimelineOutputSchema, 0, { "source.excerpts": false, skill: false });
-    const dossier = mergePacketDossier(coverage, packetResults, summaryOutput.summary, summaryOutput.timeline, allowedSourceRefs);
-    await writeAtomic(join(input.root, ".work/finalization/evidence-dossier.json"), `${JSON.stringify(dossier, null, 2)}\n`);
-    await writeAtomic(join(input.root, ".work/finalization/evidence-dossier.md"), renderEvidenceDossierMarkdown(dossier));
-    if (input.dossierCheckpointConfig) await writePacketDossierCheckpoint(input.root, { dossier, config: input.dossierCheckpointConfig });
-    const draft = packetDossierToDraft(dossier);
-    const result = await canonicalizeInvestigationResult(draft, {
-      run: provisionalRun,
-      sourceStore: input.sourceStore,
-      compilerAttempts: repairDefects.length ? 2 : 1,
-      auditorAttempts: 1,
-      warnings,
-      providerCalls: input.budget.snapshot().externalNetworkCalls,
-    });
-    return { dossier, result };
+    if (packetDefects.length) throw new FinalizationError(packetDefects.sort((left, right) => (left.packetIndex ?? 0) - (right.packetIndex ?? 0)));
+    return packetResults as Packet[];
+  };
+
+  const buildSummary = async (coverage: CoveragePlan, packets: Packet[], repairDefects: FinalizationDefect[]) => {
+    try {
+      return await promptJson("evidence-compiler", "Summary and timeline", SUMMARY_TIMELINE_PROMPT_CONTRACT, {
+        input: parsedInput,
+        claims: packets.flatMap((packet) => packet.claims),
+        evidence: packets.flatMap((packet) => packet.evidence),
+        repairDefects: repairDefects.map(({ message }) => message),
+      }, summaryTimelineOutputSchema, 0, { "source.excerpts": false, skill: false });
+    } catch (error) {
+      throw defect("SUMMARY", error);
+    }
+  };
+
+  const assemble = async (coverage: CoveragePlan, packets: Packet[], summaryOutput: z.infer<typeof summaryTimelineOutputSchema>, repairDefects: FinalizationDefect[], compilerAttempt: 1 | 2): Promise<{ dossier: PacketDossier; result: InvestigationResult }> => {
+    try {
+      const dossier = mergePacketDossier(coverage, packets, summaryOutput.summary, summaryOutput.timeline, allowedSourceRefs);
+      await writeAtomic(join(input.root, ".work/finalization/evidence-dossier.json"), `${JSON.stringify(dossier, null, 2)}\n`);
+      await writeAtomic(join(input.root, ".work/finalization/evidence-dossier.md"), renderEvidenceDossierMarkdown(dossier));
+      const result = await canonicalizeInvestigationResult(packetDossierToDraft(dossier), {
+        run: provisionalRun,
+        sourceStore: input.sourceStore,
+        compilerAttempts: compilerAttempt,
+        auditorAttempts: 1,
+        warnings,
+        providerCalls: input.budget.snapshot().externalNetworkCalls,
+      });
+      return { dossier, result };
+    } catch (error) {
+      throw defect("CANONICAL", error);
+    }
+  };
+
+  const compile = async (repairDefects: FinalizationDefect[], existingCoverage?: CoveragePlan, existingPackets?: Packet[], repairPacketIndex?: number, compilerAttempt: 1 | 2 = 1): Promise<{ coverage: CoveragePlan; packets: Packet[]; current: { dossier: PacketDossier; result: InvestigationResult } }> => {
+    const coverage = existingCoverage ?? await buildCoverage(repairDefects);
+    const packets = await buildPackets(coverage, repairDefects, existingPackets, repairPacketIndex);
+    const summary = await buildSummary(coverage, packets, repairDefects);
+    const current = await assemble(coverage, packets, summary, repairDefects, compilerAttempt);
+    return { coverage, packets, current };
   };
 
   let compilerAttempts: 1 | 2 = 1;
   let auditorAttempts: 1 | 2 = 1;
+  let repairUsed = false;
+  let coverage: CoveragePlan | undefined;
+  let packets: Packet[] | undefined;
   let current: { dossier: PacketDossier; result: InvestigationResult };
-  try {
-    current = await packetRun();
-  } catch (error) {
-    compilerAttempts = 2;
-    current = await packetRun([`Finalization defect: ${error instanceof Error ? error.message : String(error)}`]);
+  if (reusablePacketDossier) {
+    const dossier = reusablePacketDossier;
+    reusablePacketDossier = undefined;
+    try {
+      current = {
+        dossier,
+        result: await canonicalizeInvestigationResult(packetDossierToDraft(dossier), {
+          run: provisionalRun,
+          sourceStore: input.sourceStore,
+          compilerAttempts: 1,
+          auditorAttempts: 1,
+          warnings,
+          providerCalls: input.budget.snapshot().externalNetworkCalls,
+        }),
+      };
+    } catch (error) {
+      throw defect("CANONICAL", error);
+    }
+  } else {
+    try {
+      const compiled = await compile([]);
+      coverage = compiled.coverage;
+      packets = compiled.packets;
+      current = compiled.current;
+    } catch (error) {
+      const defects = defectsFrom(error);
+      const scope = repairScope(defects);
+      if (!scope) throw error;
+      repairUsed = true;
+      compilerAttempts = 2;
+      if (scope === "COVERAGE") {
+        const compiled = await compile(defects, undefined, undefined, undefined, 2);
+        coverage = compiled.coverage;
+        packets = compiled.packets;
+        current = compiled.current;
+      } else if (scope === "PACKET" && coverage && packets && defects[0]!.packetIndex !== undefined) {
+        const compiled = await compile(defects, coverage, packets, defects[0]!.packetIndex, 2);
+        packets = compiled.packets;
+        current = compiled.current;
+      } else if (scope === "SUMMARY" && coverage && packets) {
+        const summary = await buildSummary(coverage, packets, defects);
+        current = await assemble(coverage, packets, summary, defects, 2);
+      } else {
+        throw error;
+      }
+    }
   }
 
-  const audit = await promptJson("evidence-auditor", "Independent evidence audit", AUDITOR_PROMPT_CONTRACT, {
-    input: parsedInput,
-    dossier: current.dossier,
-    result: resultForAudit(current.result, allowedSourceRefs),
-    citedSources: base.citedSources,
-  }, auditSchema, 30_000, { "source.excerpts": false, skill: false });
-  const material = audit.defects.filter((defect) => defect.severity === "MATERIAL").map((defect) => `${defect.code}: ${defect.message}`);
-  if (audit.status !== "PASSED" || material.length) {
-    if (compilerAttempts === 2) throw new Error(`Independent evidence audit failed after the single repair: ${material.join("; ") || "unspecified material defect"}`);
+  const runAudit = async (title: string): Promise<FinalizationDefect[]> => {
+    let audit: z.infer<typeof auditSchema>;
+    try {
+      audit = await promptJson("evidence-auditor", title, AUDITOR_PROMPT_CONTRACT, {
+        input: parsedInput,
+        dossier: current.dossier,
+        result: resultForAudit(current.result, allowedSourceRefs),
+        citedSources: base.citedSources,
+      }, auditSchema, 30_000, { "source.excerpts": false, skill: false });
+    } catch (error) {
+      throw defect("AUDIT", error, { repairable: false });
+    }
+    const material = audit.defects.filter((item) => item.severity === "MATERIAL");
+    if (audit.status === "PASSED" && material.length === 0) return [];
+    if (audit.status !== "PASSED" && material.length === 0) {
+      return [{ stage: "AUDIT", code: "AUDIT_SCOPE_MISSING", message: "Independent auditor requested repair without a material scoped defect.", claimKeys: [], evidenceKeys: [], repairable: false }];
+    }
+    return material.map((item) => ({
+      stage: item.stage ?? "AUDIT",
+      code: item.code,
+      message: item.message,
+      ...(item.packetIndex !== undefined ? { packetIndex: item.packetIndex } : {}),
+      claimKeys: item.claimKeys,
+      evidenceKeys: item.evidenceKeys,
+      repairable: (item.stage === "PACKET" && item.packetIndex !== undefined) || item.stage === "SUMMARY",
+    }));
+  };
+
+  const firstAuditDefects = await runAudit("Independent evidence audit");
+  if (firstAuditDefects.length) {
+    const scope = repairScope(firstAuditDefects);
+    if (repairUsed || !scope || !coverage || !packets) {
+      throw new FinalizationError(firstAuditDefects);
+    }
+    repairUsed = true;
     compilerAttempts = 2;
-    current = await packetRun(material);
-    const second = await promptJson("evidence-auditor", "Independent evidence audit after repair", AUDITOR_PROMPT_CONTRACT, { input: parsedInput, dossier: current.dossier, result: resultForAudit(current.result, allowedSourceRefs), citedSources: base.citedSources }, auditSchema, 30_000, { "source.excerpts": false, skill: false });
+    if (scope === "PACKET" && firstAuditDefects[0]!.packetIndex !== undefined) {
+      packets = await buildPackets(coverage, firstAuditDefects, packets, firstAuditDefects[0]!.packetIndex);
+      const summary = await buildSummary(coverage, packets, firstAuditDefects);
+      current = await assemble(coverage, packets, summary, firstAuditDefects, 2);
+    } else if (scope === "SUMMARY") {
+      const summary = await buildSummary(coverage, packets, firstAuditDefects);
+      current = await assemble(coverage, packets, summary, firstAuditDefects, 2);
+    } else {
+      throw new FinalizationError(firstAuditDefects);
+    }
+    const secondAuditDefects = await runAudit("Independent evidence audit after scoped repair");
     auditorAttempts = 2;
-    const secondMaterial = second.defects.filter((defect) => defect.severity === "MATERIAL").map((defect) => `${defect.code}: ${defect.message}`);
-    if (second.status !== "PASSED" || secondMaterial.length) throw new Error(`Independent evidence audit failed after the single repair: ${secondMaterial.join("; ") || "unspecified material defect"}`);
+    if (secondAuditDefects.length) throw new FinalizationError(secondAuditDefects);
+  }
+
+  if (input.dossierCheckpointConfig) {
+    await writePacketDossierCheckpoint(input.root, { dossier: current.dossier, config: input.dossierCheckpointConfig });
   }
 
   await input.budget.flush();

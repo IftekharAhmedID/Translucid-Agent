@@ -34,3 +34,22 @@ test("fixture model exercises delegation, provider capture, compilation, and aud
   const jsonAudit = await complete({}, "evidence-auditor");
   assert.deepEqual(JSON.parse(jsonAudit.content ?? ""), { status: "PASSED", defects: [] });
 });
+
+test("fixture payload parsing ignores the GO transport schema suffix", async () => {
+  const complete = createHeadlessFixtureCompletion();
+  const body = {
+    messages: [{
+      role: "user",
+      content: [{
+        type: "text",
+        text: `MODE: COVERAGE_ONLY\n\n${JSON.stringify({ input: { pages: [{ page: 1, lines: [{ line: 1, text: "Ada Lovelace" }] }] }, repairDefects: [] })}\n\nReturn only one complete JSON object. It must validate against this JSON Schema:\n${JSON.stringify({ type: "object" })}`,
+      }],
+    }],
+    tools: [{ type: "function", function: { name: "StructuredOutput" } }],
+  };
+  const response = await complete(body, "evidence-compiler");
+  const claims = response.toolCall?.arguments && typeof response.toolCall.arguments === "object"
+    ? (response.toolCall.arguments as { claims?: Array<{ sourceSpan?: { text?: string } }> }).claims
+    : undefined;
+  assert.equal(claims?.[0]?.sourceSpan?.text, "Ada Lovelace");
+});

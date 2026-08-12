@@ -74,10 +74,10 @@ function promptText(body: Record<string, unknown>): string {
 
 function promptPayload(body: Record<string, unknown>): Record<string, unknown> {
   const text = promptText(body);
-  const marker = text.lastIndexOf("\n{");
+  const marker = text.indexOf("\n\n{");
   if (marker < 0) return {};
   try {
-    return JSON.parse(text.slice(marker + 1)) as Record<string, unknown>;
+    return JSON.parse(text.slice(marker + 2).split("\n\nReturn only one complete JSON object.")[0]!) as Record<string, unknown>;
   } catch {
     return {};
   }
