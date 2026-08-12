@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 
 import type { Plugin } from "@opencode-ai/plugin";
@@ -47,6 +48,17 @@ function returnedSourceRefs(body: string): string[] {
   } catch {
     return [];
   }
+}
+
+function citedMemoRefs(memo: string): string[] {
+  return [...new Set([...memo.matchAll(/\bS([1-9]\d*)\b/g)].map((match) => `S${match[1]}`))]
+    .sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
+}
+
+export function validateMemoCitations(memo: string, encounteredSourceRefs: Iterable<string>): { citedSourceRefs: string[]; unknownSourceRefs: string[] } {
+  const citedSourceRefs = citedMemoRefs(memo);
+  const encountered = new Set(encounteredSourceRefs);
+  return { citedSourceRefs, unknownSourceRefs: citedSourceRefs.filter((ref) => !encountered.has(ref)) };
 }
 
 const plugin: Plugin = async () => {
@@ -150,7 +162,17 @@ const plugin: Plugin = async () => {
       taskWave.delete(input.callID);
       if (!memo) return;
       await mkdir("/workspace/case/.work/memos", { recursive: true });
-      await writeFile(`/workspace/case/.work/memos/${safeName(role)}-${safeName(sessionId)}.md`, `# ${role} memo\n\nWave: ${wave}\nSession: ${sessionId}\n\n${memo}\n`, { mode: 0o600 });
+      const encounteredSourceRefs = [...(sessionSourceRefs.get(sessionId) ?? new Set<string>())].sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
+      const { citedSourceRefs, unknownSourceRefs: unknown } = validateMemoCitations(memo, encounteredSourceRefs);
+      if (unknown.length) {
+        const diagnostic = `Rejected ${role} memo for session ${sessionId}: citation(s) ${unknown.join(", ")} were not returned to that specialist session. Retry the assigned scope with exact encountered S references.`;
+        output.output = diagnostic;
+        await writeFile(`/workspace/case/.work/memos/rejected-${safeName(role)}-${safeName(sessionId)}.json`, `${JSON.stringify({ role, wave, sessionId, unknownSourceRefs: unknown, encounteredSourceRefs, citedSourceRefs, diagnostic }, null, 2)}\n`, { mode: 0o600 });
+        return;
+      }
+      const memoFile = `# ${role} memo\n\nWave: ${wave}\nSession: ${sessionId}\n\n${memo}\n`;
+      await writeFile(`/workspace/case/.work/memos/${safeName(role)}-${safeName(sessionId)}.md`, memoFile, { mode: 0o600 });
+      await writeFile(`/workspace/case/.work/memos/${safeName(role)}-${safeName(sessionId)}.sources.json`, `${JSON.stringify({ schemaVersion: 1, role, wave, sessionId, memoSha256: createHash("sha256").update(memoFile).digest("hex"), encounteredSourceRefs, citedSourceRefs }, null, 2)}\n`, { mode: 0o600 });
     },
     "experimental.session.compacting": async (input, output) => {
       const counts = Object.fromEntries(specialistRoles.map((role) => [role, roleCounts.get(role) ?? 0]));

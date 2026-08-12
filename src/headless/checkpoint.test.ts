@@ -9,6 +9,7 @@ import {
   DOSSIER_PATH,
   FINALIZER_IMPLEMENTATION_VERSION,
   archivePriorFailure,
+  collectResearchArtifactHashes,
   loadValidDossierCheckpoint,
   openPersistentRunBudget,
   RESEARCH_CONTRACT_VERSION,
@@ -154,6 +155,26 @@ test("archives a prior failure before a finalization retry", async () => {
     assert.deepEqual(JSON.parse(await readFile(archived, "utf8")), { code: "OLD_FAILURE" });
     await assert.rejects(() => readFile(join(root, "failure.json")), /ENOENT/);
     assert.equal(await archivePriorFailure(root), undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("research checkpoints require a matching specialist citation sidecar when a memo has a session", async () => {
+  const { root } = await fixtureRun();
+  try {
+    const memoPath = join(root, ".work", "memos", "specialist.md");
+    const memo = "# specialist memo\n\nWave: INITIAL\nSession: ses-specialist\n\nFinding [S1].\n";
+    await writeFile(memoPath, memo);
+    await assert.rejects(() => collectResearchArtifactHashes(root), /sidecar is missing/i);
+    await writeFile(join(root, ".work", "memos", "specialist.sources.json"), JSON.stringify({ schemaVersion: 1, role: "professional-researcher", wave: "INITIAL", sessionId: "ses-specialist", memoSha256: createHash("sha256").update(memo).digest("hex"), encounteredSourceRefs: ["S1"], citedSourceRefs: ["S1"] }));
+    await assert.doesNotReject(() => collectResearchArtifactHashes(root));
+    await writeFile(join(root, ".work", "memos", "specialist.sources.json"), JSON.stringify({ schemaVersion: 1, role: "professional-researcher", wave: "INITIAL", sessionId: "ses-specialist", memoSha256: createHash("sha256").update(memo).digest("hex"), encounteredSourceRefs: ["S1"], citedSourceRefs: ["S2"] }));
+    await assert.rejects(() => collectResearchArtifactHashes(root), /unknown source|not encountered|citation register/i);
+    await writeFile(join(root, ".work", "memos", "specialist.sources.json"), JSON.stringify({ schemaVersion: 1, role: "professional-researcher", wave: "INITIAL", sessionId: "ses-specialist", memoSha256: createHash("sha256").update(memo).digest("hex"), encounteredSourceRefs: ["S1"], citedSourceRefs: [] }));
+    await assert.rejects(() => collectResearchArtifactHashes(root), /citation register/i);
+    await writeFile(memoPath, `${memo}mutated`);
+    await assert.rejects(() => collectResearchArtifactHashes(root), /hash mismatch/i);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

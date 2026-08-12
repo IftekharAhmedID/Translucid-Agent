@@ -182,10 +182,10 @@ function unique(values: string[], label: string): void {
 }
 
 function compareClaims(left: InvestigationDraft["claims"][number], right: InvestigationDraft["claims"][number]): number {
-  return (left.sourceSpan.page ?? Number.MAX_SAFE_INTEGER) - (right.sourceSpan.page ?? Number.MAX_SAFE_INTEGER)
-    || left.sourceSpan.text.localeCompare(right.sourceSpan.text)
-    || left.category.localeCompare(right.category)
-    || left.statement.localeCompare(right.statement);
+  // The dossier compiler freezes claims in résumé order. Preserve that order
+  // within a page; only page order is a deterministic fallback for legacy
+  // drafts that did not arrive in source order.
+  return (left.sourceSpan.page ?? Number.MAX_SAFE_INTEGER) - (right.sourceSpan.page ?? Number.MAX_SAFE_INTEGER);
 }
 
 function expectedFacetStatus(relations: Array<"SUPPORTS" | "CONTRADICTS">): "SUPPORTED" | "CONTRADICTED" | "UNRESOLVED" {

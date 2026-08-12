@@ -126,7 +126,7 @@ async function main(): Promise<void> {
       runId,
       deadlineAt: deadlineAt.getTime(),
       allowedTools: new Set([...toolNames, "source.excerpts"]),
-      allowedModels: new Set([researchModel, compilerModel, "mimo-v2.5-free"]),
+      allowedModels: new Set([researchModel, compilerModel, "mimo-v2.5-pro", "mimo-v2.5-free"]),
       agentTools: agentToolAllowlist(),
       executor: providerExecutor,
       sourceStore: workspace.sourceStore,
@@ -200,8 +200,9 @@ async function main(): Promise<void> {
     if (!integrity.valid) throw new Error(`Source integrity failed for ${integrity.invalidSourceRefs.join(", ")}.`);
     const resultPath = join(workspace.root, "result.json");
     const reportPath = join(workspace.root, "report.pdf");
+    const reportBytes = await renderInvestigationReport(output.result);
+    await atomicWrite(reportPath, reportBytes);
     await atomicWrite(resultPath, `${JSON.stringify(output.result, null, 2)}\n`);
-    await atomicWrite(reportPath, await renderInvestigationReport(output.result));
     await runtime.stop(handle);
     handle = undefined;
     if (!options.keepDebug) await removeRunDiagnostics(workspace.root);

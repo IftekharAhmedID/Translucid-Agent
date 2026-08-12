@@ -69,3 +69,11 @@ test("empty OpenCode task-result envelopes are not completed memo handoffs", asy
   assert.equal(completedTaskMemo("<task id=\"child\" state=\"completed\"><task_result>\n\n</task_result></task>"), undefined);
   assert.match(completedTaskMemo("<task id=\"child\" state=\"completed\"><task_result>Finding [S1].</task_result></task>") ?? "", /Finding \[S1\]/);
 });
+
+test("specialist memo citations must come from that session's encountered source union", async () => {
+  const { validateMemoCitations } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
+  assert.deepEqual(validateMemoCitations("Finding [S1] and [S3].", ["S1", "S2"]), {
+    citedSourceRefs: ["S1", "S3"],
+    unknownSourceRefs: ["S3"],
+  });
+});

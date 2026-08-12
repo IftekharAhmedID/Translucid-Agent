@@ -8,7 +8,7 @@ import {
   type ResearchCheckpointConfig,
 } from "./checkpoint.ts";
 import { EVIDENCE_DOSSIER_FORMAT_VERSION } from "./dossier.ts";
-import { DOSSIER_PROMPT_CONTRACT, ENCODER_PROMPT_CONTRACT, RESEARCH_PROMPT_CONTRACT } from "./prompt-contracts.ts";
+import { COVERAGE_PROMPT_CONTRACT, DOSSIER_PROMPT_CONTRACT, ENCODER_PROMPT_CONTRACT, PACKET_PROMPT_CONTRACT, RESEARCH_PROMPT_CONTRACT, SUMMARY_TIMELINE_PROMPT_CONTRACT } from "./prompt-contracts.ts";
 
 const researchAgents = [
   "runtime/headless-opencode/agents/lead-researcher.md",
@@ -43,7 +43,7 @@ export async function currentCheckpointConfigs(input: {
   const [researchPromptHash, researchSkillBundleHash, compilerPromptHash, compilerSkillBundleHash] = await Promise.all([
     hashBundle(input.repositoryRoot, researchAgents, { RESEARCH_PROMPT_CONTRACT }),
     hashBundle(input.repositoryRoot, researchSkills),
-    hashBundle(input.repositoryRoot, ["runtime/headless-opencode/agents/evidence-compiler.md"], { DOSSIER_PROMPT_CONTRACT, ENCODER_PROMPT_CONTRACT }),
+    hashBundle(input.repositoryRoot, ["runtime/headless-opencode/agents/evidence-compiler.md"], { COVERAGE_PROMPT_CONTRACT, PACKET_PROMPT_CONTRACT, SUMMARY_TIMELINE_PROMPT_CONTRACT, DOSSIER_PROMPT_CONTRACT, ENCODER_PROMPT_CONTRACT }),
     hashBundle(input.repositoryRoot, compilerSkills),
   ]);
   return {

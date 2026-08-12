@@ -8,6 +8,7 @@ import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
 import { currentCheckpointConfigs } from "./checkpoint-config.ts";
 import {
   loadValidDossierCheckpoint,
+  loadValidPacketDossierCheckpoint,
   archivePriorFailure,
   openPersistentRunBudget,
   readHandoffManifest,
@@ -84,6 +85,7 @@ async function main(): Promise<void> {
   if (await exists(resultPath)) throw new Error("A successful result.json already exists; finalization will not overwrite it.");
 
   const workspace = await openRunWorkspace(options.runDirectory);
+  const archivedFailure = Boolean(await archivePriorFailure(workspace.root));
   const existingManifest = await readHandoffManifest(workspace.root);
   if (existingManifest.research.config.runtime !== workspace.runtime) throw new Error("Research checkpoint runtime differs from the immutable input manifest.");
   const expectedManifestHash = await getPinnedLocalManifestHash();
@@ -99,9 +101,9 @@ async function main(): Promise<void> {
   });
   const manifest = await validateResearchCheckpoint(workspace.root, checkpointConfigs.research);
   const reusableDossier = await loadValidDossierCheckpoint(workspace.root, manifest, checkpointConfigs.dossier);
+  const reusablePacketDossier = await loadValidPacketDossierCheckpoint(workspace.root, manifest, checkpointConfigs.dossier);
   const budget = await openPersistentRunBudget(workspace.root, ceilings, manifest.research.budget);
   const memos = await researchMemos(workspace.root);
-  const archivedFailure = Boolean(await archivePriorFailure(workspace.root));
 
   const finalizerProvider = process.env.FINALIZER_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
   const fixture = createHeadlessFixtureCompletion();
@@ -173,16 +175,17 @@ async function main(): Promise<void> {
       warnings: manifest.research.warnings,
       dossierCheckpointConfig: checkpointConfigs.dossier,
       ...(reusableDossier ? { reusableDossier } : {}),
+      ...(reusablePacketDossier ? { reusablePacketDossier } : {}),
       onProgress: (message) => process.stderr.write(`Run ${workspace.runId}: ${message}\n`),
     });
     const integrity = await workspace.sourceStore.verify();
     if (!integrity.valid) throw new Error(`Source integrity failed for ${integrity.invalidSourceRefs.join(", ")}.`);
-    await atomicWrite(resultPath, `${JSON.stringify(result, null, 2)}\n`);
     await atomicWrite(join(workspace.root, "report.pdf"), await renderInvestigationReport(result));
+    await atomicWrite(resultPath, `${JSON.stringify(result, null, 2)}\n`);
     await runtime.stop(handle);
     handle = undefined;
     if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
-    process.stdout.write(`${JSON.stringify({ runId: workspace.runId, result: resultPath, report: join(workspace.root, "report.pdf"), reusedDossier: Boolean(reusableDossier) }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ runId: workspace.runId, result: resultPath, report: join(workspace.root, "report.pdf"), reusedDossier: Boolean(reusableDossier || reusablePacketDossier) }, null, 2)}\n`);
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error("Unknown finalization failure.");
     if (archivedFailure || !await exists(join(workspace.root, "failure.json"))) {

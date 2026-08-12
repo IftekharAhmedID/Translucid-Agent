@@ -8,7 +8,13 @@ Serialization rules: output every TL_* marker followed by exactly one valid JSON
 
 export const ENCODER_PROMPT_CONTRACT = "MODE: STRUCTURED_ENCODING\n\nFaithfully encode the supplied dossier into the requested result draft schema. Do not add, omit, reinterpret, summarize, or repair dossier semantics. Backend code assigns canonical IDs, source authority, verdicts, strength, and statistics.";
 
-export const AUDITOR_PROMPT_CONTRACT = "Independently audit this deterministically validated result against the parsed input and evidence dossier. Use source.excerpts for any exact-source check. Mark REPAIR_REQUIRED only for a material defect. Warnings do not require repair.";
+export const COVERAGE_PROMPT_CONTRACT = "MODE: COVERAGE_ONLY\n\nExhaustively account for every non-empty résumé line. Return only the focused coverage schema: frozen claim outlines with exact page, lineStart, lineEnd, and text spans plus declared facets, then either CLAIMED coverage linked to a claim or one bounded EXCLUDED reason (CONTACT_DETAIL, SECTION_HEADING, BARE_SKILL, SUBJECTIVE_DESCRIPTION, DUPLICATE). Every low-materiality factual assertion is still a claim. Do not use research memos, source metadata, tools, or skills.";
+
+export const PACKET_PROMPT_CONTRACT = "MODE: EVIDENCE_PACKET\n\nCompile exactly the assigned claim outlines. Return one compiled entry and one note for every declared facet, plus every eligible SUPPORTS or CONTRADICTS evidence item found in the preserved research. Preserve claim wording, source spans, materiality, and facet keys exactly. Use only cited immutable source references and exact source paths/quotes. Never invent verdicts, strengths, IDs, or evidence.";
+
+export const SUMMARY_TIMELINE_PROMPT_CONTRACT = "MODE: SUMMARY_TIMELINE\n\nReturn only a summary and timeline object for the supplied merged claims and evidence. Reference only known claim and evidence keys. Do not add or change claims, facets, evidence, verdicts, strengths, source authority, or identifiers. No tools, memos, or source fetches.";
+
+export const AUDITOR_PROMPT_CONTRACT = "Independently audit this deterministically validated result against the parsed input and evidence dossier. Do not research or call tools; immutable source bytes and exact quotations have already been host-verified. Mark REPAIR_REQUIRED only for a material defect. Warnings do not require repair.";
 
 export function researchPrompt(deadline: string): string {
   return `${RESEARCH_PROMPT_CONTRACT} The research deadline is ${deadline}.`;

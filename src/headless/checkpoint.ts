@@ -6,12 +6,14 @@ import { z } from "zod";
 
 import { MemoryRunBudget, type BudgetCeilings, type BudgetSnapshot } from "./budget.ts";
 import { dossierFingerprint, parseEvidenceDossier, type DossierInventory } from "./dossier.ts";
+import { dossierFingerprint as packetDossierFingerprint, packetDossierToDraft, type PacketDossier } from "./packet-dossier.ts";
 
-export const RESEARCH_CONTRACT_VERSION = "headless-research-v1";
-export const FINALIZER_IMPLEMENTATION_VERSION = "dossier-finalizer-v2";
+export const RESEARCH_CONTRACT_VERSION = "headless-research-v2";
+export const FINALIZER_IMPLEMENTATION_VERSION = "packet-finalizer-v3";
 export const RESULT_SCHEMA_VERSION = "1.1";
 export const HANDOFF_MANIFEST_PATH = ".work/finalization/handoff-manifest.json";
 export const DOSSIER_PATH = ".work/finalization/evidence-dossier.md";
+export const PACKET_DOSSIER_PATH = ".work/finalization/evidence-dossier.json";
 export const BUDGET_PATH = ".work/finalization/budget.json";
 
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
@@ -67,6 +69,15 @@ const sourceManifestSchema = z.object({
     relativePath: z.string().min(1),
   }).loose()),
 }).loose();
+const memoSidecarSchema = z.object({
+  schemaVersion: z.literal(1),
+  role: z.string().min(1),
+  wave: z.enum(["INITIAL", "TARGETED"]),
+  sessionId: z.string().min(1),
+  memoSha256: sha256,
+  encounteredSourceRefs: z.array(z.string().regex(/^S[1-9]\d*$/)),
+  citedSourceRefs: z.array(z.string().regex(/^S[1-9]\d*$/)),
+}).strict();
 
 const runtimeManifestSchema = z.object({
   node: z.string().min(1),
@@ -166,15 +177,51 @@ async function preservedResearchRuntimeManifestHash(root: string, expectedFullHa
   }
 }
 
+function memoSourceRefs(content: string): string[] {
+  return [...new Set([...content.matchAll(/\bS([1-9]\d*)\b/g)].map((match) => `S${match[1]}`))]
+    .sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
+}
+
 export async function collectResearchArtifactHashes(root: string): Promise<Record<string, string>> {
   const required = ["input/document.json", "sources/manifest.json"];
   const memoDirectory = join(root, ".work", "memos");
-  const memos = (await readdir(memoDirectory, { withFileTypes: true }))
+  const entries = await readdir(memoDirectory, { withFileTypes: true });
+  const memos = entries
     .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
     .map((entry) => relative(root, join(memoDirectory, entry.name)));
   if (memos.length === 0) throw new Error("Research checkpoint requires at least one completed memo.");
   const sources = await sourceManifest(root);
-  const paths = [...new Set([...required, ...memos, ...sources.sources.map(({ relativePath }) => relativePath)])].sort();
+  const knownSourceRefs = new Set(sources.sources.map((source) => source.ref));
+  const sidecars: string[] = [];
+  for (const memo of memos) {
+    if (memo.split("/").at(-1)?.startsWith("lead-")) continue;
+    const absolute = inside(root, memo);
+    const content = await readFile(absolute, "utf8");
+    const sessionId = content.match(/^Session:\s*(\S+)\s*$/m)?.[1];
+    if (!sessionId) continue;
+    const sidecar = `${memo.slice(0, -3)}.sources.json`;
+    const sidecarAbsolute = inside(root, sidecar);
+    let parsed: z.infer<typeof memoSidecarSchema>;
+    try {
+      parsed = memoSidecarSchema.parse(JSON.parse(await readFile(sidecarAbsolute, "utf8")));
+    } catch (error) {
+      throw new Error(`Research memo sidecar is missing or invalid for ${memo}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (parsed.sessionId !== sessionId) throw new Error(`Research memo sidecar session mismatch for ${memo}.`);
+    if (parsed.memoSha256 !== digest(content)) throw new Error(`Research memo sidecar hash mismatch for ${memo}.`);
+    const actualCitedSourceRefs = memoSourceRefs(content);
+    if (parsed.encounteredSourceRefs.some((ref, index, values) => values.indexOf(ref) !== index)
+      || parsed.citedSourceRefs.some((ref, index, values) => values.indexOf(ref) !== index)) {
+      throw new Error(`Research memo sidecar contains duplicate source references for ${memo}.`);
+    }
+    for (const ref of [...parsed.encounteredSourceRefs, ...parsed.citedSourceRefs]) {
+      if (!knownSourceRefs.has(ref)) throw new Error(`Research memo sidecar references unknown source ${ref} for ${memo}.`);
+    }
+    if (parsed.citedSourceRefs.some((ref) => !parsed.encounteredSourceRefs.includes(ref))) throw new Error(`Research memo sidecar cites a source not encountered by its specialist for ${memo}.`);
+    if (canonicalJson(parsed.citedSourceRefs) !== canonicalJson(actualCitedSourceRefs)) throw new Error(`Research memo sidecar citation register does not match memo citations for ${memo}.`);
+    sidecars.push(sidecar);
+  }
+  const paths = [...new Set([...required, ...memos, ...sidecars, ...sources.sources.map(({ relativePath }) => relativePath)])].sort();
   return Object.fromEntries(await Promise.all(paths.map(async (path) => [path, await fileDigest(inside(root, path))])));
 }
 
@@ -241,6 +288,48 @@ async function citedSourceHashes(root: string, inventory: DossierInventory): Pro
     if (!source) throw new Error(`Dossier cites unknown source ${ref}.`);
     return [ref, await fileDigest(inside(root, source.relativePath))];
   })));
+}
+
+async function citedSourceHashesForRefs(root: string, refs: string[]): Promise<Record<string, string>> {
+  const sources = await sourceManifest(root);
+  const byRef = new Map(sources.sources.map((source) => [source.ref, source]));
+  return Object.fromEntries(await Promise.all([...new Set(refs)].sort((left, right) => Number(left.slice(1)) - Number(right.slice(1))).map(async (ref) => {
+    const source = byRef.get(ref);
+    if (!source) throw new Error(`Dossier cites unknown source ${ref}.`);
+    return [ref, await fileDigest(inside(root, source.relativePath))];
+  })));
+}
+
+export async function writePacketDossierCheckpoint(root: string, input: { dossier: PacketDossier; config: DossierCheckpointConfig }): Promise<HandoffManifest> {
+  const manifest = await readHandoffManifest(root);
+  const updated: HandoffManifest = {
+    ...manifest,
+    dossier: {
+      researchFingerprint: manifest.research.fingerprint,
+      dossierFileHash: await fileDigest(join(root, PACKET_DOSSIER_PATH)),
+      semanticInventoryHash: packetDossierFingerprint(input.dossier),
+      citedSourceHashes: await citedSourceHashesForRefs(root, input.dossier.evidence.map(({ sourceRef }) => sourceRef)),
+      config: dossierConfigSchema.parse(input.config),
+    },
+  };
+  await atomicJson(join(root, HANDOFF_MANIFEST_PATH), updated);
+  return updated;
+}
+
+export async function loadValidPacketDossierCheckpoint(root: string, manifest: HandoffManifest, current: DossierCheckpointConfig): Promise<PacketDossier | undefined> {
+  const checkpoint = manifest.dossier;
+  if (!checkpoint || checkpoint.researchFingerprint !== manifest.research.fingerprint) return undefined;
+  if (canonicalJson(withoutCommit(current)) !== canonicalJson(withoutCommit(checkpoint.config))) return undefined;
+  try {
+    const json = JSON.parse(await readFile(join(root, PACKET_DOSSIER_PATH), "utf8")) as PacketDossier;
+    if (digest(JSON.stringify(json, null, 2) + "\n") !== checkpoint.dossierFileHash) return undefined;
+    packetDossierToDraft(json);
+    if (packetDossierFingerprint(json) !== checkpoint.semanticInventoryHash) return undefined;
+    if (canonicalJson(await citedSourceHashesForRefs(root, json.evidence.map(({ sourceRef }) => sourceRef))) !== canonicalJson(checkpoint.citedSourceHashes)) return undefined;
+    return json;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function writeDossierCheckpoint(root: string, input: {

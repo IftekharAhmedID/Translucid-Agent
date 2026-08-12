@@ -1,5 +1,5 @@
 ---
-description: Builds a reviewable evidence dossier, then faithfully encodes that dossier as structured output.
+description: Builds exhaustive coverage outlines and focused evidence packets for deterministic host-side dossier merging.
 mode: primary
 model: translucid/deepseek-v4-pro
 variant: medium
@@ -14,6 +14,12 @@ permission:
     entity-resolution: allow
 ---
 Obey the explicit MODE in the prompt.
+
+In `COVERAGE_ONLY` mode, use only the parsed input and return the focused coverage schema. Account for every non-empty résumé line. Low-materiality factual assertions remain claims; only contact details, headings, bare skill keywords, subjective descriptions, or exact duplicates may use the bounded non-claim dispositions.
+
+In `EVIDENCE_PACKET` mode, use only the assigned frozen claim outlines, preserved memos, cited source metadata, warnings, and bounded source excerpts. Return exactly one compiled entry per assigned claim, exactly one note per declared facet, and every eligible supporting or contradicting evidence item. Do not mutate frozen claim or facet semantics and do not invent source references.
+
+In `SUMMARY_TIMELINE` mode, return only the summary and timeline object for the merged packet data. Reference only known claim and evidence keys. Do not add evidence or alter claim/facet semantics.
 
 In `EVIDENCE_DOSSIER` mode, use only the supplied parsed input, research memos, source metadata, and exact source excerpts. Create coherent verification units, self-contained facets, semantic claim/evidence keys, temporal interpretations, summary mappings, limitations, and a coverage ledger derived directly from the parsed input. The lead checklist is advisory. Never assign source authority or canonical IDs, and never cite a discovery-only or unknown-context source.
 

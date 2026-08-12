@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { investigationDraftSchema, type InvestigationDraft } from "./result-contract.ts";
 
-export const EVIDENCE_DOSSIER_FORMAT_VERSION = "1";
+export const EVIDENCE_DOSSIER_FORMAT_VERSION = "2";
 
 const key = z.string().min(1).max(200);
 const facetKey = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);

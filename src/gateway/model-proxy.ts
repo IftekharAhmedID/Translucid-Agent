@@ -8,7 +8,7 @@ export function modelCostReservation(body: Record<string, unknown>, model: strin
   if (model === "mimo-v2.5-free") return 0;
   const estimatedInputTokens = estimateModelInputTokens(body);
   const maximumOutputTokens = Math.min(Number(body.max_tokens ?? body.max_completion_tokens ?? 32_000), 384_000);
-  const rates = model === "deepseek-v4-pro" ? { input: 0.435, output: 0.87 } : { input: 0.14, output: 0.28 };
+  const rates = model === "deepseek-v4-pro" ? { input: 0.435, output: 0.87 } : model === "mimo-v2.5-pro" ? { input: 0.3, output: 1.2 } : { input: 0.14, output: 0.28 };
   return (estimatedInputTokens * rates.input + maximumOutputTokens * rates.output) / 1_000_000;
 }
 

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
@@ -26,6 +26,7 @@ import {
   type InvestigationResult,
 } from "./result-contract.ts";
 import type { FileSourceStore } from "./source-store.ts";
+import type { PacketDossier } from "./packet-dossier.ts";
 
 const directory = "/workspace/case";
 const auditSchema = z.object({
@@ -61,6 +62,7 @@ export type FinalizationPipelineInput = {
   researchCheckpointConfig?: ResearchCheckpointConfig;
   dossierCheckpointConfig: DossierCheckpointConfig;
   reusableDossier?: DossierArtifact;
+  reusablePacketDossier?: PacketDossier;
   onProgress?: (message: string) => void;
 };
 
@@ -101,7 +103,7 @@ export function finalizerTextPromptPayload(prompt: string) {
   };
 }
 
-type AssistantMessage = {
+export type AssistantMessage = {
   info: { role: string; error?: { name?: string; [key: string]: unknown }; structured?: unknown };
   parts: Array<{ type: string; text?: string }>;
 };
@@ -176,11 +178,23 @@ export async function buildFinalizerContext(root: string, sourceStore: FileSourc
   const input: unknown = JSON.parse(await readFile(join(root, "input", "document.json"), "utf8"));
   const sources = await sourceStore.list();
   const byRef = new Map(sources.map((source) => [source.ref, source]));
+  const specialistCitedRefs = new Set<string>();
+  const sidecarDirectory = join(root, ".work", "memos");
+  const sidecars = await readdir(sidecarDirectory).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error));
+  for (const file of sidecars.filter((name) => name.endsWith(".sources.json"))) {
+    try {
+      const sidecar = JSON.parse(await readFile(join(sidecarDirectory, file), "utf8")) as { citedSourceRefs?: unknown };
+      if (Array.isArray(sidecar.citedSourceRefs)) for (const ref of sidecar.citedSourceRefs) if (typeof ref === "string") specialistCitedRefs.add(ref);
+    } catch {
+      // Research checkpoint validation reports malformed sidecars; finalizer context remains fail-closed if it is reached directly.
+    }
+  }
+  const specialistEligibility = specialistCitedRefs.size ? specialistCitedRefs : undefined;
   const citedSources: Array<Record<string, unknown>> = [];
   const unknownSourceRefs: string[] = [];
   for (const ref of citedSourceRefs(memoText)) {
     const source = byRef.get(ref);
-    if (!source) {
+    if (!source || (specialistEligibility && !specialistEligibility.has(ref))) {
       unknownSourceRefs.push(ref);
       continue;
     }
@@ -199,8 +213,10 @@ export async function buildFinalizerContext(root: string, sourceStore: FileSourc
       mimeType: source.mimeType,
     });
   }
-  const warnings = unknownSourceRefs.map((ref) => `Research memo cited unknown source ${ref}; that citation was removed and its scope remains unresolved.`);
-  const sanitizedMemos = memoText.replace(/\bS([1-9]\d*)\b/g, (ref) => byRef.has(ref) ? ref : "unknown source reference removed");
+  const warnings = unknownSourceRefs.map((ref) => specialistEligibility && !specialistEligibility.has(ref)
+    ? `Lead or research memo cited source ${ref} outside the validated specialist reference union; that citation was removed and its scope remains unresolved.`
+    : `Research memo cited unknown source ${ref}; that citation was removed and its scope remains unresolved.`);
+  const sanitizedMemos = memoText.replace(/\bS([1-9]\d*)\b/g, (ref) => byRef.has(ref) && (!specialistEligibility || specialistEligibility.has(ref)) ? ref : "unknown source reference removed");
   const sourceWarning = warnings.length
     ? `\n\n# Source-reference warning\n\n- ${warnings.length === 1 ? "An unknown source reference was removed" : `${warnings.length} unknown source references were removed`}; any statement relying only on removed references remains unresolved.`
     : "";
@@ -231,7 +247,7 @@ async function atomicWriteText(path: string, value: string): Promise<void> {
   }
 }
 
-export async function runFinalizationPipeline(input: FinalizationPipelineInput): Promise<InvestigationResult> {
+export async function runLegacyFinalizationPipeline(input: FinalizationPipelineInput): Promise<InvestigationResult> {
   const client = createOpencodeClient({ baseUrl: input.handle.openCodeUrl, headers: input.handle.accessHeaders, throwOnError: false });
   const warnings = [...input.warnings];
   const compilerBase = await buildFinalizerContext(input.root, input.sourceStore, input.researchMemos);
@@ -376,4 +392,15 @@ export async function runFinalizationPipeline(input: FinalizationPipelineInput):
   });
   input.onProgress?.(`Final audit passed with ${result.claims.length} claims and ${result.evidence.length} evidence items.`);
   return result;
+}
+
+/**
+ * The production finalizer is packetized and host-merged. The former TL/encoder
+ * implementation remains exported only as a compatibility seam for preserved
+ * fixtures while old checkpoints are being retired.
+ */
+export async function runFinalizationPipeline(input: FinalizationPipelineInput): Promise<InvestigationResult> {
+  const { runPacketizedFinalization } = await import("./packet-finalization.ts");
+  const finalized = await runPacketizedFinalization(input);
+  return finalized.result;
 }

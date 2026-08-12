@@ -13,7 +13,7 @@ import { modelCostReservation, proxyModelCompletion } from "./model-proxy.ts";
 
 const MAX_TOOL_BODY = 1024 * 1024;
 const MAX_MODEL_BODY = 16 * 1024 * 1024;
-const MODEL_IDS = new Set(["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-free"]);
+const MODEL_IDS = new Set(["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-pro", "mimo-v2.5-free"]);
 
 function bearer(request: IncomingMessage): string {
   const header = request.headers.authorization;

@@ -4,6 +4,21 @@ Translucid is a synthetic-data development system for evidence-bounded candidate
 
 ## What is implemented
 
+### Headless exhaustive report path
+
+The current headless path is the acceptance path for exhaustive evidence reports. `npm run investigate` preserves parsed input, every immutable provider response, specialist memos, memo citation sidecars, and a versioned research checkpoint. Finalization is recovery-only: `npm run finalize -- --run <absolute-run-directory> [--keep-debug]` validates that checkpoint, creates an exhaustive résumé coverage outline, compiles deterministic five-claim evidence packets (two concurrent sessions), merges them host-side into `.work/finalization/evidence-dossier.json`, runs a fresh independent audit, and publishes `report.pdf` before the success-marker `result.json`. A successful `result.json` is never overwritten.
+
+The result is schema `1.1`. Every substantive factual résumé assertion—including LOW-materiality facts—must be a claim. Each claim lists its facets, conclusion, status, strength, every supporting or contradicting evidence item, exact quotation, immutable source location, authority, hash, and clickable public URL where available. Unresolved claim and facet strengths render as `—`; the identity-resolution status is labeled as identity metadata and is never a candidate-level verdict.
+
+For a reproducible local fixture:
+
+```bash
+npm run investigate -- --submission /absolute/path/resume.txt --classification synthetic --provider-mode fixture --output /absolute/path/runs --keep-debug
+npm run finalize -- --run /absolute/path/runs/<run-id> --keep-debug
+```
+
+The legacy dashboard and database runner remain in this checkout only until the frozen, live-profile, PDF, and E2B parity gates are accepted; they are not used by finalization-only recovery.
+
 - Next.js 16.3 dashboard, intake, persistent case detail, PDF.js input viewer, findings, observation-backed timeline, entity graph, research frontier, evidence artifacts, and sanitized live agent trace.
 - Exactly thirteen PostgreSQL tables covering investigations, leased runs, claims, entities, identifiers, links, immutable artifacts, observations, evidence, research questions, findings, agent events, and provider calls.
 - A four-worker runner using `FOR UPDATE SKIP LOCKED`, 15-second heartbeats, 60-second lease recovery, per-provider semaphores, cancellation, deadlines, partial timeout preservation, and runtime cleanup in `finally`.
