@@ -209,11 +209,12 @@ test("finalizer polling fails when an idle session has no assistant response", a
 test("finalizer polling checks messages when OpenCode omits a completed-session status", async () => {
   let messageReads = 0;
   const message = { info: { role: "assistant" }, parts: [{ type: "text", text: "{}" }] };
+  const incomplete = { info: { role: "assistant" }, parts: [{ type: "step-start" }] };
   const result = await waitForFinalizerAssistant({
     readStatus: async () => undefined,
     readMessages: async () => {
       messageReads += 1;
-      return messageReads === 1 ? [] : [message];
+      return messageReads === 1 ? [incomplete] : [message];
     },
     deadlineAt: Date.now() + 1_000,
     signal: new AbortController().signal,

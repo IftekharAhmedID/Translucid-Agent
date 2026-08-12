@@ -102,13 +102,21 @@ export function finalizerTextPromptPayload(prompt: string) {
 }
 
 type AssistantMessage = {
-  info: { role: string; error?: { name?: string; [key: string]: unknown } };
+  info: { role: string; error?: { name?: string; [key: string]: unknown }; structured?: unknown };
   parts: Array<{ type: string; text?: string }>;
 };
+
+function hasAssistantOutput(message: AssistantMessage): boolean {
+  return message.info.role === "assistant"
+    && (message.info.error !== undefined
+      || message.info.structured !== undefined
+      || message.parts.some((part) => part.type === "text" && typeof part.text === "string" && part.text.length > 0));
+}
 
 export async function waitForFinalizerAssistant(input: {
   readStatus: () => Promise<"busy" | "retry" | "idle" | undefined>;
   readMessages: () => Promise<ReadonlyArray<AssistantMessage>>;
+  readLaunchError?: () => unknown;
   deadlineAt: number;
   signal: AbortSignal;
   intervalMs?: number;
@@ -123,8 +131,10 @@ export async function waitForFinalizerAssistant(input: {
     if (status === "busy" || status === "retry") observedBusy = true;
     const idle = status === "idle" || status === undefined;
     if (idle) {
-      const message = [...await input.readMessages()].reverse().find((candidate) => candidate.info.role === "assistant");
+      const message = [...await input.readMessages()].reverse().find(hasAssistantOutput);
       if (message) return message;
+      const launchError = input.readLaunchError?.();
+      if (launchError && status === "idle") throw launchError;
       if (status === "idle" && (observedBusy || now() - startedAt >= (input.initialGraceMs ?? 30_000))) {
         throw new Error("Finalizer session became idle with no assistant response.");
       }
@@ -241,21 +251,29 @@ export async function runFinalizationPipeline(input: FinalizationPipelineInput):
     const model = agent === "evidence-compiler" ? input.compilerModel : input.auditorModel;
     const session = unwrap(await client.session.create({ directory, title, agent, model: { id: model, providerID: "translucid", variant: "medium" } }, { signal: input.signal }), `${agent} session creation`);
     input.registerExcerptAllowance(session.id, excerptAllowance);
-    const launch = await client.session.promptAsync({
+    let launchError: unknown;
+    void client.session.promptAsync({
       sessionID: session.id,
       directory,
       agent,
       model: { providerID: "translucid", modelID: model },
       variant: "medium",
       ...payload,
-    }, { signal: input.signal });
-    if (launch.error) throw new Error(`${agent} prompt failed: ${describeSdkError(launch.error)}`);
+    }, { signal: input.signal }).then((launch) => {
+      if (launch.error) launchError = new Error(`${agent} prompt failed: ${describeSdkError(launch.error)}`);
+    }).catch((error) => {
+      launchError = new Error(`${agent} prompt failed: ${describeSdkError(error)}`);
+    });
     return waitForFinalizerAssistant({
       readStatus: async () => {
         const statuses = unwrap(await client.session.status({ directory }, { signal: input.signal }), `${agent} session status`);
         return statuses[session.id]?.type;
       },
-      readMessages: async () => unwrap(await client.session.messages({ sessionID: session.id, directory, limit: 20 }, { signal: input.signal }), `${agent} session messages`) as unknown as ReadonlyArray<AssistantMessage>,
+      readMessages: async () => {
+        const messages = unwrap(await client.session.messages({ sessionID: session.id, directory, limit: 20 }, { signal: input.signal }), `${agent} session messages`) as unknown as ReadonlyArray<AssistantMessage>;
+        return messages;
+      },
+      readLaunchError: () => launchError,
       deadlineAt: input.deadlineAt,
       signal: input.signal,
     });
