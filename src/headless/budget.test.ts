@@ -56,3 +56,25 @@ test("restores cumulative usage and persists every successful reservation", asyn
   assert.equal(persisted.length, 3);
   assert.deepEqual(persisted.at(-1), budget.snapshot());
 });
+
+test("rolls back an in-memory reservation when atomic persistence fails", async () => {
+  let persistenceAttempts = 0;
+  const budget = new MemoryRunBudget(
+    { modelUsd: 5, providerUsd: 10, externalNetworkCalls: 5, repositoryClones: 3, socialProfiles: 1 },
+    {
+      onChange: () => {
+        persistenceAttempts += 1;
+        throw new Error("disk unavailable");
+      },
+    },
+  );
+
+  await assert.rejects(() => budget.reserveModel(0.5), /disk unavailable/i);
+  assert.equal(persistenceAttempts, 1);
+  assert.deepEqual(budget.snapshot(), {
+    modelUsd: 0,
+    providerUsd: 0,
+    externalNetworkCalls: 0,
+    routeCounts: {},
+  });
+});

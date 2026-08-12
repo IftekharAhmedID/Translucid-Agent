@@ -81,8 +81,18 @@ export class MemoryRunBudget {
 
   private mutate(change: () => void): Promise<void> {
     const operation = this.pending.then(async () => {
-      change();
-      await this.options.onChange?.(this.snapshot());
+      const previous = this.snapshot();
+      try {
+        change();
+        await this.options.onChange?.(this.snapshot());
+      } catch (error) {
+        this.modelUsd = previous.modelUsd;
+        this.providerUsd = previous.providerUsd;
+        this.externalNetworkCalls = previous.externalNetworkCalls;
+        this.routeCounts.clear();
+        for (const [route, count] of Object.entries(previous.routeCounts)) this.routeCounts.set(route, count);
+        throw error;
+      }
     });
     this.pending = operation.catch(() => undefined);
     return operation;

@@ -75,6 +75,17 @@ test("authorizes one run-scoped token and exposes only headless tools", async ()
     assert.equal(excerptBody.remainingCharacters, null);
     assert.equal(excerptBody.budgetExhausted, false);
 
+    const unregisteredFinalizerExcerpt = await fetch(`${origin}/internal/tools/execute`, {
+      method: "POST",
+      headers: { ...headers, "x-opencode-agent": "evidence-compiler" },
+      body: JSON.stringify({
+        tool: "source.excerpts",
+        arguments: { sourceRef: "S1", queries: ["Principal Engineer"] },
+        operational: { agent: "evidence-compiler", sessionId: "unregistered-finalizer-session" },
+      }),
+    });
+    assert.equal(unregisteredFinalizerExcerpt.status, 403);
+
     gateway.registerExcerptAllowance("encoder-session", 0);
     const encoderExcerpt = await fetch(`${origin}/internal/tools/execute`, {
       method: "POST",

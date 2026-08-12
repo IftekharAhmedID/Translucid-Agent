@@ -21,7 +21,7 @@ The dossier may contain readable Markdown, but it must include these fixed recor
 
 - `TL_CLAIM`: `{key, category, statement, materiality, sourceSpan, explanation}`
 - `TL_FACET`: `{claimKey, key, label, materiality, note}`
-- `TL_EVIDENCE`: `{key, claimKey, facetKeys, relation, sourceRef, exactQuote, sourceLocation}`
+- `TL_EVIDENCE`: `{key, claimKey, facetKeys, relation, sourceRef, exactQuote, sourceLocation}` where `sourceLocation.path` is the exact path returned by `source.excerpts`
 - `TL_SUMMARY`: exactly one complete summary object with every authored summary field
 - `TL_TIMELINE`: one complete object for every timeline item
 - `TL_COVERAGE`: `{assertion, sourceSpan, disposition, claimKey}` for `CLAIMED` or `UNRESOLVED`; or `{assertion, sourceSpan, disposition:"EXCLUDED_LOW_MATERIALITY", reason}` for a genuinely low-materiality exclusion

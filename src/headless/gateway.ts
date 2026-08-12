@@ -10,6 +10,7 @@ import type { FileSourceStore } from "./source-store.ts";
 
 const MAX_TOOL_BODY = 1024 * 1024;
 const MAX_MODEL_BODY = 16 * 1024 * 1024;
+const finalizerAgents = new Set(["evidence-compiler", "evidence-auditor"]);
 
 class GatewayError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -89,6 +90,10 @@ export function createHeadlessGateway(input: GatewayInput) {
           const args = body.arguments && typeof body.arguments === "object" ? body.arguments as Record<string, unknown> : {};
           const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
           const sessionId = typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session";
+          const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
+          if (finalizerAgents.has(agent) && !excerptAllowances.has(sessionId)) {
+            throw new GatewayError(403, `Finalization session ${sessionId} has no registered excerpt allowance.`);
+          }
           const sourceRef = typeof args.sourceRef === "string" ? args.sourceRef : "";
           const queries = Array.isArray(args.queries) ? args.queries.filter((value): value is string => typeof value === "string") : [];
           const requestedCharacters = typeof args.maxCharacters === "number" && Number.isFinite(args.maxCharacters)
@@ -134,7 +139,7 @@ export function createHeadlessGateway(input: GatewayInput) {
           finalizerUpstreamUrl: input.finalizerUpstreamUrl ?? "https://opencode.ai/zen/go/v1/chat/completions",
           finalizerProvider: input.finalizerProvider ?? "GO",
           finalizerModel: input.finalizerModel ?? "deepseek-v4-pro",
-          finalizerAgents: new Set(["evidence-compiler", "evidence-auditor"]),
+          finalizerAgents,
           fixtureCompletion: () => input.fixtureCompletion?.(body, agent, model) ?? Promise.resolve({ content: "Headless fixture model completed." }),
         });
         return;

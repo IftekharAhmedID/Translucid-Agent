@@ -18,6 +18,10 @@ function returnedCharacters(result: SourceExcerptResult): number {
 export class SessionExcerptAllowances {
   private readonly sessions = new Map<string, Allowance>();
 
+  has(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
+  }
+
   register(sessionId: string, characters: number): void {
     if (!sessionId || !Number.isInteger(characters) || characters < 0) throw new Error("Excerpt allowance requires a session ID and a non-negative integer character limit.");
     if (this.sessions.has(sessionId)) throw new Error(`Excerpt allowance is already registered for session ${sessionId}.`);
