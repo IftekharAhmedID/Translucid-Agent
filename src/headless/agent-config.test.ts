@@ -100,6 +100,11 @@ test("lead uses a bounded checklist and the three default specialists with condi
   assert.match(lead, /social.*only/is);
 });
 
+test("professional research prioritizes one submitted LinkedIn profile before fallback search", async () => {
+  const professional = await readFile(join(root, "agents", "professional-researcher.md"), "utf8");
+  assert.match(professional, /explicit LinkedIn.*exactly one.*professional\.profile.*first/is);
+});
+
 test("every headless agent uses OpenCode's native steps limit as an emergency circuit breaker", async () => {
   const expected = new Map<string, number>([
     ["lead-researcher.md", 48],
