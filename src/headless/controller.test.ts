@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { buildFinalizerContext, describeSdkError, finalizerPromptPayload, readCompletedResearchMemos, resultForAudit, waitForResearchIdle } from "./controller.ts";
+import { buildFinalizerContext, describeSdkError, extractTextOutput, finalizerPromptPayload, readCompletedResearchMemos, resultForAudit, waitForResearchIdle } from "./controller.ts";
 import { investigationDraftSchema, type InvestigationResult } from "./result-contract.ts";
 import { FileSourceStore } from "./source-store.ts";
 
@@ -160,6 +160,22 @@ test("finalizers use native schemas when supported and JSON objects for GO DeepS
   assert.equal(compatible.format, undefined);
   assert.match(compatible.parts[0].text, /Return only one complete JSON object/);
   assert.match(compatible.parts[0].text, /"claims"/);
+});
+
+test("extracts dossier text without treating it as structured JSON", () => {
+  assert.equal(extractTextOutput({
+    info: { role: "assistant" },
+    parts: [{ type: "reasoning", text: "ignored" }, { type: "text", text: "TL_CLAIM {}" }],
+  }), "TL_CLAIM {}");
+  assert.throws(() => extractTextOutput({ info: { role: "assistant" }, parts: [] }), /no text/i);
+});
+
+test("encoder prompts disable excerpts and skills and auditor context excludes raw research memos", async () => {
+  const source = await readFile(new URL("./controller.ts", import.meta.url), "utf8");
+  assert.match(source, /\{ "source\.excerpts": false, skill: false \}/);
+  const auditorPrompt = source.slice(source.indexOf("Independently audit this deterministically validated result"));
+  assert.doesNotMatch(auditorPrompt, /researchMemos: compilerBase\.researchMemos/);
+  assert.match(auditorPrompt, /evidenceDossier: dossier\.text/);
 });
 
 test("describes SDK errors whose useful fields are non-enumerable", () => {

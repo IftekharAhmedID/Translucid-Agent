@@ -16,6 +16,10 @@ test("fixture model exercises delegation, provider capture, compilation, and aud
   assert.match(memo.content ?? "", /\[S1\]/);
 
   const structuredBody = { tools: [{ type: "function", function: { name: "StructuredOutput" } }] };
+  const dossier = await complete({ messages: [{ role: "user", content: "MODE: EVIDENCE_DOSSIER" }] }, "evidence-compiler");
+  assert.match(dossier.content ?? "", /^TL_CLAIM /m);
+  assert.match(dossier.content ?? "", /^TL_COVERAGE /m);
+
   const compiler = await complete(structuredBody, "evidence-compiler");
   assert.equal(compiler.toolCall?.name, "StructuredOutput");
   const draft = investigationDraftSchema.parse(compiler.toolCall?.arguments);

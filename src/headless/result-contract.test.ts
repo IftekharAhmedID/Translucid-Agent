@@ -146,9 +146,11 @@ test("drops empty strongest-evidence rows before validation without spending the
     const { store, sourceRef } = await directWorkStore(directory);
     const emptyRow = draft(sourceRef);
     emptyRow.summary.strongestEvidenceByClaim = [{ claimKey: "employment", facetKeys: ["title"], evidenceKeys: [] }];
-    const finalized = await finalizeWithSingleRepair<InvestigationDraft, Awaited<ReturnType<typeof canonicalizeInvestigationResult>>>({
-      compile: async () => investigationDraftSchema.parse(emptyRow),
-      validate: (value) => canonicalizeInvestigationResult(value, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+    const finalized = await finalizeWithSingleRepair<null, InvestigationDraft, Awaited<ReturnType<typeof canonicalizeInvestigationResult>>>({
+      createDossier: async () => null,
+      encode: async () => investigationDraftSchema.parse(emptyRow),
+      validateEncoding: () => undefined,
+      validateResult: (value) => canonicalizeInvestigationResult(value, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
       audit: async () => ({ status: "PASSED", defects: [] }),
     });
 
@@ -351,9 +353,11 @@ test("derives facet status and accepts opaque semantic keys without spending the
     loose.summary.timelineEvidenceKeys[0] = "employment:title#1";
     loose.summary.strongestEvidenceByClaim[0]!.evidenceKeys[0] = "employment:title#1";
     loose.timeline[0]!.evidenceKeys[0] = "employment:title#1";
-    const finalized = await finalizeWithSingleRepair<InvestigationDraft, Awaited<ReturnType<typeof canonicalizeInvestigationResult>>>({
-      compile: async () => investigationDraftSchema.parse(loose),
-      validate: (value) => canonicalizeInvestigationResult(value, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+    const finalized = await finalizeWithSingleRepair<null, InvestigationDraft, Awaited<ReturnType<typeof canonicalizeInvestigationResult>>>({
+      createDossier: async () => null,
+      encode: async () => investigationDraftSchema.parse(loose),
+      validateEncoding: () => undefined,
+      validateResult: (value) => canonicalizeInvestigationResult(value, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
       audit: async () => ({ status: "PASSED", defects: [] }),
     });
 

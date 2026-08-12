@@ -32,6 +32,37 @@ function fixtureDraft(): InvestigationDraft {
   };
 }
 
+function fixtureDossier(): string {
+  const draft = fixtureDraft();
+  return [
+    "# Synthetic evidence dossier",
+    ...draft.claims.map((claim) => `TL_CLAIM ${JSON.stringify({
+      key: claim.key,
+      category: claim.category,
+      statement: claim.statement,
+      materiality: claim.materiality,
+      sourceSpan: claim.sourceSpan,
+      explanation: claim.explanation,
+    })}`),
+    ...draft.claims.flatMap((claim) => claim.facets.map((facet) => `TL_FACET ${JSON.stringify({
+      claimKey: claim.key,
+      key: facet.key,
+      label: facet.label,
+      materiality: facet.materiality,
+      note: facet.note,
+    })}`)),
+    ...draft.evidence.map((evidence) => `TL_EVIDENCE ${JSON.stringify(evidence)}`),
+    `TL_SUMMARY ${JSON.stringify(draft.summary)}`,
+    ...draft.timeline.map((timeline) => `TL_TIMELINE ${JSON.stringify(timeline)}`),
+    `TL_COVERAGE ${JSON.stringify({
+      assertion: quote,
+      sourceSpan: draft.claims[0]!.sourceSpan,
+      disposition: "CLAIMED",
+      claimKey: "acme-employment",
+    })}`,
+  ].join("\n");
+}
+
 export function createHeadlessFixtureCompletion(): (body: Record<string, unknown>, agent: string) => Promise<Completion> {
   const calls = new Map<string, number>();
   return async (body, agent) => {
@@ -51,6 +82,7 @@ export function createHeadlessFixtureCompletion(): (body: Record<string, unknown
       return functionDefinition?.name === "StructuredOutput";
     });
     if (agent === "evidence-compiler") {
+      if (JSON.stringify(body).includes("MODE: EVIDENCE_DOSSIER")) return { content: fixtureDossier() };
       const draft = fixtureDraft();
       return nativeStructuredOutput
         ? { toolCall: { name: "StructuredOutput", arguments: draft } }

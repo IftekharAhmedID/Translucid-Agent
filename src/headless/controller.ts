@@ -1,4 +1,5 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
@@ -9,6 +10,7 @@ import { extractStructuredOutput } from "../agent/structured-output.ts";
 import { finalizerOutputTransport } from "../core/finalizer-transport.ts";
 import type { RunHandle } from "../runtime/types.ts";
 import type { MemoryRunBudget } from "./budget.ts";
+import { assertDossierMatchesDraft, parseEvidenceDossier, type DossierInventory } from "./dossier.ts";
 import { finalizeWithSingleRepair, type IndependentAudit } from "./finalize.ts";
 import {
   canonicalizeInvestigationResult,
@@ -88,6 +90,34 @@ export function finalizerPromptPayload<T>(
       text: `${prompt}\n\nReturn only one complete JSON object. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}`,
     }],
   };
+}
+
+type AssistantMessage = {
+  info: { role: string; error?: { name?: string } };
+  parts: Array<{ type: string; text?: string }>;
+};
+
+export function extractTextOutput(message: AssistantMessage): string {
+  if (message.info.role !== "assistant") throw new Error("Session did not return an assistant response.");
+  if (message.info.error) throw new Error(`OPENCODE_MESSAGE_ERROR:${message.info.error.name ?? "UnknownError"}`);
+  const text = message.parts
+    .filter((part) => part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("")
+    .trim();
+  if (!text) throw new Error("Evidence dossier session returned no text.");
+  return text;
+}
+
+async function atomicWriteText(path: string, value: string): Promise<void> {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, value, { flag: "wx", mode: 0o600 });
+    await rename(temporary, path);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 function unwrap<T>(result: { data?: T; error?: unknown }, action: string): T {
@@ -291,7 +321,27 @@ export class HeadlessInvestigationController {
       warnings.push(...compilerBase.warnings);
       const memoSourceRefs = new Set(compilerBase.citedSources.flatMap((source) => typeof source.ref === "string" ? [source.ref] : []));
 
-      const promptJson = async <T>(agent: "evidence-compiler" | "evidence-auditor", title: string, prompt: string, schema: z.ZodType<T>): Promise<T> => {
+      const promptText = async (title: string, prompt: string): Promise<string> => {
+        const model = input.compilerModel;
+        const session = unwrap(await client.session.create({ directory, title, agent: "evidence-compiler", model: { id: model, providerID: "translucid", variant: "medium" } }, { signal: input.signal }), "evidence-compiler session creation");
+        const message = unwrap(await client.session.prompt({
+          sessionID: session.id,
+          directory,
+          agent: "evidence-compiler",
+          model: { providerID: "translucid", modelID: model },
+          variant: "medium",
+          parts: [{ type: "text", text: prompt }],
+        }, { signal: input.signal }), "evidence-compiler prompt");
+        return extractTextOutput(message);
+      };
+
+      const promptJson = async <T>(
+        agent: "evidence-compiler" | "evidence-auditor",
+        title: string,
+        prompt: string,
+        schema: z.ZodType<T>,
+        tools?: Record<string, boolean>,
+      ): Promise<T> => {
         const model = agent === "evidence-compiler" ? input.compilerModel : input.auditorModel;
         const session = unwrap(await client.session.create({ directory, title, agent, model: { id: model, providerID: "translucid", variant: "medium" } }, { signal: input.signal }), `${agent} session creation`);
         const payload = finalizerPromptPayload(input.finalizerProvider, model, prompt, schema);
@@ -301,6 +351,7 @@ export class HeadlessInvestigationController {
           agent,
           model: { providerID: "translucid", modelID: model },
           variant: "medium",
+          tools,
           ...payload,
         }, { signal: input.signal }), `${agent} prompt`);
         return schema.parse(extractStructuredOutput(message));
@@ -316,14 +367,31 @@ export class HeadlessInvestigationController {
         models: { research: input.researchModel, compiler: input.compilerModel, auditor: input.auditorModel },
         budgets: { ...input.budget.snapshot(), routeCounts: undefined },
       } as const;
-      const validated = await finalizeWithSingleRepair<InvestigationDraft, InvestigationResult>({
-        compile: async ({ attempt, defects, previousDraft }) => promptJson(
+      type DossierArtifact = { text: string; inventory: DossierInventory };
+      const finalizationDirectory = join(input.root, ".work", "finalization");
+      const dossierPath = join(finalizationDirectory, "evidence-dossier.md");
+      await mkdir(finalizationDirectory, { recursive: true });
+      let lastDossierText: string | undefined;
+      const validated = await finalizeWithSingleRepair<DossierArtifact, InvestigationDraft, InvestigationResult>({
+        createDossier: async ({ attempt, defects, previousDossier }) => {
+          const text = await promptText(
+            `Evidence dossier ${attempt}`,
+            `MODE: EVIDENCE_DOSSIER\n\nCreate a complete evidence dossier from the parsed input and preserved research. Human-readable Markdown is allowed, but every model-authored claim, facet, evidence item, summary field, timeline item, and coverage disposition must also appear in the fixed one-line TL_* record format defined by your agent instructions. Build TL_COVERAGE directly from every material assertion in the parsed input; the lead memo is advisory and may be absent. Exact quotes must occur verbatim in memo-cited immutable sources. Use source.excerpts when needed.\n\n${JSON.stringify({ ...compilerBase, repairDefects: defects, previousDossier: previousDossier?.text ?? lastDossierText })}`,
+          );
+          lastDossierText = text;
+          const inventory = parseEvidenceDossier(text, memoSourceRefs);
+          await atomicWriteText(dossierPath, `${text.trim()}\n`);
+          return { text, inventory };
+        },
+        encode: async ({ attempt, dossier, defects, previousDraft }) => promptJson(
           "evidence-compiler",
-          `Evidence compiler ${attempt}`,
-          `Compile the supplied research into the semantic-key draft contract. Backend code will assign canonical IDs, authority, verdicts, strength, and statistics. Map every evidence item to one claim and one or more declared facets. Preserve every material input assertion or explain its lack of eligible evidence with an unresolved facet. Use source.excerpts to inspect memo-cited immutable sources; request at most 60,000 characters per call. Exact quotes must occur verbatim in the stored source.\n\n${JSON.stringify({ ...compilerBase, repairDefects: defects, previousDraft })}`,
+          `Structured evidence encoding ${attempt}`,
+          `MODE: STRUCTURED_ENCODING\n\nFaithfully encode the supplied dossier into the requested result draft schema. Do not add, omit, reinterpret, summarize, or repair dossier semantics. Backend code assigns canonical IDs, source authority, verdicts, strength, and statistics.\n\n${JSON.stringify({ input: compilerBase.input, evidenceDossier: dossier.text, repairDefects: defects, previousDraft })}`,
           investigationDraftSchema,
+          { "source.excerpts": false, skill: false },
         ),
-        validate: (draft) => canonicalizeInvestigationResult(draft, {
+        validateEncoding: (dossier, draft) => assertDossierMatchesDraft(dossier.inventory, draft),
+        validateResult: (draft) => canonicalizeInvestigationResult(draft, {
           run: provisionalRun,
           sourceStore: input.sourceStore,
           compilerAttempts: 1,
@@ -331,11 +399,11 @@ export class HeadlessInvestigationController {
           warnings,
           providerCalls: input.budget.snapshot().externalNetworkCalls,
         }),
-        audit: async (result, attempt): Promise<IndependentAudit> => {
+        audit: async (result, dossier, attempt): Promise<IndependentAudit> => {
           const audit = await promptJson(
             "evidence-auditor",
             `Evidence audit ${attempt}`,
-            `Independently audit this deterministically validated result against the supplied input and research. Use source.excerpts for any exact-source check and request at most 60,000 characters per call. Mark REPAIR_REQUIRED only for a material defect. Warnings do not require repair.\n\n${JSON.stringify({ result: resultForAudit(result, memoSourceRefs), input: compilerBase.input, researchMemos: compilerBase.researchMemos, citedSources: compilerBase.citedSources })}`,
+            `Independently audit this deterministically validated result against the parsed input and evidence dossier. Use source.excerpts for any exact-source check. Mark REPAIR_REQUIRED only for a material defect. Warnings do not require repair.\n\n${JSON.stringify({ result: resultForAudit(result, memoSourceRefs), input: compilerBase.input, evidenceDossier: dossier.text, citedSources: compilerBase.citedSources })}`,
             auditSchema,
           );
           const material = audit.defects.filter((defect) => defect.severity === "MATERIAL").map((defect) => `${defect.code}: ${defect.message}`);
