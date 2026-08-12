@@ -3,7 +3,7 @@ import { open, readFile, readdir, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { E2BRuntime } from "../runtime/e2b.ts";
-import { getPinnedLocalManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
+import { getPinnedLocalManifestHash, getPinnedResearchManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
 import { currentCheckpointConfigs } from "./checkpoint-config.ts";
 import {
@@ -87,6 +87,7 @@ async function main(): Promise<void> {
   const existingManifest = await readHandoffManifest(workspace.root);
   if (existingManifest.research.config.runtime !== workspace.runtime) throw new Error("Research checkpoint runtime differs from the immutable input manifest.");
   const expectedManifestHash = await getPinnedLocalManifestHash();
+  const researchManifestHash = await getPinnedResearchManifestHash();
   const compilerModel = process.env.FINALIZER_MODEL ?? "deepseek-v4-pro";
   const checkpointConfigs = await currentCheckpointConfigs({
     repositoryRoot: process.cwd(),
@@ -94,7 +95,7 @@ async function main(): Promise<void> {
     providerMode: existingManifest.research.config.providerMode,
     researchModel: existingManifest.research.config.researchModel,
     compilerModel,
-    runtimeManifestHash: expectedManifestHash,
+    runtimeManifestHash: researchManifestHash,
   });
   const manifest = await validateResearchCheckpoint(workspace.root, checkpointConfigs.research);
   const reusableDossier = await loadValidDossierCheckpoint(workspace.root, manifest, checkpointConfigs.dossier);

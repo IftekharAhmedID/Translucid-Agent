@@ -17,6 +17,11 @@ export async function getPinnedLocalManifestHash(): Promise<string> {
   return (JSON.parse(result.stdout) as { manifestHash: string }).manifestHash;
 }
 
+export async function getPinnedResearchManifestHash(): Promise<string> {
+  const result = await runProcess(process.execPath, ["--import", "tsx", "scripts/runtime-manifest.ts", "--scope", "research"], { timeoutMs: 60_000 });
+  return (JSON.parse(result.stdout) as { manifestHash: string }).manifestHash;
+}
+
 function basicAuth(password: string): string {
   return `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;
 }

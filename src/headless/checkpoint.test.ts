@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ import {
   openPersistentRunBudget,
   RESEARCH_CONTRACT_VERSION,
   RESULT_SCHEMA_VERSION,
+  researchRuntimeManifestHash,
   validateResearchCheckpoint,
   writeDossierCheckpoint,
   writeResearchCheckpoint,
@@ -77,6 +79,35 @@ test("validates targeted research hashes while treating the producing commit as 
 
     await writeFile(join(root, ".work", "memos", "specialist.md"), "Mutated finding [S1].");
     await assert.rejects(() => validateResearchCheckpoint(root, researchConfig), /artifact hashes/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("migrates a preserved full runtime manifest when only finalizer files changed", async () => {
+  const { root } = await fixtureRun();
+  try {
+    const runtimeManifest = {
+      node: "v22",
+      packages: { "opencode-ai": "1.18.15" },
+      files: {
+        "runtime/start.sh": hash("d"),
+        "runtime/headless-opencode/agents/evidence-compiler.md": hash("c"),
+        "runtime/headless-opencode/agents/evidence-auditor.md": hash("a"),
+      },
+    };
+    const fullManifestHash = createHash("sha256").update(JSON.stringify(runtimeManifest)).digest("hex");
+    await writeFile(join(root, "runtime-manifest.json"), JSON.stringify({ ...runtimeManifest, manifestHash: fullManifestHash }));
+    const legacyConfig = { ...researchConfig, runtimeManifestHash: fullManifestHash };
+    await writeResearchCheckpoint(root, {
+      warnings: [],
+      budget: { modelUsd: 0, providerUsd: 0, externalNetworkCalls: 0, routeCounts: {} },
+      config: legacyConfig,
+    });
+    await assert.doesNotReject(() => validateResearchCheckpoint(root, {
+      ...legacyConfig,
+      runtimeManifestHash: researchRuntimeManifestHash(runtimeManifest),
+    }));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { toolNames } from "../providers/contracts.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
 import { E2BRuntime } from "../runtime/e2b.ts";
-import { getPinnedLocalManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
+import { getPinnedLocalManifestHash, getPinnedResearchManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
 import { currentCheckpointConfigs } from "./checkpoint-config.ts";
 import { openPersistentRunBudget } from "./checkpoint.ts";
@@ -106,6 +106,7 @@ async function main(): Promise<void> {
       runId,
     });
     const expectedManifestHash = await getPinnedLocalManifestHash();
+    const researchManifestHash = await getPinnedResearchManifestHash();
     const researchModel = process.env.RESEARCH_MODEL ?? "deepseek-v4-flash";
     const compilerModel = process.env.FINALIZER_MODEL ?? "deepseek-v4-pro";
     const checkpointConfigs = await currentCheckpointConfigs({
@@ -114,7 +115,7 @@ async function main(): Promise<void> {
       providerMode: options.providerMode,
       researchModel,
       compilerModel,
-      runtimeManifestHash: expectedManifestHash,
+      runtimeManifestHash: researchManifestHash,
     });
     const budget = await openPersistentRunBudget(workspace.root, { modelUsd: 5, providerUsd: 10, externalNetworkCalls: 300, repositoryClones: 3, socialProfiles: 1 });
     const providerExecutor = new ProviderExecutor(providerEnvironment(options.providerMode), createFileProviderBackend({ sourceStore: workspace.sourceStore, budget, deadlineAt: deadlineAt.getTime() }));

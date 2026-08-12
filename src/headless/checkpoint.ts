@@ -68,6 +68,17 @@ const sourceManifestSchema = z.object({
   }).loose()),
 }).loose();
 
+const runtimeManifestSchema = z.object({
+  node: z.string().min(1),
+  packages: z.record(z.string(), z.string()),
+  files: z.record(z.string(), sha256),
+  manifestHash: sha256,
+}).strict();
+const researchOnlyRuntimeFiles = new Set([
+  "runtime/headless-opencode/agents/evidence-compiler.md",
+  "runtime/headless-opencode/agents/evidence-auditor.md",
+]);
+
 export type ResearchCheckpointConfig = z.infer<typeof researchConfigSchema>;
 export type DossierCheckpointConfig = z.infer<typeof dossierConfigSchema>;
 export type HandoffManifest = z.infer<typeof handoffManifestSchema>;
@@ -88,6 +99,16 @@ function canonicalJson(value: unknown): string {
 
 function digest(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+export function researchRuntimeManifestHash(manifest: Pick<z.infer<typeof runtimeManifestSchema>, "node" | "packages" | "files">): string {
+  return digest(JSON.stringify({
+    node: manifest.node,
+    packages: manifest.packages,
+    files: Object.fromEntries(Object.entries(manifest.files)
+      .filter(([path]) => !researchOnlyRuntimeFiles.has(path))
+      .sort()),
+  }));
 }
 
 async function fileDigest(path: string): Promise<string> {
@@ -113,6 +134,12 @@ function withoutCommit<T extends { producingGitCommit: string }>(config: T): Omi
   return copy;
 }
 
+function withoutRuntimeManifestHash<T extends { runtimeManifestHash: string }>(config: T): Omit<T, "runtimeManifestHash"> {
+  const copy = { ...config };
+  Reflect.deleteProperty(copy, "runtimeManifestHash");
+  return copy;
+}
+
 function researchFingerprint(input: Omit<HandoffManifest["research"], "fingerprint">): string {
   return digest(canonicalJson({ ...input, config: withoutCommit(input.config) }));
 }
@@ -127,6 +154,16 @@ function inside(root: string, relativePath: string): string {
 
 async function sourceManifest(root: string): Promise<z.infer<typeof sourceManifestSchema>> {
   return sourceManifestSchema.parse(JSON.parse(await readFile(join(root, "sources", "manifest.json"), "utf8")));
+}
+
+async function preservedResearchRuntimeManifestHash(root: string, expectedFullHash: string): Promise<string | undefined> {
+  try {
+    const manifest = runtimeManifestSchema.parse(JSON.parse(await readFile(join(root, "runtime-manifest.json"), "utf8")));
+    if (manifest.manifestHash !== expectedFullHash) return undefined;
+    return researchRuntimeManifestHash(manifest);
+  } catch {
+    return undefined;
+  }
 }
 
 export async function collectResearchArtifactHashes(root: string): Promise<Record<string, string>> {
@@ -172,7 +209,17 @@ export async function validateResearchCheckpoint(root: string, current: Research
   const manifest = await readHandoffManifest(root);
   const artifacts = await collectResearchArtifactHashes(root);
   if (canonicalJson(artifacts) !== canonicalJson(manifest.research.artifacts)) throw new Error("Research checkpoint artifact hashes do not match the preserved run.");
-  if (canonicalJson(withoutCommit(current)) !== canonicalJson(withoutCommit(manifest.research.config))) {
+  const currentConfig = withoutCommit(current);
+  const checkpointConfig = withoutCommit(manifest.research.config);
+  let configMatches = canonicalJson(currentConfig) === canonicalJson(checkpointConfig);
+  if (!configMatches && current.runtimeManifestHash !== manifest.research.config.runtimeManifestHash) {
+    const preservedResearchHash = await preservedResearchRuntimeManifestHash(root, manifest.research.config.runtimeManifestHash);
+    const currentWithoutRuntime = withoutRuntimeManifestHash(currentConfig);
+    const checkpointWithoutRuntime = withoutRuntimeManifestHash(checkpointConfig);
+    configMatches = preservedResearchHash === current.runtimeManifestHash
+      && canonicalJson(currentWithoutRuntime) === canonicalJson(checkpointWithoutRuntime);
+  }
+  if (!configMatches) {
     throw new Error("Research checkpoint runtime, provider, model, contract, prompt, or skill configuration is stale.");
   }
   const expectedFingerprint = researchFingerprint({
