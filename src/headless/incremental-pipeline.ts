@@ -20,6 +20,7 @@ import {
   claimBatchSchema,
   evidenceJudgmentSchema,
   invalidatedFinalizationStages,
+  v5FacetEvidenceCompatible,
   v5AuditSchema,
   readJsonIfPresent,
   validateClaimBatchRecords,
@@ -382,6 +383,10 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
         }
       }
       for (const group of groups.values()) {
+        for (const facetKey of group.facetKeys) {
+          const facet = claim.facets.find(({ key }) => key === facetKey);
+          if (!facet || !v5FacetEvidenceCompatible(group.excerpt.text, facet.label)) throw new Error(`Evidence excerpt ${group.excerpt.ref} is semantically incompatible with ${claim.claimKey}/${facetKey}.`);
+        }
         const exact = await input.sourceStore.verifyExactQuote({ sourceRef: group.excerpt.sourceRef, path: group.excerpt.path, exactQuote: group.excerpt.text });
         if (!exact.valid) throw new Error(`Evidence excerpt ${group.excerpt.ref} is not an exact immutable quote.`);
         records.push({ key: `E${String(records.length + 1).padStart(3, "0")}`, claimKey: claim.claimKey, facetKeys: [...new Set(group.facetKeys)], relation: group.relation, sourceRef: group.excerpt.sourceRef, exactQuote: group.excerpt.text, sourceLocation: { path: group.excerpt.path } });

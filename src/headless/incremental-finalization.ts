@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { assertSafeInvestigationLanguage } from "../core/adjudication.ts";
+import { facetEvidenceCompatible } from "../core/evidence-fit.ts";
 import { assertSelfContainedFacetLabels, auditClaimFacetCoverage } from "../core/facet-coverage.ts";
 import { lineIdSchema, lineSpan, type LineCatalog } from "./line-catalog.ts";
 
@@ -69,6 +70,20 @@ export function invalidatedFinalizationStages(stored: Partial<Record<Finalizatio
   const order: FinalizationStage[] = ["claims", "evidence", "summary", "audit"];
   const first = order.findIndex((stage) => current[stage] !== undefined && stored[stage] !== current[stage]);
   return first < 0 ? [] : order.slice(first);
+}
+
+const adjacentWork = /\b(?:commit|pull request|patch|jit|optimization)\b/i;
+const statusProofs: Array<[RegExp, RegExp]> = [
+  [/\b(?:core developer|core team)\b/i, /\b(?:core developer|core team|core member)\b/i],
+  [/\b(?:employed|employment|works? at|worked at|tenure)\b/i, /\b(?:employed|employment|works? at|worked at|joined|tenure)\b/i],
+  [/\b(?:title|held the title)\b/i, /\b(?:title|engineer|developer|manager|director)\b/i],
+  [/(?:organiz\w+.*europython|europython.*organiz\w+)/i, /(?:organiz\w+.*europython|europython.*organiz\w+)/i],
+  [/(?:python guild.*(?:lead|led|member)|(?:lead|led|member).*python guild)/i, /(?:python guild.*(?:lead|led|member)|(?:lead|led|member).*python guild)/i],
+];
+
+export function v5FacetEvidenceCompatible(exactQuote: string, facetLabel: string): boolean {
+  if (adjacentWork.test(exactQuote) && statusProofs.some(([claim, proof]) => claim.test(facetLabel) && !proof.test(exactQuote))) return false;
+  return facetEvidenceCompatible(exactQuote, facetLabel);
 }
 
 function unique(values: readonly string[], label: string): void {

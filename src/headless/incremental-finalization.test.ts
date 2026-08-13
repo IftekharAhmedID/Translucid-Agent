@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildLineCatalog } from "./line-catalog.ts";
-import { claimBatchSchema, evidenceJudgmentSchema, invalidatedFinalizationStages, validateClaimBatchRecords, validateEvidenceJudgment } from "./incremental-finalization.ts";
+import { claimBatchSchema, evidenceJudgmentSchema, invalidatedFinalizationStages, v5FacetEvidenceCompatible, validateClaimBatchRecords, validateEvidenceJudgment } from "./incremental-finalization.ts";
 
 const catalog = buildLineCatalog({ pages: [{ page: 1, lines: [
   { line: 1, text: "Ada Lovelace" },
@@ -93,4 +93,12 @@ test("stage fingerprints invalidate only the changed stage and its dependents", 
   assert.deepEqual(invalidatedFinalizationStages(stored, { claims: "c1", evidence: "e2" }), ["evidence", "summary", "audit"]);
   assert.deepEqual(invalidatedFinalizationStages(stored, { summary: "s2" }), ["summary", "audit"]);
   assert.deepEqual(invalidatedFinalizationStages(stored, { audit: "a1" }), []);
+});
+
+test("V5 rejects adjacent contribution, employment, and community-role evidence", () => {
+  assert.equal(v5FacetEvidenceCompatible("Diego Russo authored CPython pull request 12345.", "Diego Russo is a CPython core developer."), false);
+  assert.equal(v5FacetEvidenceCompatible("MLIA commit abc123 was authored by Diego Russo.", "Diego Russo was employed by Arm from 2013 to 2017."), false);
+  assert.equal(v5FacetEvidenceCompatible("MLIA commit abc123 was authored by Diego Russo.", "Diego Russo held the title Principal Software Engineer at Arm."), false);
+  assert.equal(v5FacetEvidenceCompatible("Diego Russo implemented a CPython JIT optimization.", "Diego Russo organized EuroPython 2024."), false);
+  assert.equal(v5FacetEvidenceCompatible("Diego Russo implemented a CPython JIT optimization.", "Diego Russo led the Arm Python Guild."), false);
 });
