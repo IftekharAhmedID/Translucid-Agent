@@ -68,7 +68,6 @@ export type SourceExcerptResult = {
   truncated: boolean;
 };
 
-export type BoundedSourceBody = { sourceRef: string; text: string; truncated: boolean };
 export type ExactQuoteCheck = { sourceRef: string; path: string; valid: boolean };
 export type StoredExcerptCandidates = {
   candidatesByFacet: Record<string, Array<{ ref: string; sourceRef: string; path: string; offsetStart: number; offsetEnd: number; text: string }>>;
@@ -158,7 +157,7 @@ export class FileSourceStore {
       await mkdir(join(root, "sources", "blobs"), { recursive: true });
       await atomicWrite(path, Buffer.from(JSON.stringify(manifest, null, 2)));
     }
-    const store = new FileSourceStore(root, manifest, options.finalizationVersion ?? "v4");
+    const store = new FileSourceStore(root, manifest, options.finalizationVersion ?? "v5");
     const ledgerPath = join(root, ".work", "finalization", store.finalizationVersion, "excerpts.json");
     try {
       const rawLedger = readableExcerptLedgerSchema.parse(JSON.parse(await readFile(ledgerPath, "utf8")));
@@ -285,13 +284,6 @@ export class FileSourceStore {
     return { sourceRef: source.ref, excerpts, truncated: matchCount > excerpts.length || remaining <= 0 };
   }
 
-  async resolveExcerpt(ref: string): Promise<{ ref: string; sourceRef: string; path: string; offsetStart: number; offsetEnd: number; text: string }> {
-    await this.excerptPending;
-    const excerpt = this.excerptIndex.get(ref);
-    if (!excerpt) throw new Error(`Unknown excerpt reference ${ref}.`);
-    return { ...excerpt };
-  }
-
   async verifyExactQuote(input: { sourceRef: string; path: string; exactQuote: string }): Promise<ExactQuoteCheck> {
     const source = await this.get(input.sourceRef);
     const raw = await readFile(join(this.root, source.relativePath), "utf8");
@@ -305,13 +297,6 @@ export class FileSourceStore {
     return { sourceRef: source.ref, path: input.path, valid };
   }
 
-  async readBounded(sourceRef: string, maxCharacters = 80_000): Promise<BoundedSourceBody> {
-    const maximum = Math.min(Math.max(maxCharacters, 1), 300_000);
-    const source = await this.get(sourceRef);
-    const raw = await readFile(join(this.root, source.relativePath), "utf8");
-    return { sourceRef, text: raw.slice(0, maximum), truncated: raw.length > maximum };
-  }
-
   async findStoredExcerpts(input: {
     statement: string;
     facets: ReadonlyArray<{ key: string; statement: string }>;
@@ -322,35 +307,45 @@ export class FileSourceStore {
     const sourceByRef = new Map(sources.map((source) => [source.ref, source]));
     const paragraphs = input.researchMemos.split(/\n\s*\n/gu);
     const tokens = (text: string) => [...new Set(text.toLocaleLowerCase("en-US").split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 3 && !new Set(["with", "from", "that", "this", "have", "were", "their", "about", "into"]).has(token)))];
+    const entityTokens = tokens(input.statement).slice(0, 2);
     const candidatesByFacet: StoredExcerptCandidates["candidatesByFacet"] = {};
     let remainingCharacters = 16_000;
+    let remainingCandidates = 16;
     for (const facet of input.facets) {
       const facetTokens = tokens(`${input.statement} ${facet.statement}`);
-      const memoRefs = new Set(paragraphs.flatMap((paragraph) => {
-        const overlap = facetTokens.filter((token) => paragraph.toLocaleLowerCase("en-US").includes(token)).length;
-        return overlap < 2 ? [] : [...paragraph.matchAll(/\bS([1-9]\d*)\b/gu)].map((match) => `S${match[1]}`);
-      }).filter((ref) => sourceByRef.has(ref)));
+      const specificTokens = facetTokens.filter((token) => !entityTokens.includes(token));
+      const strongMemoRefs = new Set<string>();
+      const relatedMemoRefs = new Set<string>();
+      for (const paragraph of paragraphs) {
+        const normalized = paragraph.toLocaleLowerCase("en-US");
+        const refs = [...paragraph.matchAll(/\bS([1-9]\d*)\b/gu)].map((match) => `S${match[1]}`).filter((ref) => sourceByRef.has(ref));
+        const overlap = specificTokens.filter((token) => normalized.includes(token)).length;
+        if (entityTokens.every((token) => normalized.includes(token)) && overlap >= 2) refs.forEach((ref) => strongMemoRefs.add(ref));
+        else if (overlap >= 1) refs.forEach((ref) => relatedMemoRefs.add(ref));
+      }
       const ranked = sources.map((source) => {
         const metadata = `${source.title ?? ""} ${source.sourceUrl ?? ""}`.toLocaleLowerCase("en-US");
         const score = facetTokens.filter((token) => metadata.includes(token)).length;
-        return { source, tier: memoRefs.has(source.ref) ? 1 : score >= 2 ? 2 : 3, score };
+        return { source, tier: strongMemoRefs.has(source.ref) ? 1 : relatedMemoRefs.has(source.ref) ? 2 : score > 0 ? 3 : 4, score };
       }).sort((left, right) => left.tier - right.tier || right.score - left.score || Number(left.source.ref.slice(1)) - Number(right.source.ref.slice(1)));
-      const facetCandidates: StoredExcerptCandidates["candidatesByFacet"][string] = [];
+      const facetCandidates: Array<{ excerpt: StoredExcerptCandidates["candidatesByFacet"][string][number]; tier: number; score: number }> = [];
       const queries = [...new Set([facet.statement, input.statement, ...facetTokens])].filter(Boolean).slice(0, 12);
-      for (const { source } of ranked) {
-        if (facetCandidates.length >= 3 || remainingCharacters <= 0) break;
+      for (const { source, tier } of ranked) {
+        if (facetCandidates.length >= 3 || remainingCharacters <= 0 || remainingCandidates <= 0) break;
         const found = await this.excerpts({ sourceRef: source.ref, queries, maxCharacters: Math.min(2_000, remainingCharacters) });
-        for (const excerpt of found.excerpts.slice(0, 2)) {
-          if (facetCandidates.length >= 8 || remainingCharacters < excerpt.text.length) break;
-          facetCandidates.push({ ...excerpt, sourceRef: source.ref });
+        const rankedExcerpts = found.excerpts.map((excerpt) => ({ excerpt, score: facetTokens.filter((token) => excerpt.text.toLocaleLowerCase("en-US").includes(token)).length }))
+          .sort((left, right) => right.score - left.score || left.excerpt.offsetStart - right.excerpt.offsetStart)
+          .slice(0, 2);
+        for (const { excerpt, score } of rankedExcerpts) {
+          if (facetCandidates.length >= 8 || remainingCandidates <= 0 || remainingCharacters < excerpt.text.length) break;
+          facetCandidates.push({ excerpt: { ...excerpt, sourceRef: source.ref }, tier, score });
           remainingCharacters -= excerpt.text.length;
+          remainingCandidates -= 1;
         }
       }
-      candidatesByFacet[facet.key] = facetCandidates.sort((left, right) => {
-        const leftScore = facetTokens.filter((token) => left.text.toLocaleLowerCase("en-US").includes(token)).length;
-        const rightScore = facetTokens.filter((token) => right.text.toLocaleLowerCase("en-US").includes(token)).length;
-        return rightScore - leftScore || Number(left.sourceRef.slice(1)) - Number(right.sourceRef.slice(1)) || left.offsetStart - right.offsetStart;
-      });
+      candidatesByFacet[facet.key] = facetCandidates
+        .sort((left, right) => left.tier - right.tier || right.score - left.score || Number(left.excerpt.sourceRef.slice(1)) - Number(right.excerpt.sourceRef.slice(1)) || left.excerpt.offsetStart - right.excerpt.offsetStart)
+        .map(({ excerpt }) => excerpt);
     }
     const totalCharacters = 16_000 - remainingCharacters;
     const fingerprint = createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.entries(candidatesByFacet).sort(([left], [right]) => left.localeCompare(right))))).digest("hex");

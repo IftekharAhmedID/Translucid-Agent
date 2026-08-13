@@ -17,6 +17,7 @@ test("requires an absolute run directory and accepts keep-debug", () => {
 test("finalization-only recovery cannot construct or invoke a research provider adapter", async () => {
   const source = await readFile(new URL("./finalize-cli.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /ProviderExecutor|createFileProviderBackend|executor:/);
-  assert.match(source, /allowedTools: new Set\(\["source\.excerpts"\]\)/);
+  assert.match(source, /allowedTools: new Set\(\)/);
+  assert.doesNotMatch(source, /source\.excerpts/);
   assert.match(source, /runFinalizationPipeline/);
 });

@@ -174,15 +174,26 @@ function fixtureClaimBatch(body: Record<string, unknown>): Record<string, unknow
   return { claims, exclusions, deferredLineIds: [] };
 }
 
-function fixtureEvidenceLink(body: Record<string, unknown>): Record<string, unknown> {
-  const payload = promptPayload(body) as { claims?: Array<{ claimKey: string; facets: Array<{ key: string }> }>; excerptCandidates?: Array<{ ref: string }> };
-  const excerptRef = payload.excerptCandidates?.[0]?.ref;
-  return { claims: (payload.claims ?? []).map((claim) => ({
-    claimId: claim.claimKey,
-    explanation: "The deterministic synthetic source provides the bounded observation.",
-    facetNotes: claim.facets.map(({ key }) => ({ facetKey: key, note: "The synthetic source was checked for this facet." })),
-    edges: excerptRef ? [{ facetKeys: claim.facets.map(({ key }) => key), relation: "SUPPORTS", excerptRef }] : [],
-  })) };
+function fixtureEvidenceJudgment(body: Record<string, unknown>): Record<string, unknown> {
+  const payload = promptPayload(body) as {
+    claim?: { claimId: string; facets: Array<{ key: string; statement: string }> };
+    candidateSetHash?: string;
+    candidatesByFacet?: Record<string, Array<{ ref: string; text: string }>>;
+  };
+  return {
+    claimId: payload.claim?.claimId ?? "C001",
+    candidateSetHash: payload.candidateSetHash ?? "a".repeat(64),
+    facets: (payload.claim?.facets ?? []).map(({ key, statement }) => ({
+      facetKey: key,
+      candidates: (payload.candidatesByFacet?.[key] ?? []).map(({ ref, text }) => {
+        const words = new Set(statement.toLocaleLowerCase("en-US").split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 3));
+        const overlap = [...words].filter((word) => text.toLocaleLowerCase("en-US").includes(word)).length;
+        return overlap >= 2
+          ? { excerptRef: ref, relation: "SUPPORTS", reason: "The deterministic synthetic source directly establishes this facet." }
+          : { excerptRef: ref, relation: "IRRELEVANT", reason: "The candidate does not establish this specific facet." };
+      }),
+    })),
+  };
 }
 
 export function createHeadlessFixtureCompletion(): (body: Record<string, unknown>, agent: string) => Promise<Completion> {
@@ -203,16 +214,10 @@ export function createHeadlessFixtureCompletion(): (body: Record<string, unknown
       const functionDefinition = (tool as { function?: { name?: unknown } }).function;
       return functionDefinition?.name === "StructuredOutput";
     });
-    if (agent === "resume-claim-compiler") {
-      const value = fixtureClaimBatch(body);
-      return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: marked(value) };
-    }
-    if (agent === "evidence-linker") {
-      const value = fixtureEvidenceLink(body);
-      return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: marked(value) };
-    }
     if (agent === "evidence-compiler") {
       const serialized = JSON.stringify(body);
+      if (serialized.includes("MODE: CLAIM_BATCH")) return { content: marked(fixtureClaimBatch(body)) };
+      if (serialized.includes("MODE: EVIDENCE_JUDGE")) return { content: marked(fixtureEvidenceJudgment(body)) };
       if (serialized.includes("MODE: COVERAGE_ONLY")) {
         const value = fixtureCoverage(body);
         return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: marked(value) };

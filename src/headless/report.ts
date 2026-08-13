@@ -1,4 +1,5 @@
 import PDFDocument from "pdfkit";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import type { InvestigationResult } from "./result-contract.ts";
 
@@ -125,4 +126,18 @@ export async function renderInvestigationReport(result: InvestigationResult): Pr
   }
   document.end();
   return completed;
+}
+
+export async function verifyInvestigationReport(bytes: Uint8Array): Promise<void> {
+  if (Buffer.from(bytes).subarray(0, 5).toString() !== "%PDF-") throw new Error("Report is not a valid PDF: missing PDF signature");
+  const loading = getDocument({ data: new Uint8Array(bytes), disableFontFace: true, useSystemFonts: false });
+  try {
+    const pdf = await loading.promise;
+    if (pdf.numPages < 1) throw new Error("report has no pages");
+    await Promise.all(Array.from({ length: pdf.numPages }, async (_, index) => (await pdf.getPage(index + 1)).getTextContent()));
+  } catch (error) {
+    throw new Error(`Report is not a valid PDF: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    await loading.destroy();
+  }
 }

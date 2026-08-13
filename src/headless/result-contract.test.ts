@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { finalizeWithSingleRepair } from "./finalize.ts";
-import { canonicalizeInvestigationResult, investigationDraftSchema, type InvestigationDraft } from "./result-contract.ts";
+import { assertPublishableResult, canonicalizeInvestigationResult, investigationDraftSchema, type InvestigationDraft } from "./result-contract.ts";
 import { FileSourceStore } from "./source-store.ts";
 
 const run = {
@@ -135,6 +135,30 @@ test("canonicalizes semantic keys and derives facet outcomes, trust, timeline st
       providerCalls: 2,
       cacheHits: 1,
     });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("public publication rejects fixture provider metadata and reserved test URLs", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-result-publication-"));
+  try {
+    const { store, sourceRef } = await directWorkStore(directory);
+    const result = await canonicalizeInvestigationResult(draft(sourceRef), {
+      run: { ...run, classification: "PUBLIC_PROFESSIONAL" },
+      sourceStore: store,
+      compilerAttempts: 1,
+      auditorAttempts: 1,
+    });
+    assert.doesNotThrow(() => assertPublishableResult(result));
+
+    const fixtureProvider = structuredClone(result);
+    fixtureProvider.sources[0]!.provider = "fixture";
+    assert.throws(() => assertPublishableResult(fixtureProvider), /fixture provider metadata/i);
+
+    const reservedUrl = structuredClone(result);
+    reservedUrl.sources[0]!.url = "https://candidate.test/profile";
+    assert.throws(() => assertPublishableResult(reservedUrl), /reserved \.test URL/i);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

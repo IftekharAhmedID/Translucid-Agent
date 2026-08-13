@@ -166,6 +166,18 @@ export type InvestigationResult = {
   };
 };
 
+export function assertPublishableResult(result: InvestigationResult): void {
+  if (result.run.classification !== "PUBLIC_PROFESSIONAL") return;
+  for (const source of result.sources) {
+    const providerMetadata = `${source.provider}\n${source.providerRoute}\n${source.kind}`.toLowerCase();
+    if (/\b(?:fixture|synthetic)\b/u.test(providerMetadata)) throw new Error(`Public result contains fixture provider metadata on ${source.ref}.`);
+    if (!source.url) continue;
+    if (!URL.canParse(source.url)) throw new Error(`Public result contains a malformed source URL on ${source.ref}.`);
+    const hostname = new URL(source.url).hostname.toLowerCase();
+    if (hostname === "test" || hostname.endsWith(".test")) throw new Error(`Public result contains a reserved .test URL on ${source.ref}.`);
+  }
+}
+
 type ResultContext = {
   run: Omit<InvestigationResult["run"], "status">;
   sourceStore: FileSourceStore;
@@ -175,8 +187,6 @@ type ResultContext = {
   rejectedCitations?: number;
   providerCalls?: number;
   cacheHits?: number;
-  /** V4 routes semantic facet checks to the independent auditor; legacy callers remain strict. */
-  strictSemanticFacetChecks?: boolean;
 };
 
 function unique(values: string[], label: string): void {
@@ -244,10 +254,8 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
   for (const claim of draft.claims) {
     unique(claim.facets.map((facet) => facet.key), `facet key on claim ${claim.key}`);
     assertSelfContainedFacetLabels(claim.key, claim.facets);
-    if (context.strictSemanticFacetChecks !== false) {
-      const coverage = auditClaimFacetCoverage(claim.statement, claim.facets);
-      if (!coverage.complete) throw new Error(`Material claim clause has no declared facet on ${claim.key}: ${coverage.uncovered.map(({ clause }) => clause).join(" | ")}`);
-    }
+    const coverage = auditClaimFacetCoverage(claim.statement, claim.facets);
+    if (!coverage.complete) throw new Error(`Material claim clause has no declared facet on ${claim.key}: ${coverage.uncovered.map(({ clause }) => clause).join(" | ")}`);
   }
 
   const sortedClaims = [...draft.claims].sort(compareClaims);
@@ -271,7 +279,7 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
     for (const keyValue of item.facetKeys) {
       const entry = declared.get(keyValue);
       if (!entry) throw new Error(`Evidence ${item.key} references unknown facet ${keyValue} on claim ${claim.key}.`);
-      if (context.strictSemanticFacetChecks !== false && !facetEvidenceCompatible(item.exactQuote, entry.facet.label)) throw new Error(`Evidence ${item.key} quote is incompatible with facet ${keyValue}.`);
+      if (!facetEvidenceCompatible(item.exactQuote, entry.facet.label)) throw new Error(`Evidence ${item.key} quote is incompatible with facet ${keyValue}.`);
     }
     const source = sourceByRef.get(item.sourceRef);
     if (!source) throw new Error(`Evidence ${item.key} references unknown source ${item.sourceRef}.`);

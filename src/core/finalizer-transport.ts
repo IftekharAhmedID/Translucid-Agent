@@ -6,8 +6,6 @@ const finalizerAgents = new Set([
   "evidence-critic",
   "fresh-adjudicator",
   "evidence-compiler",
-  "evidence-linker",
-  "resume-claim-compiler",
   "evidence-auditor",
 ]);
 

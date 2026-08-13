@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { open, readFile, readdir, rename, stat } from "node:fs/promises";
+import { open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { E2BRuntime } from "../runtime/e2b.ts";
@@ -21,7 +21,8 @@ import { runFinalizationPipeline } from "./finalization-controller.ts";
 import { publishFinalizationProvenance } from "./incremental-pipeline.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 import { createHeadlessGateway } from "./gateway.ts";
-import { renderInvestigationReport } from "./report.ts";
+import { renderInvestigationReport, verifyInvestigationReport } from "./report.ts";
+import { assertPublishableResult } from "./result-contract.ts";
 import { openRunWorkspace, removeRunDiagnostics, sealRunFailure, type ExistingRunWorkspace } from "./run-workspace.ts";
 
 const RUN_TIMEOUT_MS = 60 * 60_000;
@@ -85,6 +86,8 @@ async function runtimeFor(workspace: ExistingRunWorkspace): Promise<Investigator
 async function main(): Promise<void> {
   const options = parseFinalizeArguments(process.argv.slice(2));
   const resultPath = join(options.runDirectory, "result.json");
+  const reportPath = join(options.runDirectory, "report.pdf");
+  const reportTemporaryPath = `${reportPath}.tmp`;
   if (await exists(resultPath)) throw new Error("A successful result.json already exists; finalization will not overwrite it.");
 
   const workspace = await openRunWorkspace(options.runDirectory);
@@ -115,13 +118,11 @@ async function main(): Promise<void> {
   const gateway = createHeadlessGateway({
     runId: workspace.runId,
     deadlineAt: deadlineAt.getTime(),
-    allowedTools: new Set(["source.excerpts"]),
+    allowedTools: new Set(),
     allowedModels: new Set([compilerModel, auditorModel, ...PAID_GO_MODEL_IDS, ...FINALIZER_MODEL_CATALOG.map(({ id }) => id)]),
     agentTools: new Map([
-      ["evidence-compiler", new Set(["source.excerpts"])],
-      ["evidence-linker", new Set(["source.excerpts"])],
-      ["resume-claim-compiler", new Set()],
-      ["evidence-auditor", new Set(["source.excerpts"])],
+      ["evidence-compiler", new Set()],
+      ["evidence-auditor", new Set()],
     ]),
     sourceStore: workspace.sourceStore,
     budget,
@@ -187,13 +188,17 @@ async function main(): Promise<void> {
     });
     const integrity = await workspace.sourceStore.verify();
     if (!integrity.valid) throw new Error(`Source integrity failed for ${integrity.invalidSourceRefs.join(", ")}.`);
-    await atomicWrite(join(workspace.root, "report.pdf"), await renderInvestigationReport(result));
+    assertPublishableResult(result);
+    await rm(reportTemporaryPath, { force: true });
+    await atomicWrite(reportTemporaryPath, await renderInvestigationReport(result));
+    await verifyInvestigationReport(await readFile(reportTemporaryPath));
     await runtime.stop(handle);
     handle = undefined;
     await publishFinalizationProvenance(workspace.root);
     if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
+    await rename(reportTemporaryPath, reportPath);
     await atomicWrite(resultPath, `${JSON.stringify(result, null, 2)}\n`);
-    process.stdout.write(`${JSON.stringify({ runId: workspace.runId, result: resultPath, report: join(workspace.root, "report.pdf"), reusedDossier: Boolean(reusableDossier || reusablePacketDossier) }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ runId: workspace.runId, result: resultPath, report: reportPath, reusedDossier: Boolean(reusableDossier || reusablePacketDossier) }, null, 2)}\n`);
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error("Unknown finalization failure.");
     if (archivedFailure || !await exists(join(workspace.root, "failure.json"))) {
@@ -214,6 +219,7 @@ async function main(): Promise<void> {
     if (runtime && handle) await runtime.stop(handle).catch(() => undefined);
     gateway.cancel();
     await closeServer(gateway.server);
+    await rm(reportTemporaryPath, { force: true }).catch(() => undefined);
   }
 }
 

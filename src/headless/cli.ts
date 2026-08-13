@@ -54,10 +54,8 @@ function agentToolAllowlist(): Map<string, Set<string>> {
     ["github-researcher", new Set(["github.graphql", "github.rest", "github.clone", "web.fetch", "source.excerpts"])],
     ["web-records-researcher", new Set(["web.search", "web.fetch", "archives.search", "public_records.search", "scholarly.search", "packages.inspect", "security_records.search", "source.excerpts"])],
     ["social-researcher", new Set(["social.profile", "source.excerpts"])],
-    ["evidence-compiler", new Set(["source.excerpts"])],
-    ["evidence-linker", new Set(["source.excerpts"])],
-    ["resume-claim-compiler", new Set()],
-    ["evidence-auditor", new Set(["source.excerpts"])],
+    ["evidence-compiler", new Set()],
+    ["evidence-auditor", new Set()],
   ]);
 }
 
@@ -145,7 +143,7 @@ async function main(): Promise<void> {
       modelRequestTimeouts: loadModelRequestTimeouts(process.env),
       fixtureCompletion: (body, agent) => fixture(body, agent),
       onModelRequest: ({ agent, estimatedInputTokens }) => {
-        if (agent === "evidence-compiler" || agent === "evidence-auditor" || agent === "resume-claim-compiler" || agent === "evidence-linker") process.stderr.write(`Run ${runId}: ${agent} request estimated input tokens ${estimatedInputTokens}.\n`);
+        if (agent === "evidence-compiler" || agent === "evidence-auditor") process.stderr.write(`Run ${runId}: ${agent} request estimated input tokens ${estimatedInputTokens}.\n`);
       },
     });
     const gatewayPort = await listen(gateway.server, options.runtime === "E2B" ? integerEnvironment("HEADLESS_GATEWAY_PORT", 3001) : 0);

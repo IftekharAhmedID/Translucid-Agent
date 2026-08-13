@@ -11,6 +11,14 @@ const actionFamilies = [
   ["study", "studied", "degree", "graduated", "education"],
   ["speak", "spoke", "presented", "conference", "event"],
 ];
+const adjacentWork = /\b(?:commit|pull request|patch|jit|optimization)\b/i;
+const statusProofs: Array<[RegExp, RegExp]> = [
+  [/\b(?:core developer|core team)\b/i, /\b(?:core developer|core team|core member)\b/i],
+  [/\b(?:employed|employment|works? at|worked at|tenure)\b/i, /\b(?:employed|employment|works? at|worked at|joined|tenure)\b/i],
+  [/\b(?:title|held the title)\b/i, /\b(?:title|engineer|developer|manager|director)\b/i],
+  [/(?:organiz\w+.*europython|europython.*organiz\w+)/i, /(?:organiz\w+.*europython|europython.*organiz\w+)/i],
+  [/(?:python guild.*(?:lead|led|member)|(?:lead|led|member).*python guild)/i, /(?:python guild.*(?:lead|led|member)|(?:lead|led|member).*python guild)/i],
+];
 
 type Token = { value: string; source: string; index: number };
 
@@ -42,6 +50,7 @@ function hasNumericOrAcronymAnchor(claimTokens: Token[], quoteTokens: Token[]): 
 }
 
 export function facetEvidenceCompatible(exactQuote: string, facetLabel: string): boolean {
+  if (adjacentWork.test(exactQuote) && statusProofs.some(([claim, proof]) => claim.test(facetLabel) && !proof.test(exactQuote))) return false;
   const compatibility = evaluateEvidenceCompatibility(exactQuote, facetLabel);
   if (compatibility.compatible) return true;
   return compatibility.sharedAnchors.length === 1 && compatibility.sharedAnchors[0]!.length >= 4;

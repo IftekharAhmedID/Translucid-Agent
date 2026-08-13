@@ -9,7 +9,7 @@ import { dossierFingerprint, parseEvidenceDossier, type DossierInventory } from 
 import { dossierFingerprint as packetDossierFingerprint, packetDossierToDraft, type PacketDossier } from "./packet-dossier.ts";
 
 export const RESEARCH_CONTRACT_VERSION = "headless-research-v2";
-export const FINALIZER_IMPLEMENTATION_VERSION = "incremental-finalizer-v4";
+export const FINALIZER_IMPLEMENTATION_VERSION = "incremental-finalizer-v5";
 export const RESULT_SCHEMA_VERSION = "1.1";
 export const HANDOFF_MANIFEST_PATH = ".work/finalization/handoff-manifest.json";
 export const DOSSIER_PATH = ".work/finalization/evidence-dossier.md";
@@ -88,8 +88,6 @@ const runtimeManifestSchema = z.object({
 const researchOnlyRuntimeFiles = new Set([
   "runtime/headless-opencode/agents/evidence-compiler.md",
   "runtime/headless-opencode/agents/evidence-auditor.md",
-  "runtime/headless-opencode/agents/resume-claim-compiler.md",
-  "runtime/headless-opencode/agents/evidence-linker.md",
 ]);
 
 export type ResearchCheckpointConfig = z.infer<typeof researchConfigSchema>;

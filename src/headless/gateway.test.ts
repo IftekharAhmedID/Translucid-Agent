@@ -147,7 +147,7 @@ test("routes MiniMax finalizer traffic through Anthropic Messages only", async (
       deadlineAt: Date.now() + 60_000,
       allowedTools: new Set(),
       allowedModels: new Set(["minimax-m3"]),
-      agentTools: new Map([["evidence-linker", new Set(["source.excerpts"])]]),
+      agentTools: new Map([["evidence-compiler", new Set()]]),
       sourceStore,
       budget,
       providerMode: "fixture",
@@ -163,7 +163,7 @@ test("routes MiniMax finalizer traffic through Anthropic Messages only", async (
       authorization: `Bearer ${gateway.token}`,
       "content-type": "application/json",
       "x-run-id": "run-anthropic",
-      "x-opencode-agent": "evidence-linker",
+      "x-opencode-agent": "evidence-compiler",
     };
     const messages = await fetch(`${origin}/internal/llm/v1/messages`, {
       method: "POST",

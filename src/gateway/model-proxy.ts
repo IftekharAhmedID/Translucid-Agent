@@ -23,13 +23,11 @@ export type ModelRequestStage = "RESEARCH" | "COVERAGE" | "PACKET" | "SUMMARY" |
 
 export function modelRequestStage(agent: string, body: Record<string, unknown>): ModelRequestStage {
   if (agent === "evidence-auditor" || agent === "evidence-critic" || agent === "fresh-adjudicator") return "AUDIT";
-  if (agent === "resume-claim-compiler") return "COVERAGE";
-  if (agent === "evidence-linker") return "PACKET";
   if (agent !== "evidence-compiler") return "RESEARCH";
   const serialized = JSON.stringify(body.messages ?? body);
-  if (serialized.includes("MODE: COVERAGE_ONLY")) return "COVERAGE";
-  if (serialized.includes("MODE: EVIDENCE_PACKET")) return "PACKET";
-  if (serialized.includes("MODE: SUMMARY_TIMELINE")) return "SUMMARY";
+  if (serialized.includes("MODE: COVERAGE_ONLY") || serialized.includes("MODE: CLAIM_BATCH") || serialized.includes("MODE: CLAIM_REPAIR")) return "COVERAGE";
+  if (serialized.includes("MODE: EVIDENCE_PACKET") || serialized.includes("MODE: EVIDENCE_JUDGE")) return "PACKET";
+  if (serialized.includes("MODE: SUMMARY_TIMELINE") || serialized.includes("MODE: SUMMARY")) return "SUMMARY";
   return "SUMMARY";
 }
 

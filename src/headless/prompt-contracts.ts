@@ -18,15 +18,15 @@ export const AUDITOR_PROMPT_CONTRACT = "Independently audit this deterministical
 
 export const CLAIM_BATCH_PROMPT_CONTRACT = `MODE: CLAIM_BATCH
 
-Process only the supplied unresolved résumé line window. Return at most five claims. Every supplied line must appear exactly once in a claim facet, an exclusion, or deferredLineIds. The earliest unresolved line must not be deferred. Use the exact supplied line IDs; never return page numbers, line numbers, copied source text, canonical IDs, verdicts, strengths, or evidence. A facet is one self-contained atomic assertion and must map to one or more supplied line IDs. Preserve uncertain facts as claims rather than silently excluding them.`;
+Process only the supplied unresolved résumé line window; preceding context lines are read-only. Return at most five claims. Every supplied line must appear exactly once in a claim facet, an exclusion, or deferredLineIds. The earliest unresolved line must not be deferred. Use the exact supplied line IDs; never return page numbers, copied source text, canonical IDs, verdicts, strengths, or evidence. A facet is one self-contained atomic assertion and must map to one or more supplied line IDs. Keep neighboring facts separate unless they form one coherent verification unit. Preserve uncertain and low-materiality facts as claims rather than silently excluding them.`;
 
-export const EVIDENCE_LINK_BATCH_PROMPT_CONTRACT = `MODE: EVIDENCE_LINK_BATCH
+export const EVIDENCE_JUDGE_PROMPT_CONTRACT = `MODE: EVIDENCE_JUDGE
 
-Process exactly the assigned frozen claims. Return one entry for every assigned claim and one facet note for every declared facet. Use source.excerpts for exact immutable wording when needed. Evidence edges may reference only excerpt refs returned by that tool. Return excerpt refs, not source paths, source refs, quotes, authority, IDs, verdicts, or strengths. Zero edges is valid when a facet remains unresolved.`;
+Judge exactly one frozen claim. For every facet, return exactly one judgment for every assigned candidate excerpt. The only relations are SUPPORTS, CONTRADICTS, and IRRELEVANT. A candidate about the same person, employer, project, or technology is IRRELEVANT unless its exact text establishes or contradicts that specific facet. Return only excerptRef, relation, and a concise reason; never return quotes, source refs, paths, URLs, authority, IDs, verdicts, or strengths. Do not call tools or research.`;
 
-export const V4_AUDITOR_PROMPT_CONTRACT = `MODE: INCREMENTAL_AUDIT
+export const V5_AUDITOR_PROMPT_CONTRACT = `MODE: INCREMENTAL_AUDIT
 
-Audit the supplied frozen line dispositions, claims, evidence, summary, and timeline. Report only material defects. A defect must identify one stage (CLAIM, EVIDENCE, SUMMARY, or AUDIT), exactly the affected durable claim IDs/evidence IDs, and whether it is safely repairable without changing line ownership. Never rewrite records or introduce new evidence.`;
+Audit only semantic failure classes in the supplied frozen V5 ledger: wrong person or claim, neighboring-facet leakage, authority overstatement, missed input assertion, timeline mistake, missed contradiction, false progression contradiction, or summary text unsupported by accepted IDs. Do not audit JSON syntax, hashes, paths, or quote exactness because the host already proved them. Report a repairable EVIDENCE or SUMMARY defect only when it can be corrected without changing frozen claim line ownership. A split, merge, omission, or systemic defect is non-repairable CLAIM or AUDIT scope. Do not research or call tools.`;
 
 export function researchPrompt(deadline: string): string {
   return `${RESEARCH_PROMPT_CONTRACT} The research deadline is ${deadline}.`;

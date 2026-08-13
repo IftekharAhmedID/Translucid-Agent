@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
-import { renderInvestigationReport } from "./report.ts";
+import { renderInvestigationReport, verifyInvestigationReport } from "./report.ts";
 import type { InvestigationResult } from "./result-contract.ts";
 
 const result: InvestigationResult = {
@@ -88,6 +88,11 @@ test("renders deterministic PDF bytes from the canonical result only", async () 
   assert.match(pages.join("\n"), /Principal Engineer/);
   assert.match(pages.join("\n"), /SUPPORTED · STRONG · Title/);
   assert.match(pages.join("\n"), /github\.com\/example\/project/);
+  await assert.doesNotReject(() => verifyInvestigationReport(first));
+});
+
+test("rejects malformed report bytes before publication", async () => {
+  await assert.rejects(() => verifyInvestigationReport(Buffer.from("not a PDF")), /valid PDF/i);
 });
 
 test("renders unresolved null strength as a dash", async () => {

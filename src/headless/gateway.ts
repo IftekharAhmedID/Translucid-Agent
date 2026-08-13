@@ -12,7 +12,7 @@ import type { FileSourceStore } from "./source-store.ts";
 
 const MAX_TOOL_BODY = 1024 * 1024;
 const MAX_MODEL_BODY = 16 * 1024 * 1024;
-const finalizerAgents = new Set(["evidence-compiler", "evidence-linker", "resume-claim-compiler", "evidence-auditor"]);
+const finalizerAgents = new Set(["evidence-compiler", "evidence-auditor"]);
 
 class GatewayError extends Error {
   constructor(readonly status: number, message: string) { super(message); }

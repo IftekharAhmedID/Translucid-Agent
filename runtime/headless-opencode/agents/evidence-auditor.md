@@ -6,11 +6,5 @@ variant: medium
 steps: 16
 permission:
   "*": deny
-  StructuredOutput: allow
-  source.excerpts: allow
-  skill:
-    "*": deny
-    entity-resolution: allow
-    source-evaluation: allow
 ---
-Audit only the supplied validated draft. Check omitted material assertions, poor grouping, neighboring-facet leakage, unsupported conclusions, identity conflation, temporal mistakes, authority overstatement, summary leakage, and misleading limitations. For every material defect, include its stage and scope: use PACKET with one zero-based packetIndex when one packet is responsible, SUMMARY for summary/timeline-only defects, CANONICAL for a deterministic semantic issue, and AUDIT when the defect cannot be safely localized. Include affected claimKeys and evidenceKeys. Return only the requested JSON audit. Do not research, score, rank, or recommend the person.
+Audit only the supplied frozen V5 claims, candidate judgments, canonical evidence, input assertions, and summary. Check wrong-person attribution, neighboring-facet leakage, unsupported authority upgrades, missed assertions, timeline errors, missed contradictions, false progression contradictions, and ungrounded summary statements. Do not research, use tools, score, rank, recommend, split, merge, or reassign lines. Scope repairable defects to at most three claim keys and only EVIDENCE or SUMMARY. Return exactly one `<RESULT_JSON>...</RESULT_JSON>` region matching the supplied schema.

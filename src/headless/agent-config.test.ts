@@ -32,16 +32,16 @@ test("lead has native delegation but no provider tools, while specialists cannot
   }
 });
 
-test("compiler and auditor can read bounded source excerpts but have no network tools", async () => {
+test("compiler and auditor expose no tools or native structured output", async () => {
   for (const file of ["evidence-compiler.md", "evidence-auditor.md"]) {
     const source = await readFile(join(root, "agents", file), "utf8");
-    assert.match(source, /StructuredOutput: allow/);
-    assert.match(source, /source\.excerpts: allow/);
+    assert.doesNotMatch(source, /StructuredOutput: allow/);
+    assert.doesNotMatch(source, /source\.excerpts: allow/);
     assert.doesNotMatch(source, /\b(?:web\.|professional\.|github\.|social\.|archives\.|public_records\.|scholarly\.|packages\.|security_records\.)[a-z_]+:\s*allow/);
   }
   const cli = await readFile(join(process.cwd(), "src", "headless", "cli.ts"), "utf8");
-  assert.match(cli, /\["evidence-compiler", new Set\(\["source\.excerpts"\]\)\]/);
-  assert.match(cli, /\["evidence-auditor", new Set\(\["source\.excerpts"\]\)\]/);
+  assert.match(cli, /\["evidence-compiler", new Set\(\)\]/);
+  assert.match(cli, /\["evidence-auditor", new Set\(\)\]/);
 });
 
 test("headless OpenCode loads only the headless plugin and keeps shell and edits disabled", async () => {
@@ -77,8 +77,8 @@ test("exactly five headless skills are copied and discoverable only by permitted
     ["github-researcher.md", ["entity-resolution", "source-evaluation", "technical-contribution"]],
     ["web-records-researcher.md", ["entity-resolution", "public-record-verification", "source-evaluation"]],
     ["social-researcher.md", ["entity-resolution", "source-evaluation"]],
-    ["evidence-compiler.md", ["entity-resolution", "source-evaluation"]],
-    ["evidence-auditor.md", ["entity-resolution", "source-evaluation"]],
+    ["evidence-compiler.md", []],
+    ["evidence-auditor.md", []],
     ["document-vision.md", []],
   ]);
   for (const [file, allowed] of expected) {

@@ -98,14 +98,9 @@ test("returns exact JSON paths and bounded text windows", async () => {
       text: "Principal Engineer",
     });
     assert.match(jsonExcerpts.excerpts[0]!.ref, /^X[a-f0-9]{64}$/);
-    const resolved = await store.resolveExcerpt(jsonExcerpts.excerpts[0]!.ref);
-    assert.equal(resolved.text, "Principal Engineer");
-    const reopened = await FileSourceStore.open(directory);
-    assert.deepEqual(await reopened.resolveExcerpt(jsonExcerpts.excerpts[0]!.ref), resolved);
-    assert.match(await readFile(join(directory, ".work", "finalization", "v4", "excerpts.json"), "utf8"), /schemaVersion/);
+    assert.match(await readFile(join(directory, ".work", "finalization", "v5", "excerpts.json"), "utf8"), /schemaVersion/);
     assert.match(textExcerpts.excerpts[0]!.text, /toolchain/);
     assert.ok(textExcerpts.excerpts[0]!.text.length <= 50);
-    assert.equal((await store.readBounded(json.ref, 120)).text, '{\n  "experience": [\n    {\n      "company": "Acme",\n      "title": "Principal Engineer"\n    }\n  ]\n}');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -149,7 +144,7 @@ test("does not persist empty JSON leaves as excerpt records", async () => {
     });
     const result = await store.excerpts({ sourceRef: source.ref, queries: ["empty", "Cambridge"] });
     assert.equal(result.excerpts.some(({ text }) => text.length === 0), false);
-    const ledger = JSON.parse(await readFile(join(directory, ".work", "finalization", "v4", "excerpts.json"), "utf8")) as { excerpts: Array<{ text: string }> };
+    const ledger = JSON.parse(await readFile(join(directory, ".work", "finalization", "v5", "excerpts.json"), "utf8")) as { excerpts: Array<{ text: string }> };
     assert.equal(ledger.excerpts.some(({ text }) => text.length === 0), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -187,8 +182,16 @@ test("finds deterministic bounded candidates from memo citations without network
       eligibleSourceRefs: new Set([official.ref, context.ref]),
     });
     assert.equal(candidates.candidatesByFacet.status?.[0]?.sourceRef, official.ref);
+    assert.match(candidates.candidatesByFacet.status?.[0]?.text ?? "", /CPython core development team/);
     assert.ok((candidates.candidatesByFacet.status ?? []).length <= 8);
+    assert.ok(Object.values(candidates.candidatesByFacet).flat().length <= 16);
     assert.ok(candidates.totalCharacters <= 16_000);
+    assert.deepEqual(await store.findStoredExcerpts({
+      statement: "Diego Russo is a CPython core developer.",
+      facets: [{ key: "status", statement: "Diego Russo is a CPython core developer." }],
+      researchMemos: `Diego Russo CPython core developer official promotion record [${official.ref}]`,
+      eligibleSourceRefs: new Set([official.ref, context.ref]),
+    }), candidates);
     assert.match(await readFile(join(directory, ".work", "finalization", "v5", "excerpts.json"), "utf8"), /schemaVersion/);
   } finally {
     await rm(directory, { recursive: true, force: true });
