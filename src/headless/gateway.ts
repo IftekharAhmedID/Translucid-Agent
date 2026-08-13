@@ -70,7 +70,10 @@ export function createHeadlessGateway(input: GatewayInput) {
 
   const authorize = (request: IncomingMessage, kind: "tool" | "model", name: string): void => {
     const header = request.headers.authorization;
-    const provided = header?.startsWith("Bearer ") ? header.slice(7) : "";
+    const bearer = header?.startsWith("Bearer ") ? header.slice(7) : "";
+    const anthropic = typeof request.headers["x-api-key"] === "string" ? request.headers["x-api-key"] : "";
+    if (bearer && anthropic && bearer !== anthropic) throw new GatewayError(401, "Conflicting run credentials.");
+    const provided = bearer || anthropic;
     const providedDigest = digest(provided);
     if (!active || Date.now() >= input.deadlineAt || provided.length > 256 || !timingSafeEqual(providedDigest, tokenDigest)) throw new GatewayError(401, "Unauthorized or expired run token.");
     if (request.headers["x-run-id"] !== input.runId) throw new GatewayError(401, "Run scope mismatch.");

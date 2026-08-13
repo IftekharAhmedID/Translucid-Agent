@@ -160,7 +160,7 @@ test("routes MiniMax finalizer traffic through Anthropic Messages only", async (
     if (!address || typeof address === "string") throw new Error("Gateway did not bind a TCP port.");
     const origin = `http://127.0.0.1:${address.port}`;
     const headers = {
-      authorization: `Bearer ${gateway.token}`,
+      "x-api-key": gateway.token,
       "content-type": "application/json",
       "x-run-id": "run-anthropic",
       "x-opencode-agent": "evidence-compiler",

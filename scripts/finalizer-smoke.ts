@@ -7,7 +7,7 @@ import { z } from "zod";
 
 import { extractMarkedJson } from "../src/agent/structured-output.ts";
 import { FINALIZER_MODEL_CATALOG, finalizerModelDefinition } from "../src/core/model-catalog.ts";
-import { finalizerPromptPayload, type AssistantMessage } from "../src/headless/finalization-controller.ts";
+import { describeSdkError, finalizerPromptPayload, type AssistantMessage } from "../src/headless/finalization-controller.ts";
 import { claimBatchSchema, evidenceJudgmentSchema, v5AuditSchema, validateClaimBatchRecords, validateEvidenceJudgment } from "../src/headless/incremental-finalization.ts";
 import { buildLineCatalog } from "../src/headless/line-catalog.ts";
 import { summaryTimelineOutputSchema } from "../src/headless/packet-dossier.ts";
@@ -176,12 +176,14 @@ async function qualify(model: string, attach: { openCodeUrl: string; password: s
         if (!session.data || session.error) throw new Error(`session creation: ${JSON.stringify(session.error ?? "missing data")}`);
         const message = await client.session.prompt({ sessionID: session.data.id, directory, agent: item.agent, model: { providerID: definition.providerId, modelID: model }, variant: "medium", tools: { "source.excerpts": false, skill: false }, ...prompt });
         if (!message.data || message.error) throw new Error(`prompt: ${JSON.stringify(message.error ?? "missing data")}`);
-        originalResponse = assistantText(message.data as unknown as AssistantMessage);
+        const assistant = message.data as unknown as AssistantMessage;
+        if (assistant.info.error) throw new Error(`prompt: ${describeSdkError(assistant.info.error)}`);
+        originalResponse = assistantText(assistant);
         const inputTokens = Math.ceil(JSON.stringify(requestPayload).length / 4);
         const outputTokens = Math.ceil(originalResponse.length / 4);
         metrics.estimatedCostUsd += (inputTokens * definition.inputUsdPerMillion + outputTokens * definition.outputUsdPerMillion) / 1_000_000;
         let parsed: unknown;
-        try { parsed = item.schema.parse(extractMarkedJson(message.data as unknown as AssistantMessage)); }
+        try { parsed = item.schema.parse(extractMarkedJson(assistant)); }
         catch (error) { lastFailure = "FORMAT"; throw error; }
         try { item.semantic(parsed); }
         catch (error) { lastFailure = "SEMANTIC"; throw error; }
