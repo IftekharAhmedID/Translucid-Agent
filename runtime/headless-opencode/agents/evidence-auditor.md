@@ -1,7 +1,7 @@
 ---
 description: Independently audits one deterministically validated evidence draft.
 mode: primary
-model: translucid/deepseek-v4-pro
+model: translucid-anthropic/minimax-m3
 variant: medium
 steps: 16
 permission:

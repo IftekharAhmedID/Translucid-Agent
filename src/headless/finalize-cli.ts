@@ -96,8 +96,8 @@ async function main(): Promise<void> {
   if (existingManifest.research.config.runtime !== workspace.runtime) throw new Error("Research checkpoint runtime differs from the immutable input manifest.");
   const expectedManifestHash = await getPinnedLocalManifestHash();
   const researchManifestHash = await getPinnedResearchManifestHash();
-  const compilerModel = process.env.FINALIZER_MODEL ?? "mimo-v2.5-pro";
-  const auditorModel = process.env.FINALIZER_AUDITOR_MODEL ?? compilerModel;
+  const compilerModel = process.env.FINALIZER_MODEL ?? "deepseek-v4-pro";
+  const auditorModel = process.env.FINALIZER_AUDITOR_MODEL ?? "minimax-m3";
   const checkpointConfigs = await currentCheckpointConfigs({
     repositoryRoot: process.cwd(),
     runtime: workspace.runtime,

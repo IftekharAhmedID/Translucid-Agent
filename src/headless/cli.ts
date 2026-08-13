@@ -111,8 +111,8 @@ async function main(): Promise<void> {
     const expectedManifestHash = await getPinnedLocalManifestHash();
     const researchManifestHash = await getPinnedResearchManifestHash();
     const researchModel = process.env.RESEARCH_MODEL ?? "deepseek-v4-flash";
-    const compilerModel = process.env.FINALIZER_MODEL ?? "mimo-v2.5-pro";
-    const auditorModel = process.env.FINALIZER_AUDITOR_MODEL ?? compilerModel;
+    const compilerModel = process.env.FINALIZER_MODEL ?? "deepseek-v4-pro";
+    const auditorModel = process.env.FINALIZER_AUDITOR_MODEL ?? "minimax-m3";
     const checkpointConfigs = await currentCheckpointConfigs({
       repositoryRoot: process.cwd(),
       runtime: options.runtime,

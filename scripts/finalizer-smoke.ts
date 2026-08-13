@@ -27,7 +27,7 @@ const argumentsList = process.argv.slice(2);
 const runId = argumentsList.find((value) => /^[0-9a-f-]{36}$/iu.test(value));
 if (!runId) throw new Error("Usage: npm run smoke:finalizer -- <active-local-run-id> [--models all|model,model]");
 const modelsIndex = argumentsList.indexOf("--models");
-const requested = modelsIndex >= 0 ? argumentsList[modelsIndex + 1] : process.env.FINALIZER_MODEL ?? "mimo-v2.5-pro";
+const requested = modelsIndex >= 0 ? argumentsList[modelsIndex + 1] : process.env.FINALIZER_MODEL ?? "deepseek-v4-pro";
 if (!requested) throw new Error("--models requires a value.");
 const models = requested === "all" ? FINALIZER_MODEL_CATALOG.map(({ id }) => id) : requested.split(",").map((value) => value.trim()).filter(Boolean);
 for (const model of models) finalizerModelDefinition(model);
