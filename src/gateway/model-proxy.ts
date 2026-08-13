@@ -19,6 +19,12 @@ export function estimateModelInputTokens(body: Record<string, unknown>): number 
   return Math.ceil(JSON.stringify(body.messages ?? []).length / 4);
 }
 
+export function modelUpstreamHeaders(protocol: "OPENAI_CHAT" | "ANTHROPIC_MESSAGES", key: string, anthropicVersion?: string): Record<string, string> {
+  return protocol === "ANTHROPIC_MESSAGES"
+    ? { "x-api-key": key, "anthropic-version": anthropicVersion ?? "2023-06-01", "content-type": "application/json" }
+    : { authorization: `Bearer ${key}`, "content-type": "application/json" };
+}
+
 export type ModelRequestStage = "RESEARCH" | "COVERAGE" | "PACKET" | "SUMMARY" | "AUDIT";
 
 export function modelRequestStage(agent: string, body: Record<string, unknown>): ModelRequestStage {
@@ -94,7 +100,7 @@ export async function proxyModelCompletion(input: {
       : finalizer ? input.finalizerUpstreamUrl : input.researchUpstreamUrl;
     upstream = await fetch(upstreamUrl, {
       method: "POST",
-      headers: { authorization: `Bearer ${input.upstreamKey}`, "content-type": "application/json" },
+      headers: modelUpstreamHeaders(protocol, input.upstreamKey, typeof input.request.headers["anthropic-version"] === "string" ? input.request.headers["anthropic-version"] : undefined),
       body: JSON.stringify(body),
       signal: upstreamAbort.signal,
     });
