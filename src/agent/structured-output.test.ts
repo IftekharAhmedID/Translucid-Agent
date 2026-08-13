@@ -1,7 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extractStructuredOutput, structuredOutputRecovery } from "./structured-output.ts";
+import { extractMarkedJson, extractStructuredOutput, structuredOutputRecovery } from "./structured-output.ts";
+
+test("extracts exactly one marked JSON result while ignoring surrounding prose", () => {
+  assert.deepEqual(
+    extractMarkedJson({
+      info: { role: "assistant" },
+      parts: [{ type: "text", text: "Done.\n<RESULT_JSON>\n{\"ok\":true}\n</RESULT_JSON>\nEnd." }],
+    }),
+    { ok: true },
+  );
+});
+
+test("rejects missing, repeated, nested, and malformed marked JSON", () => {
+  const message = (text: string) => ({ info: { role: "assistant" }, parts: [{ type: "text", text }] });
+  assert.throws(() => extractMarkedJson(message("{\"ok\":true}")), /exactly one RESULT_JSON region/);
+  assert.throws(() => extractMarkedJson(message("<RESULT_JSON>{}</RESULT_JSON><RESULT_JSON>{}</RESULT_JSON>")), /exactly one RESULT_JSON region/);
+  assert.throws(() => extractMarkedJson(message("<RESULT_JSON>{\"value\":\"<RESULT_JSON>\"}</RESULT_JSON>")), /nested RESULT_JSON marker/);
+  assert.throws(() => extractMarkedJson(message("<RESULT_JSON>{broken}</RESULT_JSON>")), /valid JSON/);
+});
 
 test("uses native OpenCode structured output when present", () => {
   assert.deepEqual(

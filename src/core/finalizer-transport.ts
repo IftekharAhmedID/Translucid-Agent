@@ -28,7 +28,7 @@ export function prepareFinalizerUpstreamBody(
   input: { agent?: string; provider: "ZEN" | "GO"; model: string },
 ): Record<string, unknown> {
   if (!input.agent || !finalizerAgents.has(input.agent)) return body;
-  if (input.agent === "evidence-compiler" && JSON.stringify(body.messages ?? "").includes(FINALIZER_TEXT_MODE_MARKER)) return body;
+  if (JSON.stringify(body.messages ?? "").includes(FINALIZER_TEXT_MODE_MARKER)) return body;
   if (finalizerOutputTransport(input.provider, input.model) !== "JSON_OBJECT") return body;
   // MiMo's Go endpoint accepts the JSON-only instruction but rejects the
   // optional OpenAI response_format object. Host-side parsing remains strict.

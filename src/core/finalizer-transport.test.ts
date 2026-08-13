@@ -48,6 +48,10 @@ test("plain-text dossier requests bypass JSON-object compatibility formatting", 
     prepareFinalizerUpstreamBody(body, { agent: "evidence-compiler", provider: "GO", model: "deepseek-v4-pro" }),
     body,
   );
+  assert.deepEqual(
+    prepareFinalizerUpstreamBody(body, { agent: "evidence-auditor", provider: "GO", model: "deepseek-v4-pro" }),
+    body,
+  );
 });
 
 test("GO finalizers preserve a larger requested output allowance", () => {

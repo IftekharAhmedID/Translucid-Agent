@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { extractMarkedJson } from "../agent/structured-output.ts";
 import { investigationDraftSchema } from "./result-contract.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 
@@ -30,9 +31,9 @@ test("fixture model exercises delegation, provider capture, compilation, and aud
   assert.deepEqual(audit, { toolCall: { name: "StructuredOutput", arguments: { status: "PASSED", defects: [] } } });
 
   const jsonCompiler = await complete({}, "evidence-compiler");
-  investigationDraftSchema.parse(JSON.parse(jsonCompiler.content ?? ""));
+  investigationDraftSchema.parse(extractMarkedJson({ info: { role: "assistant" }, parts: [{ type: "text", text: jsonCompiler.content ?? "" }] }));
   const jsonAudit = await complete({}, "evidence-auditor");
-  assert.deepEqual(JSON.parse(jsonAudit.content ?? ""), { status: "PASSED", defects: [] });
+  assert.deepEqual(extractMarkedJson({ info: { role: "assistant" }, parts: [{ type: "text", text: jsonAudit.content ?? "" }] }), { status: "PASSED", defects: [] });
 });
 
 test("fixture payload parsing ignores the GO transport schema suffix", async () => {
@@ -42,7 +43,7 @@ test("fixture payload parsing ignores the GO transport schema suffix", async () 
       role: "user",
       content: [{
         type: "text",
-        text: `MODE: COVERAGE_ONLY\n\n${JSON.stringify({ input: { pages: [{ page: 1, lines: [{ line: 1, text: "Ada Lovelace" }] }] }, repairDefects: [] })}\n\nReturn only one complete JSON object. It must validate against this JSON Schema:\n${JSON.stringify({ type: "object" })}`,
+        text: `MODE: COVERAGE_ONLY\n\n${JSON.stringify({ input: { pages: [{ page: 1, lines: [{ line: 1, text: "Ada Lovelace" }] }] }, repairDefects: [] })}\n\nReturn exactly one JSON object inside these markers:\n<RESULT_JSON>\n{}\n</RESULT_JSON>\nThe object must validate against this JSON Schema:\n${JSON.stringify({ type: "object" })}`,
       }],
     }],
     tools: [{ type: "function", function: { name: "StructuredOutput" } }],

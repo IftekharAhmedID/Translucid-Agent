@@ -55,3 +55,29 @@ export function extractStructuredOutput(message: AssistantResult): unknown {
     throw new Error(`Session did not produce valid structured output (error=none, parts=${partTypes}, textCharacters=${text.length}).`);
   }
 }
+
+export function extractMarkedJson(message: AssistantResult): unknown {
+  if (message.info.role !== "assistant") throw new Error("Session did not return an assistant response.");
+  if (message.info.error) throw new Error(`OPENCODE_MESSAGE_ERROR:${message.info.error.name ?? "UnknownError"}`);
+  const text = message.parts
+    .filter((part) => part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("")
+    .trim();
+  if (!text) {
+    const partTypes = message.parts.map((part) => part.type).join(",") || "none";
+    throw new Error(`NO_TEXT_OUTPUT: assistant response contained no text (parts=${partTypes}).`);
+  }
+  const opening = "<RESULT_JSON>";
+  const closing = "</RESULT_JSON>";
+  const start = text.indexOf(opening);
+  const end = start < 0 ? -1 : text.indexOf(closing, start + opening.length);
+  if (start < 0 || end < 0) throw new Error("Finalizer must return exactly one RESULT_JSON region.");
+  const candidate = text.slice(start + opening.length, end).trim();
+  if (candidate.includes(opening) || candidate.includes(closing)) throw new Error("Finalizer returned a nested RESULT_JSON marker.");
+  if (text.indexOf(opening, start + opening.length) >= 0 || text.indexOf(closing, end + closing.length) >= 0 || text.slice(0, start).includes(closing)) {
+    throw new Error("Finalizer must return exactly one RESULT_JSON region.");
+  }
+  try { return JSON.parse(candidate); }
+  catch { throw new Error(`Finalizer RESULT_JSON did not contain valid JSON (textCharacters=${candidate.length}).`); }
+}

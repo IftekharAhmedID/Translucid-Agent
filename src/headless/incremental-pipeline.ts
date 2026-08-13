@@ -5,12 +5,12 @@ import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { z } from "zod";
 
 import { finalizerModelDefinition } from "../core/model-catalog.ts";
-import { extractStructuredOutput } from "../agent/structured-output.ts";
+import { extractMarkedJson } from "../agent/structured-output.ts";
 import { HANDOFF_MANIFEST_PATH, writeResearchCheckpoint } from "./checkpoint.ts";
 import {
   buildFinalizerContext,
   describeSdkError,
-  nativeFinalizerPromptPayload,
+  finalizerPromptPayload,
   type AssistantMessage,
   type FinalizationPipelineInput,
 } from "./finalization-controller.ts";
@@ -202,8 +202,9 @@ export async function runIncrementalFinalization(input: V4Input): Promise<Invest
   };
 
   const promptJson = async <T>(agent: "resume-claim-compiler" | "evidence-linker" | "evidence-compiler" | "evidence-auditor", title: string, contract: string, payload: unknown, schema: z.ZodType<T>, allowance: number, tools: Record<string, boolean>): Promise<T> => {
-    const response = await promptSession(agent, title, { tools, ...nativeFinalizerPromptPayload(promptWithPayload(contract, payload), schema) }, allowance);
-    return schema.parse(extractStructuredOutput(response));
+    const model = agent === "evidence-auditor" ? input.auditorModel : input.compilerModel;
+    const response = await promptSession(agent, title, { tools, ...finalizerPromptPayload(input.finalizerProvider, model, promptWithPayload(contract, payload), schema) }, allowance);
+    return schema.parse(extractMarkedJson(response));
   };
 
   const existingClaims = await readStageRecords<ValidatedClaim>(root, "claims");

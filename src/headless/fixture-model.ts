@@ -77,10 +77,14 @@ function promptPayload(body: Record<string, unknown>): Record<string, unknown> {
   const marker = text.indexOf("\n\n{");
   if (marker < 0) return {};
   try {
-    return JSON.parse(text.slice(marker + 2).split("\n\nReturn only one complete JSON object.")[0]!) as Record<string, unknown>;
+    return JSON.parse(text.slice(marker + 2).split("\n\nReturn exactly one JSON object")[0]!) as Record<string, unknown>;
   } catch {
     return {};
   }
+}
+
+function marked(value: unknown): string {
+  return `<RESULT_JSON>\n${JSON.stringify(value)}\n</RESULT_JSON>`;
 }
 
 function fixtureCoverage(body: Record<string, unknown>): Record<string, unknown> {
@@ -201,37 +205,37 @@ export function createHeadlessFixtureCompletion(): (body: Record<string, unknown
     });
     if (agent === "resume-claim-compiler") {
       const value = fixtureClaimBatch(body);
-      return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: JSON.stringify(value) };
+      return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: marked(value) };
     }
     if (agent === "evidence-linker") {
       const value = fixtureEvidenceLink(body);
-      return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: JSON.stringify(value) };
+      return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: marked(value) };
     }
     if (agent === "evidence-compiler") {
       const serialized = JSON.stringify(body);
       if (serialized.includes("MODE: COVERAGE_ONLY")) {
         const value = fixtureCoverage(body);
-        return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: JSON.stringify(value) };
+        return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: marked(value) };
       }
       if (serialized.includes("MODE: EVIDENCE_PACKET")) {
         const value = fixturePacket(body);
-        return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: JSON.stringify(value) };
+        return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: marked(value) };
       }
       if (serialized.includes("MODE: SUMMARY_TIMELINE")) {
         const value = fixtureSummary(body);
-        return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: JSON.stringify(value) };
+        return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: marked(value) };
       }
       if (JSON.stringify(body).includes("MODE: EVIDENCE_DOSSIER")) return { content: fixtureDossier() };
       const draft = fixtureDraft();
       return nativeStructuredOutput
         ? { toolCall: { name: "StructuredOutput", arguments: draft } }
-        : { content: JSON.stringify(draft) };
+        : { content: marked(draft) };
     }
     if (agent === "evidence-auditor") {
       const audit = { status: "PASSED", defects: [] };
       return nativeStructuredOutput
         ? { toolCall: { name: "StructuredOutput", arguments: audit } }
-        : { content: JSON.stringify(audit) };
+        : { content: marked(audit) };
     }
     return { content: "No additional synthetic research was required." };
   };

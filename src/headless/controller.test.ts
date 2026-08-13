@@ -154,12 +154,15 @@ test("controller never reconstructs handoffs from messages or injects duplicate 
 
 test("finalizers use the compatible JSON-object prompt on both provider routes", () => {
   const native = finalizerPromptPayload("ZEN", "deepseek-v4-pro", "Compile.", investigationDraftSchema);
-  assert.equal(native.format, undefined);
-  assert.match(native.parts[0].text, /Return only one complete JSON object/);
+  assert.equal("format" in native, false);
+  assert.equal(native.system, "TRANSLUCID_FINALIZER_TEXT_MODE");
+  assert.match(native.parts[0].text, /<RESULT_JSON>/);
+  assert.match(native.parts[0].text, /<\/RESULT_JSON>/);
 
   const compatible = finalizerPromptPayload("GO", "deepseek-v4-pro", "Compile.", investigationDraftSchema);
-  assert.equal(compatible.format, undefined);
-  assert.match(compatible.parts[0].text, /Return only one complete JSON object/);
+  assert.equal("format" in compatible, false);
+  assert.equal(compatible.system, "TRANSLUCID_FINALIZER_TEXT_MODE");
+  assert.match(compatible.parts[0].text, /<RESULT_JSON>/);
   assert.match(compatible.parts[0].text, /"claims"/);
 });
 

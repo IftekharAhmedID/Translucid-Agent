@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { z } from "zod";
 
-import { extractStructuredOutput } from "../agent/structured-output.ts";
+import { extractMarkedJson } from "../agent/structured-output.ts";
 import { FINALIZER_TEXT_MODE_MARKER, finalizerOutputTransport } from "../core/finalizer-transport.ts";
 import type { RunHandle } from "../runtime/types.ts";
 import type { MemoryRunBudget } from "./budget.ts";
@@ -82,24 +82,13 @@ export function describeSdkError(error: unknown): string {
 }
 
 export function finalizerPromptPayload<T>(provider: "ZEN" | "GO", model: string, prompt: string, schema: z.ZodType<T>) {
-  if (finalizerOutputTransport(provider, model) === "NATIVE_JSON_SCHEMA") {
-    return {
-      format: { type: "json_schema" as const, schema: z.toJSONSchema(schema) },
-      parts: [{ type: "text" as const, text: prompt }],
-    };
-  }
+  void finalizerOutputTransport(provider, model);
   return {
+    system: FINALIZER_TEXT_MODE_MARKER,
     parts: [{
       type: "text" as const,
-      text: `${prompt}\n\nReturn only one complete JSON object. It must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}`,
+      text: `${prompt}\n\nReturn exactly one JSON object inside these markers:\n<RESULT_JSON>\n{\"replace\":\"with the complete result\"}\n</RESULT_JSON>\nThe object must validate against this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}`,
     }],
-  };
-}
-
-export function nativeFinalizerPromptPayload<T>(prompt: string, schema: z.ZodType<T>) {
-  return {
-    format: { type: "json_schema" as const, schema: z.toJSONSchema(schema), retryCount: 1 },
-    parts: [{ type: "text" as const, text: prompt }],
   };
 }
 
@@ -317,7 +306,7 @@ export async function runLegacyFinalizationPipeline(input: FinalizationPipelineI
     const model = agent === "evidence-compiler" ? input.compilerModel : input.auditorModel;
     const payload = finalizerPromptPayload(input.finalizerProvider, model, prompt, schema);
     const message = await promptSession(agent, title, { tools, ...payload }, agent === "evidence-auditor" ? 30_000 : 0);
-    return schema.parse(extractStructuredOutput(message));
+    return schema.parse(extractMarkedJson(message));
   };
 
   const provisionalRun = {
