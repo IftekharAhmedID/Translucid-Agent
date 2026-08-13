@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { toolNames } from "../providers/contracts.ts";
@@ -18,7 +18,8 @@ import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 import { publishFinalizationProvenance } from "./incremental-pipeline.ts";
 import { createHeadlessGateway } from "./gateway.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
-import { renderInvestigationReport } from "./report.ts";
+import { renderInvestigationReport, verifyInvestigationReport } from "./report.ts";
+import { assertPublishableResult } from "./result-contract.ts";
 import { createRunWorkspace, removeRunDiagnostics, sealRunFailure, type RunWorkspace } from "./run-workspace.ts";
 
 const RUN_TIMEOUT_MS = 60 * 60_000;
@@ -92,6 +93,7 @@ async function main(): Promise<void> {
   let gateway: ReturnType<typeof createHeadlessGateway> | undefined;
   let watchProcess: ChildProcess | undefined;
   let attachPath: string | undefined;
+  let reportTemporaryPath: string | undefined;
   const abort = new AbortController();
   const abortHandler = () => abort.abort(new DOMException("Investigation cancelled by signal.", "AbortError"));
   process.once("SIGINT", abortHandler);
@@ -205,12 +207,17 @@ async function main(): Promise<void> {
     if (!integrity.valid) throw new Error(`Source integrity failed for ${integrity.invalidSourceRefs.join(", ")}.`);
     const resultPath = join(workspace.root, "result.json");
     const reportPath = join(workspace.root, "report.pdf");
-    const reportBytes = await renderInvestigationReport(output.result);
-    await atomicWrite(reportPath, reportBytes);
+    reportTemporaryPath = `${reportPath}.tmp`;
+    assertPublishableResult(output.result);
+    await rm(reportTemporaryPath, { force: true });
+    await atomicWrite(reportTemporaryPath, await renderInvestigationReport(output.result));
+    await verifyInvestigationReport(await readFile(reportTemporaryPath));
     await runtime.stop(handle);
     handle = undefined;
     await publishFinalizationProvenance(workspace.root);
     if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
+    await rename(reportTemporaryPath, reportPath);
+    reportTemporaryPath = undefined;
     await atomicWrite(resultPath, `${JSON.stringify(output.result, null, 2)}\n`);
     process.stdout.write(`${JSON.stringify({ runId, result: resultPath, report: reportPath, sources: join(workspace.root, "sources") }, null, 2)}\n`);
   } catch (caught) {
@@ -234,6 +241,7 @@ async function main(): Promise<void> {
     process.removeListener("SIGINT", abortHandler);
     process.removeListener("SIGTERM", abortHandler);
     if (attachPath) await rm(attachPath, { force: true });
+    if (reportTemporaryPath) await rm(reportTemporaryPath, { force: true });
     if (watchProcess && !watchProcess.killed) watchProcess.kill("SIGTERM");
     gateway?.cancel();
     if (gateway) await closeServer(gateway.server);
