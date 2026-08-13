@@ -32,12 +32,13 @@
     "check": "npm run test && npm run typecheck && npm run lint && npm run build"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.18.15",
-    "@opencode-ai/sdk": "1.18.15",
+    "@ai-sdk/anthropic": "4.0.38",
+    "@opencode-ai/plugin": "1.18.18",
+    "@opencode-ai/sdk": "1.18.18",
     "drizzle-orm": "0.45.2",
     "e2b": "2.38.2",
     "next": "16.3.0",
-    "opencode-ai": "1.18.15",
+    "opencode-ai": "1.18.18",
     "pdfjs-dist": "6.2.108",
     "pdfkit": "0.19.1",
     "postgres": "3.4.9",

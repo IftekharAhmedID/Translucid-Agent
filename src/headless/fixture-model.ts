@@ -125,22 +125,60 @@ function fixtureSummary(body: Record<string, unknown>): Record<string, unknown> 
     { key: "acme-employment-source", claimKey: "acme-employment" },
   ];
   const identity = claims.includes("identity") ? "identity" : claims[0]!;
-  const identityEvidence = evidence.find((item) => item.claimKey === identity)?.key ?? evidence[0]?.key ?? "acme-employment-source";
+  const identityEvidence = evidence.find((item) => item.claimKey === identity)?.key ?? evidence[0]?.key;
   const timelineClaim = claims.includes("acme-employment") ? "acme-employment" : claims[0]!;
   const timelineEvidence = evidence.find((item) => item.claimKey === timelineClaim)?.key ?? evidence[0]?.key ?? identityEvidence;
   const fallbackFacets = (claimKey: string) => claimKey === "identity" ? ["name"] : ["employer", "title", "tenure"];
   return {
     summary: {
-      professionalIdentity: { status: "RESOLVED", text: "The synthetic public fixture identifies the submitted professional record.", claimKeys: [identity], evidenceKeys: [identityEvidence] },
+      professionalIdentity: { status: "RESOLVED", text: "The synthetic public fixture identifies the submitted professional record.", claimKeys: [identity], evidenceKeys: identityEvidence ? [identityEvidence] : [] },
       professionalTimelineSummary: "The synthetic source supports the reported Acme chronology.",
       timelineClaimKeys: [timelineClaim],
-      timelineEvidenceKeys: [timelineEvidence],
+      timelineEvidenceKeys: timelineEvidence ? [timelineEvidence] : [],
       strongestEvidenceByClaim: claims.map((claimKey) => ({ claimKey, facetKeys: (payload.claims as Array<{ claimKey: string; facets: Array<{ key: string }> }> | undefined)?.find((claim) => claim.claimKey === claimKey)?.facets.map((facet) => facet.key) ?? fallbackFacets(claimKey), evidenceKeys: evidence.filter((item) => item.claimKey === claimKey).map((item) => item.key) })),
       materialInconsistencies: [],
       limitations: ["This result uses deterministic synthetic provider fixtures for architecture validation."],
     },
-    timeline: [{ label: "Acme Synthetic Labs employment", validFrom: "2021", validTo: "2025", claimKeys: [timelineClaim], evidenceKeys: [timelineEvidence] }],
+    timeline: [{ label: "Acme Synthetic Labs employment", validFrom: "2021", validTo: "2025", claimKeys: [timelineClaim], evidenceKeys: timelineEvidence ? [timelineEvidence] : [] }],
   };
+}
+
+function fixtureClaimBatch(body: Record<string, unknown>): Record<string, unknown> {
+  const payload = promptPayload(body) as { lineWindow?: Array<{ id: string; text: string }> };
+  const lines = payload.lineWindow ?? [];
+  const claims: Array<Record<string, unknown>> = [];
+  const exclusions: Array<Record<string, unknown>> = [];
+  const semanticLines: Array<{ id: string; text: string }> = [];
+  for (const line of lines) {
+    if (/^(?:python|typescript|javascript)(?:,|\s|$)/i.test(line.text.trim())) {
+      exclusions.push({ lineIds: [line.id], reason: "BARE_SKILL" });
+      continue;
+    }
+    semanticLines.push(line);
+  }
+  for (let index = 0; index < semanticLines.length; index += 2) {
+    const group = semanticLines.slice(index, index + 2);
+    const employment = group.some(({ text }) => /engineer|worked|acme|corp|company|role/i.test(text));
+    claims.push({
+      localKey: group[0]!.id.toLowerCase(),
+      category: employment ? "EMPLOYMENT" : "IDENTITY",
+      statement: `${group.map(({ text }) => text.replace(/[.]$/u, "")).join("; ")}.`,
+      materiality: employment ? "HIGH" : "MEDIUM",
+      facets: group.map((line, facetIndex) => ({ key: `${employment ? "assertion" : "identity"}_${facetIndex + 1}`, label: `${employment ? "Assertion" : "Identity"}: ${line.text.endsWith(".") ? line.text : `${line.text}.`}`, materiality: employment ? "HIGH" : "MEDIUM", lineIds: [line.id] })),
+    });
+  }
+  return { claims, exclusions, deferredLineIds: [] };
+}
+
+function fixtureEvidenceLink(body: Record<string, unknown>): Record<string, unknown> {
+  const payload = promptPayload(body) as { claims?: Array<{ claimKey: string; facets: Array<{ key: string }> }>; excerptCandidates?: Array<{ ref: string }> };
+  const excerptRef = payload.excerptCandidates?.[0]?.ref;
+  return { claims: (payload.claims ?? []).map((claim) => ({
+    claimId: claim.claimKey,
+    explanation: "The deterministic synthetic source provides the bounded observation.",
+    facetNotes: claim.facets.map(({ key }) => ({ facetKey: key, note: "The synthetic source was checked for this facet." })),
+    edges: excerptRef ? [{ facetKeys: claim.facets.map(({ key }) => key), relation: "SUPPORTS", excerptRef }] : [],
+  })) };
 }
 
 export function createHeadlessFixtureCompletion(): (body: Record<string, unknown>, agent: string) => Promise<Completion> {
@@ -161,6 +199,14 @@ export function createHeadlessFixtureCompletion(): (body: Record<string, unknown
       const functionDefinition = (tool as { function?: { name?: unknown } }).function;
       return functionDefinition?.name === "StructuredOutput";
     });
+    if (agent === "resume-claim-compiler") {
+      const value = fixtureClaimBatch(body);
+      return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: JSON.stringify(value) };
+    }
+    if (agent === "evidence-linker") {
+      const value = fixtureEvidenceLink(body);
+      return nativeStructuredOutput ? { toolCall: { name: "StructuredOutput", arguments: value } } : { content: JSON.stringify(value) };
+    }
     if (agent === "evidence-compiler") {
       const serialized = JSON.stringify(body);
       if (serialized.includes("MODE: COVERAGE_ONLY")) {

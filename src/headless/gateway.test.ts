@@ -136,3 +136,55 @@ test("authorizes one run-scoped token and exposes only headless tools", async ()
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("routes MiniMax finalizer traffic through Anthropic Messages only", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-anthropic-gateway-"));
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    const budget = new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 300, repositoryClones: 3, socialProfiles: 1 });
+    const gateway = createHeadlessGateway({
+      runId: "run-anthropic",
+      deadlineAt: Date.now() + 60_000,
+      allowedTools: new Set(),
+      allowedModels: new Set(["minimax-m3"]),
+      agentTools: new Map([["evidence-linker", new Set(["source.excerpts"])]]),
+      sourceStore,
+      budget,
+      providerMode: "fixture",
+      finalizerModel: "minimax-m3",
+      finalizerProvider: "GO",
+      fixtureCompletion: async () => ({ content: "fixture anthropic response" }),
+    });
+    await new Promise<void>((resolve) => gateway.server.listen(0, "127.0.0.1", resolve));
+    const address = gateway.server.address();
+    if (!address || typeof address === "string") throw new Error("Gateway did not bind a TCP port.");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const headers = {
+      authorization: `Bearer ${gateway.token}`,
+      "content-type": "application/json",
+      "x-run-id": "run-anthropic",
+      "x-opencode-agent": "evidence-linker",
+    };
+    const messages = await fetch(`${origin}/internal/llm/v1/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "minimax-m3", messages: [{ role: "user", content: "bounded" }] }),
+    });
+    assert.equal(messages.status, 200);
+    const messageBody = await messages.json() as { type: string; role: string; content: Array<{ type: string; text?: string }> };
+    assert.equal(messageBody.type, "message");
+    assert.equal(messageBody.role, "assistant");
+    assert.equal(messageBody.content[0]?.text, "fixture anthropic response");
+
+    const wrongProtocol = await fetch(`${origin}/internal/llm/v1/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "minimax-m3", messages: [{ role: "user", content: "bounded" }] }),
+    });
+    assert.equal(wrongProtocol.status, 400);
+    gateway.cancel();
+    await new Promise<void>((resolve, reject) => gateway.server.close((error) => error ? reject(error) : resolve()));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

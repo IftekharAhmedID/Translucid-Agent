@@ -16,6 +16,18 @@ export const SUMMARY_TIMELINE_PROMPT_CONTRACT = "MODE: SUMMARY_TIMELINE\n\nRetur
 
 export const AUDITOR_PROMPT_CONTRACT = "Independently audit this deterministically validated result against the parsed input and evidence dossier. Do not research or call tools; immutable source bytes and exact quotations have already been host-verified. Mark REPAIR_REQUIRED only for a material defect. Warnings do not require repair. Every material defect must declare stage PACKET, SUMMARY, or CANONICAL; packet defects must include zero-based packetIndex plus affected claimKeys/evidenceKeys. If a defect cannot be scoped to one packet or the summary, report it as stage AUDIT so the host fails closed rather than regenerating valid work.";
 
+export const CLAIM_BATCH_PROMPT_CONTRACT = `MODE: CLAIM_BATCH
+
+Process only the supplied unresolved résumé line window. Return at most five claims. Every supplied line must appear exactly once in a claim facet, an exclusion, or deferredLineIds. The earliest unresolved line must not be deferred. Use the exact supplied line IDs; never return page numbers, line numbers, copied source text, canonical IDs, verdicts, strengths, or evidence. A facet is one self-contained atomic assertion and must map to one or more supplied line IDs. Preserve uncertain facts as claims rather than silently excluding them.`;
+
+export const EVIDENCE_LINK_BATCH_PROMPT_CONTRACT = `MODE: EVIDENCE_LINK_BATCH
+
+Process exactly the assigned frozen claims. Return one entry for every assigned claim and one facet note for every declared facet. Use source.excerpts for exact immutable wording when needed. Evidence edges may reference only excerpt refs returned by that tool. Return excerpt refs, not source paths, source refs, quotes, authority, IDs, verdicts, or strengths. Zero edges is valid when a facet remains unresolved.`;
+
+export const V4_AUDITOR_PROMPT_CONTRACT = `MODE: INCREMENTAL_AUDIT
+
+Audit the supplied frozen line dispositions, claims, evidence, summary, and timeline. Report only material defects. A defect must identify one stage (CLAIM, EVIDENCE, SUMMARY, or AUDIT), exactly the affected durable claim IDs/evidence IDs, and whether it is safely repairable without changing line ownership. Never rewrite records or introduce new evidence.`;
+
 export function researchPrompt(deadline: string): string {
   return `${RESEARCH_PROMPT_CONTRACT} The research deadline is ${deadline}.`;
 }

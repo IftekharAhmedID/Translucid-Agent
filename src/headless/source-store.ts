@@ -28,6 +28,20 @@ const manifestSchema = z.object({
   sources: z.array(sourceSchema),
 }).strict();
 
+const excerptRecordSchema = z.object({
+  ref: z.string().regex(/^X[a-f0-9]{64}$/),
+  sourceRef: z.string().regex(/^S[1-9]\d*$/),
+  path: z.string().min(1),
+  offsetStart: z.number().int().nonnegative(),
+  offsetEnd: z.number().int().positive(),
+  text: z.string().min(1).max(1_000),
+}).strict();
+
+const excerptLedgerSchema = z.object({
+  schemaVersion: z.literal(1),
+  excerpts: z.array(excerptRecordSchema),
+}).strict();
+
 export type CapturedSourceMetadata = z.infer<typeof sourceSchema>;
 
 export type SourceCaptureInput = {
@@ -52,7 +66,7 @@ export type SourceExcerptRequest = {
 
 export type SourceExcerptResult = {
   sourceRef: string;
-  excerpts: Array<{ path: string; text: string }>;
+  excerpts: Array<{ ref: string; path: string; offsetStart: number; offsetEnd: number; text: string }>;
   truncated: boolean;
 };
 
@@ -112,16 +126,23 @@ function flatten(value: unknown, path = "", output: FlatValue[] = [], depth = 0)
   return output;
 }
 
-function boundedWindow(text: string, query: string, maximum: number): string | undefined {
+function boundedWindow(text: string, query: string, maximum: number): { text: string; offsetStart: number; offsetEnd: number } | undefined {
   const index = text.toLocaleLowerCase("en-US").indexOf(query.toLocaleLowerCase("en-US"));
   if (index < 0) return undefined;
   const before = Math.floor(Math.max(0, maximum - query.length) / 2);
   const start = Math.max(0, index - before);
-  return text.slice(start, Math.min(text.length, start + maximum));
+  const end = Math.min(text.length, start + maximum);
+  return { text: text.slice(start, end), offsetStart: start, offsetEnd: end };
+}
+
+function excerptRef(sourceRef: string, path: string, offsetStart: number, offsetEnd: number, text: string): string {
+  return `X${createHash("sha256").update([sourceRef, path, offsetStart, offsetEnd, text].join("\0")).digest("hex")}`;
 }
 
 export class FileSourceStore {
   private pending: Promise<void> = Promise.resolve();
+  private excerptPending: Promise<void> = Promise.resolve();
+  private readonly excerptIndex = new Map<string, { ref: string; sourceRef: string; path: string; offsetStart: number; offsetEnd: number; text: string }>();
 
   private constructor(private readonly root: string, private manifest: Manifest) {}
 
@@ -134,7 +155,24 @@ export class FileSourceStore {
       await mkdir(join(root, "sources", "blobs"), { recursive: true });
       await atomicWrite(path, Buffer.from(JSON.stringify(manifest, null, 2)));
     }
-    return new FileSourceStore(root, manifest);
+    const store = new FileSourceStore(root, manifest);
+    const ledgerPath = join(root, ".work", "finalization", "v4", "excerpts.json");
+    try {
+      const ledger = excerptLedgerSchema.parse(JSON.parse(await readFile(ledgerPath, "utf8")));
+      for (const excerpt of ledger.excerpts) store.excerptIndex.set(excerpt.ref, excerpt);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    return store;
+  }
+
+  private persistExcerpts(): Promise<void> {
+    const operation = this.excerptPending.then(async () => {
+      const excerpts = [...this.excerptIndex.values()].sort((left, right) => left.ref.localeCompare(right.ref));
+      await atomicWrite(join(this.root, ".work", "finalization", "v4", "excerpts.json"), Buffer.from(JSON.stringify({ schemaVersion: 1, excerpts }, null, 2)));
+    });
+    this.excerptPending = operation.catch(() => undefined);
+    return operation;
   }
 
   capture(input: SourceCaptureInput): Promise<CapturedSource> {
@@ -206,7 +244,7 @@ export class FileSourceStore {
     const source = await this.get(input.sourceRef);
     const raw = await readFile(join(this.root, source.relativePath), "utf8");
     let remaining = maximum;
-    const excerpts: Array<{ path: string; text: string }> = [];
+    const excerpts: SourceExcerptResult["excerpts"] = [];
     let matchCount = 0;
     if (source.mimeType.includes("json")) {
       const leaves = flatten(JSON.parse(raw));
@@ -215,22 +253,36 @@ export class FileSourceStore {
           if (!`${leaf.path}\n${leaf.text}`.toLocaleLowerCase("en-US").includes(query.toLocaleLowerCase("en-US"))) continue;
           matchCount += 1;
           if (remaining <= 0 || excerpts.some((item) => item.path === leaf.path && item.text === leaf.text)) continue;
-          const text = leaf.text.slice(0, remaining);
-          excerpts.push({ path: leaf.path, text });
+          const text = leaf.text.slice(0, Math.min(1_000, remaining));
+          const offsetStart = raw.indexOf(text);
+          const offsetEnd = offsetStart < 0 ? text.length : offsetStart + text.length;
+          const item = { ref: excerptRef(source.ref, leaf.path, Math.max(0, offsetStart), offsetEnd, text), sourceRef: source.ref, path: leaf.path, offsetStart: Math.max(0, offsetStart), offsetEnd, text };
+          this.excerptIndex.set(item.ref, item);
+          excerpts.push({ ref: item.ref, path: item.path, offsetStart: item.offsetStart, offsetEnd: item.offsetEnd, text: item.text });
           remaining -= text.length;
         }
       }
     } else {
       for (const query of input.queries) {
-        const window = boundedWindow(raw, query, Math.min(20_000, remaining));
+        const window = boundedWindow(raw, query, Math.min(1_000, remaining));
         if (!window) continue;
         matchCount += 1;
-        if (remaining <= 0 || excerpts.some((item) => item.text === window)) continue;
-        excerpts.push({ path: "$", text: window });
-        remaining -= window.length;
+        if (remaining <= 0 || excerpts.some((item) => item.text === window.text)) continue;
+        const item = { ref: excerptRef(source.ref, "$", window.offsetStart, window.offsetEnd, window.text), sourceRef: source.ref, path: "$", offsetStart: window.offsetStart, offsetEnd: window.offsetEnd, text: window.text };
+        this.excerptIndex.set(item.ref, item);
+        excerpts.push({ ref: item.ref, path: item.path, offsetStart: item.offsetStart, offsetEnd: item.offsetEnd, text: item.text });
+        remaining -= window.text.length;
       }
     }
+    await this.persistExcerpts();
     return { sourceRef: source.ref, excerpts, truncated: matchCount > excerpts.length || remaining <= 0 };
+  }
+
+  async resolveExcerpt(ref: string): Promise<{ ref: string; sourceRef: string; path: string; offsetStart: number; offsetEnd: number; text: string }> {
+    await this.excerptPending;
+    const excerpt = this.excerptIndex.get(ref);
+    if (!excerpt) throw new Error(`Unknown excerpt reference ${ref}.`);
+    return { ...excerpt };
   }
 
   async verifyExactQuote(input: { sourceRef: string; path: string; exactQuote: string }): Promise<ExactQuoteCheck> {

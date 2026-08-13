@@ -12,6 +12,7 @@ test("configuration defaults to the safe synthetic fixture runtime", () => {
   assert.equal(config.researchOpenCodeProvider, "GO");
   assert.equal(config.finalizerOpenCodeProvider, "GO");
   assert.equal(config.finalizerModel, "mimo-v2.5-pro");
+  assert.equal(config.finalizerAuditorModel, "mimo-v2.5-pro");
   assert.equal(config.researchOpenCodeUpstreamUrl, "https://opencode.ai/zen/go/v1/chat/completions");
   assert.equal(config.finalizerOpenCodeUpstreamUrl, "https://opencode.ai/zen/go/v1/chat/completions");
   assert.equal(config.reasoningVariant, "medium");
@@ -31,6 +32,17 @@ test("configuration defaults to the safe synthetic fixture runtime", () => {
     auditMs: 600_000,
     safetyReserveMs: 15_000,
   });
+});
+
+test("configuration permits an independent finalizer auditor model", () => {
+  const config = loadConfig({
+    DATABASE_URL: "postgres://example.test/translucid",
+    FINALIZER_MODEL: "mimo-v2.5-pro",
+    FINALIZER_AUDITOR_MODEL: "deepseek-v4-pro",
+  });
+
+  assert.equal(config.finalizerModel, "mimo-v2.5-pro");
+  assert.equal(config.finalizerAuditorModel, "deepseek-v4-pro");
 });
 
 test("configuration allows stage-aware model request timeout overrides", () => {

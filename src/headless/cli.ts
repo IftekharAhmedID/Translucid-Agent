@@ -4,7 +4,7 @@ import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { toolNames } from "../providers/contracts.ts";
-import { PAID_GO_MODEL_IDS } from "../core/model-catalog.ts";
+import { FINALIZER_MODEL_CATALOG, PAID_GO_MODEL_IDS } from "../core/model-catalog.ts";
 import { loadModelRequestTimeouts } from "../core/config.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
 import { E2BRuntime } from "../runtime/e2b.ts";
@@ -15,6 +15,7 @@ import { openPersistentRunBudget } from "./checkpoint.ts";
 import { parseInvestigationArguments } from "./cli-options.ts";
 import { HeadlessInvestigationController } from "./controller.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
+import { publishFinalizationProvenance } from "./incremental-pipeline.ts";
 import { createHeadlessGateway } from "./gateway.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
 import { renderInvestigationReport } from "./report.ts";
@@ -54,6 +55,8 @@ function agentToolAllowlist(): Map<string, Set<string>> {
     ["web-records-researcher", new Set(["web.search", "web.fetch", "archives.search", "public_records.search", "scholarly.search", "packages.inspect", "security_records.search", "source.excerpts"])],
     ["social-researcher", new Set(["social.profile", "source.excerpts"])],
     ["evidence-compiler", new Set(["source.excerpts"])],
+    ["evidence-linker", new Set(["source.excerpts"])],
+    ["resume-claim-compiler", new Set()],
     ["evidence-auditor", new Set(["source.excerpts"])],
   ]);
 }
@@ -111,6 +114,7 @@ async function main(): Promise<void> {
     const researchManifestHash = await getPinnedResearchManifestHash();
     const researchModel = process.env.RESEARCH_MODEL ?? "deepseek-v4-flash";
     const compilerModel = process.env.FINALIZER_MODEL ?? "mimo-v2.5-pro";
+    const auditorModel = process.env.FINALIZER_AUDITOR_MODEL ?? compilerModel;
     const checkpointConfigs = await currentCheckpointConfigs({
       repositoryRoot: process.cwd(),
       runtime: options.runtime,
@@ -128,7 +132,7 @@ async function main(): Promise<void> {
       runId,
       deadlineAt: deadlineAt.getTime(),
       allowedTools: new Set([...toolNames, "source.excerpts"]),
-      allowedModels: new Set([researchModel, ...PAID_GO_MODEL_IDS]),
+      allowedModels: new Set([researchModel, compilerModel, auditorModel, ...PAID_GO_MODEL_IDS, ...FINALIZER_MODEL_CATALOG.map(({ id }) => id)]),
       agentTools: agentToolAllowlist(),
       executor: providerExecutor,
       sourceStore: workspace.sourceStore,
@@ -141,7 +145,7 @@ async function main(): Promise<void> {
       modelRequestTimeouts: loadModelRequestTimeouts(process.env),
       fixtureCompletion: (body, agent) => fixture(body, agent),
       onModelRequest: ({ agent, estimatedInputTokens }) => {
-        if (agent === "evidence-compiler" || agent === "evidence-auditor") process.stderr.write(`Run ${runId}: ${agent} request estimated input tokens ${estimatedInputTokens}.\n`);
+        if (agent === "evidence-compiler" || agent === "evidence-auditor" || agent === "resume-claim-compiler" || agent === "evidence-linker") process.stderr.write(`Run ${runId}: ${agent} request estimated input tokens ${estimatedInputTokens}.\n`);
       },
     });
     const gatewayPort = await listen(gateway.server, options.runtime === "E2B" ? integerEnvironment("HEADLESS_GATEWAY_PORT", 3001) : 0);
@@ -188,7 +192,7 @@ async function main(): Promise<void> {
       classification: options.classification,
       researchModel,
       compilerModel,
-      auditorModel: compilerModel,
+      auditorModel,
       finalizerProvider,
       registerExcerptAllowance: gateway.registerExcerptAllowance,
       researchCheckpointConfig: checkpointConfigs.research,
@@ -205,10 +209,11 @@ async function main(): Promise<void> {
     const reportPath = join(workspace.root, "report.pdf");
     const reportBytes = await renderInvestigationReport(output.result);
     await atomicWrite(reportPath, reportBytes);
-    await atomicWrite(resultPath, `${JSON.stringify(output.result, null, 2)}\n`);
     await runtime.stop(handle);
     handle = undefined;
+    await publishFinalizationProvenance(workspace.root);
     if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
+    await atomicWrite(resultPath, `${JSON.stringify(output.result, null, 2)}\n`);
     process.stdout.write(`${JSON.stringify({ runId, result: resultPath, report: reportPath, sources: join(workspace.root, "sources") }, null, 2)}\n`);
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error("Unknown headless investigation failure.");

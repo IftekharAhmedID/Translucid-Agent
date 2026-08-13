@@ -1,17 +1,18 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { DEFAULT_MODEL_REQUEST_TIMEOUTS, type ModelRequestTimeouts } from "../core/config.ts";
+import { finalizerModelDefinition } from "../core/model-catalog.ts";
 import { prepareFinalizerUpstreamBody } from "../core/finalizer-transport.ts";
 import { decodeJsonToolNames, encodeModelToolNames, SseToolNameDecoder } from "./model-tool-names.ts";
-import { writeFixtureCompletion, type Completion } from "./fixture-model.ts";
+import { writeAnthropicFixtureCompletion, writeFixtureCompletion, type Completion } from "./fixture-model.ts";
 
 export function modelCostReservation(body: Record<string, unknown>, model: string): number {
   const estimatedInputTokens = estimateModelInputTokens(body);
   const maximumOutputTokens = Math.min(Number(body.max_tokens ?? body.max_completion_tokens ?? 32_000), 384_000);
-  const rates = model === "deepseek-v4-pro" || model === "mimo-v2.5-pro"
-    ? { input: 0.435, output: 0.87 }
-    : { input: 0.14, output: 0.28 };
-  return (estimatedInputTokens * rates.input + maximumOutputTokens * rates.output) / 1_000_000;
+  const rates = model === "minimax-m3" || model === "mimo-v2.5-pro" || model === "deepseek-v4-pro"
+    ? finalizerModelDefinition(model)
+    : { inputUsdPerMillion: 0.14, outputUsdPerMillion: 0.28 };
+  return (estimatedInputTokens * rates.inputUsdPerMillion + maximumOutputTokens * rates.outputUsdPerMillion) / 1_000_000;
 }
 
 export function estimateModelInputTokens(body: Record<string, unknown>): number {
@@ -22,6 +23,8 @@ export type ModelRequestStage = "RESEARCH" | "COVERAGE" | "PACKET" | "SUMMARY" |
 
 export function modelRequestStage(agent: string, body: Record<string, unknown>): ModelRequestStage {
   if (agent === "evidence-auditor" || agent === "evidence-critic" || agent === "fresh-adjudicator") return "AUDIT";
+  if (agent === "resume-claim-compiler") return "COVERAGE";
+  if (agent === "evidence-linker") return "PACKET";
   if (agent !== "evidence-compiler") return "RESEARCH";
   const serialized = JSON.stringify(body.messages ?? body);
   if (serialized.includes("MODE: COVERAGE_ONLY")) return "COVERAGE";
@@ -63,12 +66,16 @@ export async function proxyModelCompletion(input: {
   finalizerUpstreamUrl: string;
   finalizerProvider: "ZEN" | "GO";
   finalizerModel: string;
+  protocol?: "OPENAI_CHAT" | "ANTHROPIC_MESSAGES";
+  finalizerMessagesUpstreamUrl?: string;
   finalizerAgents: Set<string>;
   requestTimeouts?: ModelRequestTimeouts;
   fixtureCompletion: () => Promise<Completion>;
 }): Promise<void> {
   if (input.providerMode === "fixture") {
-    writeFixtureCompletion(input.response, input.body, input.model, await input.fixtureCompletion());
+    const completion = await input.fixtureCompletion();
+    if (input.protocol === "ANTHROPIC_MESSAGES") writeAnthropicFixtureCompletion(input.response, input.body, input.model, completion);
+    else writeFixtureCompletion(input.response, input.body, input.model, completion);
     return;
   }
   if (!input.upstreamKey) throw new Error("OPENCODE_API_KEY is not configured on the host gateway.");
@@ -80,10 +87,14 @@ export async function proxyModelCompletion(input: {
   let upstream: Response;
   try {
     const finalizer = input.finalizerAgents.has(input.agent);
-    const body = finalizer
+    const protocol = input.protocol ?? "OPENAI_CHAT";
+    const body = finalizer && protocol === "OPENAI_CHAT"
       ? prepareFinalizerUpstreamBody({ ...encoded.body, model: input.model }, { agent: input.agent, provider: input.finalizerProvider, model: input.finalizerModel })
       : { ...encoded.body, model: input.model };
-    upstream = await fetch(finalizer ? input.finalizerUpstreamUrl : input.researchUpstreamUrl, {
+    const upstreamUrl = finalizer && protocol === "ANTHROPIC_MESSAGES"
+      ? input.finalizerMessagesUpstreamUrl ?? input.finalizerUpstreamUrl.replace(/\/v1\/chat\/completions$/, "/v1/messages")
+      : finalizer ? input.finalizerUpstreamUrl : input.researchUpstreamUrl;
+    upstream = await fetch(upstreamUrl, {
       method: "POST",
       headers: { authorization: `Bearer ${input.upstreamKey}`, "content-type": "application/json" },
       body: JSON.stringify(body),

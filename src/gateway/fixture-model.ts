@@ -120,3 +120,20 @@ export function writeFixtureCompletion(response: import("node:http").ServerRespo
   response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
   response.end(JSON.stringify({ id, object: "chat.completion", created, model, choices: [{ index: 0, message, finish_reason: completion.toolCall ? "tool_calls" : "stop" }], usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 } }));
 }
+
+export function writeAnthropicFixtureCompletion(response: import("node:http").ServerResponse, body: Record<string, unknown>, model: string, completion: Completion): void {
+  const content = completion.toolCall
+    ? [{ type: "tool_use", id: `toolu_fixture_${randomUUID().replaceAll("-", "")}`, name: completion.toolCall.name, input: completion.toolCall.arguments }]
+    : [{ type: "text", text: completion.content ?? "" }];
+  response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+  response.end(JSON.stringify({
+    id: `msg_fixture_${randomUUID().replaceAll("-", "")}`,
+    type: "message",
+    role: "assistant",
+    model,
+    content,
+    stop_reason: completion.toolCall ? "tool_use" : "end_turn",
+    stop_sequence: null,
+    usage: { input_tokens: 100, output_tokens: 50 },
+  }));
+}

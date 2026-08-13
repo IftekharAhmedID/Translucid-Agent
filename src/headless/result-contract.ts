@@ -175,6 +175,8 @@ type ResultContext = {
   rejectedCitations?: number;
   providerCalls?: number;
   cacheHits?: number;
+  /** V4 routes semantic facet checks to the independent auditor; legacy callers remain strict. */
+  strictSemanticFacetChecks?: boolean;
 };
 
 function unique(values: string[], label: string): void {
@@ -242,8 +244,10 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
   for (const claim of draft.claims) {
     unique(claim.facets.map((facet) => facet.key), `facet key on claim ${claim.key}`);
     assertSelfContainedFacetLabels(claim.key, claim.facets);
-    const coverage = auditClaimFacetCoverage(claim.statement, claim.facets);
-    if (!coverage.complete) throw new Error(`Material claim clause has no declared facet on ${claim.key}: ${coverage.uncovered.map(({ clause }) => clause).join(" | ")}`);
+    if (context.strictSemanticFacetChecks !== false) {
+      const coverage = auditClaimFacetCoverage(claim.statement, claim.facets);
+      if (!coverage.complete) throw new Error(`Material claim clause has no declared facet on ${claim.key}: ${coverage.uncovered.map(({ clause }) => clause).join(" | ")}`);
+    }
   }
 
   const sortedClaims = [...draft.claims].sort(compareClaims);
@@ -267,7 +271,7 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
     for (const keyValue of item.facetKeys) {
       const entry = declared.get(keyValue);
       if (!entry) throw new Error(`Evidence ${item.key} references unknown facet ${keyValue} on claim ${claim.key}.`);
-      if (!facetEvidenceCompatible(item.exactQuote, entry.facet.label)) throw new Error(`Evidence ${item.key} quote is incompatible with facet ${keyValue}.`);
+      if (context.strictSemanticFacetChecks !== false && !facetEvidenceCompatible(item.exactQuote, entry.facet.label)) throw new Error(`Evidence ${item.key} quote is incompatible with facet ${keyValue}.`);
     }
     const source = sourceByRef.get(item.sourceRef);
     if (!source) throw new Error(`Evidence ${item.key} references unknown source ${item.sourceRef}.`);

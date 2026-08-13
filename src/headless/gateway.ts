@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import { estimateModelInputTokens, modelCostReservation, proxyModelCompletion } from "../gateway/model-proxy.ts";
+import { FINALIZER_MODEL_CATALOG } from "../core/model-catalog.ts";
 import type { ModelRequestTimeouts } from "../core/config.ts";
 import { toolNames } from "../providers/contracts.ts";
 import type { ProviderExecutor } from "../providers/executor.ts";
@@ -11,7 +12,7 @@ import type { FileSourceStore } from "./source-store.ts";
 
 const MAX_TOOL_BODY = 1024 * 1024;
 const MAX_MODEL_BODY = 16 * 1024 * 1024;
-const finalizerAgents = new Set(["evidence-compiler", "evidence-auditor"]);
+const finalizerAgents = new Set(["evidence-compiler", "evidence-linker", "resume-claim-compiler", "evidence-auditor"]);
 
 class GatewayError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -119,10 +120,16 @@ export function createHeadlessGateway(input: GatewayInput) {
         });
         return json(response, 200, result);
       }
-      if (request.method === "POST" && url.pathname === "/internal/llm/v1/chat/completions") {
+      if (request.method === "POST" && (url.pathname === "/internal/llm/v1/chat/completions" || url.pathname === "/internal/llm/v1/messages")) {
         const body = await readJson(request, MAX_MODEL_BODY);
         const model = typeof body.model === "string" ? body.model.split("/").at(-1) ?? "" : "";
         authorize(request, "model", model);
+        const protocol = url.pathname.endsWith("/messages") ? "ANTHROPIC_MESSAGES" : "OPENAI_CHAT";
+        const modelDefinition = FINALIZER_MODEL_CATALOG.find(({ id }) => id === model);
+        if (finalizerAgents.has(typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "")
+          && modelDefinition && modelDefinition.protocol !== protocol) {
+          throw new GatewayError(400, `Model ${model} requires the ${modelDefinition.protocol} transport.`);
+        }
         const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
         const remainingMs = input.deadlineAt - Date.now();
         if (remainingMs <= 0) throw new GatewayError(401, "Investigation deadline reached.");
@@ -141,6 +148,7 @@ export function createHeadlessGateway(input: GatewayInput) {
           finalizerUpstreamUrl: input.finalizerUpstreamUrl ?? "https://opencode.ai/zen/go/v1/chat/completions",
           finalizerProvider: input.finalizerProvider ?? "GO",
           finalizerModel: input.finalizerModel ?? "deepseek-v4-pro",
+          protocol,
           finalizerAgents,
           requestTimeouts: input.modelRequestTimeouts,
           fixtureCompletion: () => input.fixtureCompletion?.(body, agent, model) ?? Promise.resolve({ content: "Headless fixture model completed." }),

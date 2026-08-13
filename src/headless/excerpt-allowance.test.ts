@@ -4,7 +4,7 @@ import test from "node:test";
 import { SessionExcerptAllowances } from "./excerpt-allowance.ts";
 
 function result(maximum: number, truncated = false) {
-  return { sourceRef: "S1", excerpts: [{ path: "$", text: "x".repeat(maximum) }], truncated };
+  return { sourceRef: "S1", excerpts: [{ ref: "Xfixture", path: "$", offsetStart: 0, offsetEnd: maximum, text: "x".repeat(maximum) }], truncated };
 }
 
 test("accounts repeated requests cumulatively and reports explicit exhaustion", async () => {

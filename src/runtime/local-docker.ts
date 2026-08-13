@@ -4,7 +4,7 @@ import { basename, resolve } from "node:path";
 import { runProcess, waitForHttp } from "./process.ts";
 import { openCodeRuntimeEnvironment, type InvestigatorRuntime, type RunHandle, type RunStatus, type RuntimeStartInput } from "./types.ts";
 
-const imageName = "translucid-investigator:1.18.15";
+const imageName = "translucid-investigator:1.18.18";
 let buildPromise: Promise<void> | undefined;
 
 async function ensureImage(): Promise<void> {

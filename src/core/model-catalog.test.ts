@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { PAID_GO_MODEL_IDS, PAID_GO_MODEL_SET } from "./model-catalog.ts";
+import { FINALIZER_MODEL_CATALOG, PAID_GO_MODEL_IDS, PAID_GO_MODEL_SET, finalizerModelDefinition } from "./model-catalog.ts";
 import { modelCostReservation } from "../gateway/model-proxy.ts";
 
 test("paid Go catalog includes the supported MiMo V2.5 Pro finalizer and excludes free models", () => {
@@ -17,6 +17,15 @@ test("MiMo V2.5 Pro uses the documented Go reservation", () => {
   const body = { messages: [{ role: "user", content: "x" }], max_tokens: 1_000 };
   assert.ok(modelCostReservation(body, "mimo-v2.5-pro") > 0);
   assert.equal(modelCostReservation(body, "mimo-v2.5-pro"), modelCostReservation(body, "deepseek-v4-pro"));
+});
+
+test("finalizer catalog describes protocol, limits, and price for benchmark candidates", () => {
+  assert.deepEqual(FINALIZER_MODEL_CATALOG.map(({ id }) => id), ["minimax-m3", "mimo-v2.5-pro", "deepseek-v4-pro"]);
+  assert.equal(finalizerModelDefinition("minimax-m3").protocol, "ANTHROPIC_MESSAGES");
+  assert.equal(finalizerModelDefinition("minimax-m3").upstreamPath, "/v1/messages");
+  assert.equal(finalizerModelDefinition("mimo-v2.5-pro").protocol, "OPENAI_CHAT");
+  assert.equal(finalizerModelDefinition("deepseek-v4-pro").inputUsdPerMillion, 0.435);
+  assert.throws(() => finalizerModelDefinition("unknown"), /Unsupported finalizer model/);
 });
 
 test("document vision uses the paid MiMo model in both OpenCode runtimes", async () => {

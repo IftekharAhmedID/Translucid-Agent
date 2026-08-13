@@ -3,7 +3,7 @@ import { open, readFile, readdir, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { E2BRuntime } from "../runtime/e2b.ts";
-import { PAID_GO_MODEL_IDS } from "../core/model-catalog.ts";
+import { FINALIZER_MODEL_CATALOG, PAID_GO_MODEL_IDS } from "../core/model-catalog.ts";
 import { loadModelRequestTimeouts } from "../core/config.ts";
 import { getPinnedLocalManifestHash, getPinnedResearchManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
@@ -18,6 +18,7 @@ import {
 } from "./checkpoint.ts";
 import { parseFinalizeArguments } from "./finalize-options.ts";
 import { runFinalizationPipeline } from "./finalization-controller.ts";
+import { publishFinalizationProvenance } from "./incremental-pipeline.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 import { createHeadlessGateway } from "./gateway.ts";
 import { renderInvestigationReport } from "./report.ts";
@@ -93,6 +94,7 @@ async function main(): Promise<void> {
   const expectedManifestHash = await getPinnedLocalManifestHash();
   const researchManifestHash = await getPinnedResearchManifestHash();
   const compilerModel = process.env.FINALIZER_MODEL ?? "mimo-v2.5-pro";
+  const auditorModel = process.env.FINALIZER_AUDITOR_MODEL ?? compilerModel;
   const checkpointConfigs = await currentCheckpointConfigs({
     repositoryRoot: process.cwd(),
     runtime: workspace.runtime,
@@ -114,9 +116,11 @@ async function main(): Promise<void> {
     runId: workspace.runId,
     deadlineAt: deadlineAt.getTime(),
     allowedTools: new Set(["source.excerpts"]),
-    allowedModels: new Set([compilerModel, ...PAID_GO_MODEL_IDS]),
+    allowedModels: new Set([compilerModel, auditorModel, ...PAID_GO_MODEL_IDS, ...FINALIZER_MODEL_CATALOG.map(({ id }) => id)]),
     agentTools: new Map([
       ["evidence-compiler", new Set(["source.excerpts"])],
+      ["evidence-linker", new Set(["source.excerpts"])],
+      ["resume-claim-compiler", new Set()],
       ["evidence-auditor", new Set(["source.excerpts"])],
     ]),
     sourceStore: workspace.sourceStore,
@@ -170,7 +174,7 @@ async function main(): Promise<void> {
       classification: workspace.classification,
       researchModel: manifest.research.config.researchModel,
       compilerModel,
-      auditorModel: compilerModel,
+      auditorModel,
       finalizerProvider,
       deadlineAt: deadlineAt.getTime(),
       registerExcerptAllowance: gateway.registerExcerptAllowance,
@@ -184,10 +188,11 @@ async function main(): Promise<void> {
     const integrity = await workspace.sourceStore.verify();
     if (!integrity.valid) throw new Error(`Source integrity failed for ${integrity.invalidSourceRefs.join(", ")}.`);
     await atomicWrite(join(workspace.root, "report.pdf"), await renderInvestigationReport(result));
-    await atomicWrite(resultPath, `${JSON.stringify(result, null, 2)}\n`);
     await runtime.stop(handle);
     handle = undefined;
+    await publishFinalizationProvenance(workspace.root);
     if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
+    await atomicWrite(resultPath, `${JSON.stringify(result, null, 2)}\n`);
     process.stdout.write(`${JSON.stringify({ runId: workspace.runId, result: resultPath, report: join(workspace.root, "report.pdf"), reusedDossier: Boolean(reusableDossier || reusablePacketDossier) }, null, 2)}\n`);
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error("Unknown finalization failure.");

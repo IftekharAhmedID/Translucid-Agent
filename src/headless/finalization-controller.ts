@@ -96,6 +96,13 @@ export function finalizerPromptPayload<T>(provider: "ZEN" | "GO", model: string,
   };
 }
 
+export function nativeFinalizerPromptPayload<T>(prompt: string, schema: z.ZodType<T>) {
+  return {
+    format: { type: "json_schema" as const, schema: z.toJSONSchema(schema), retryCount: 1 },
+    parts: [{ type: "text" as const, text: prompt }],
+  };
+}
+
 export function finalizerTextPromptPayload(prompt: string) {
   return {
     system: FINALIZER_TEXT_MODE_MARKER,
@@ -400,7 +407,6 @@ export async function runLegacyFinalizationPipeline(input: FinalizationPipelineI
  * fixtures while old checkpoints are being retired.
  */
 export async function runFinalizationPipeline(input: FinalizationPipelineInput): Promise<InvestigationResult> {
-  const { runPacketizedFinalization } = await import("./packet-finalization.ts");
-  const finalized = await runPacketizedFinalization(input);
-  return finalized.result;
+  const { runIncrementalFinalization } = await import("./incremental-pipeline.ts");
+  return runIncrementalFinalization(input);
 }

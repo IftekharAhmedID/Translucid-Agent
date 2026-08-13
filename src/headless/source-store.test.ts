@@ -91,9 +91,18 @@ test("returns exact JSON paths and bounded text windows", async () => {
     const textExcerpts = await store.excerpts({ sourceRef: text.ref, queries: ["toolchain"], maxCharacters: 50 });
 
     assert.deepEqual(jsonExcerpts.excerpts[0], {
+      ref: jsonExcerpts.excerpts[0]!.ref,
       path: "experience[0].title",
+      offsetStart: jsonExcerpts.excerpts[0]!.offsetStart,
+      offsetEnd: jsonExcerpts.excerpts[0]!.offsetEnd,
       text: "Principal Engineer",
     });
+    assert.match(jsonExcerpts.excerpts[0]!.ref, /^X[a-f0-9]{64}$/);
+    const resolved = await store.resolveExcerpt(jsonExcerpts.excerpts[0]!.ref);
+    assert.equal(resolved.text, "Principal Engineer");
+    const reopened = await FileSourceStore.open(directory);
+    assert.deepEqual(await reopened.resolveExcerpt(jsonExcerpts.excerpts[0]!.ref), resolved);
+    assert.match(await readFile(join(directory, ".work", "finalization", "v4", "excerpts.json"), "utf8"), /schemaVersion/);
     assert.match(textExcerpts.excerpts[0]!.text, /toolchain/);
     assert.ok(textExcerpts.excerpts[0]!.text.length <= 50);
     assert.equal((await store.readBounded(json.ref, 120)).text, '{\n  "experience": [\n    {\n      "company": "Acme",\n      "title": "Principal Engineer"\n    }\n  ]\n}');

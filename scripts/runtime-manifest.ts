@@ -12,6 +12,8 @@ const criticalRoots = ["Dockerfile", "package-lock.json", "runtime"];
 const researchOnlyFiles = new Set([
   "runtime/headless-opencode/agents/evidence-compiler.md",
   "runtime/headless-opencode/agents/evidence-auditor.md",
+  "runtime/headless-opencode/agents/resume-claim-compiler.md",
+  "runtime/headless-opencode/agents/evidence-linker.md",
 ]);
 
 async function filesAt(path: string): Promise<string[]> {
