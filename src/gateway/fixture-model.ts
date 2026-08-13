@@ -122,6 +122,22 @@ export function writeFixtureCompletion(response: import("node:http").ServerRespo
 }
 
 export function writeAnthropicFixtureCompletion(response: import("node:http").ServerResponse, body: Record<string, unknown>, model: string, completion: Completion): void {
+  if (body.stream === true) {
+    const id = `msg_fixture_${randomUUID().replaceAll("-", "")}`;
+    const toolId = `toolu_fixture_${randomUUID().replaceAll("-", "")}`;
+    const event = (type: string, value: Record<string, unknown>) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...value })}\n\n`);
+    response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
+    event("message_start", { message: { id, type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 0 } } });
+    const contentBlock = completion.toolCall ? { type: "tool_use", id: toolId, name: completion.toolCall.name, input: {} } : { type: "text", text: "" };
+    event("content_block_start", { index: 0, content_block: contentBlock });
+    const delta = completion.toolCall ? { type: "input_json_delta", partial_json: JSON.stringify(completion.toolCall.arguments) } : { type: "text_delta", text: completion.content ?? "" };
+    event("content_block_delta", { index: 0, delta });
+    event("content_block_stop", { index: 0 });
+    event("message_delta", { delta: { stop_reason: completion.toolCall ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 50 } });
+    event("message_stop", {});
+    response.end();
+    return;
+  }
   const content = completion.toolCall
     ? [{ type: "tool_use", id: `toolu_fixture_${randomUUID().replaceAll("-", "")}`, name: completion.toolCall.name, input: completion.toolCall.arguments }]
     : [{ type: "text", text: completion.content ?? "" }];

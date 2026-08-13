@@ -31,6 +31,12 @@ export const claimBatchSchema = z.object({
   deferredLineIds: z.array(lineIdSchema).max(100),
 }).strict();
 
+export const validatedClaimSchema = claimCandidateSchema.extend({
+  claimKey: z.string().regex(/^C0*[1-9]\d*$/),
+  lineIds: z.array(lineIdSchema).min(1).max(100),
+  sourceSpan: z.object({ page: z.number().int().positive().optional(), text: z.string().min(1) }).strict(),
+}).strict();
+
 const evidenceCandidateJudgmentSchema = z.object({
   excerptRef: z.string().regex(/^X[a-f0-9]{64}$/),
   relation: z.enum(["SUPPORTS", "CONTRADICTS", "IRRELEVANT"]),
@@ -60,11 +66,32 @@ export type ClaimBatch = z.infer<typeof claimBatchSchema>;
 export type EvidenceJudgment = z.infer<typeof evidenceJudgmentSchema>;
 export type V5Audit = z.infer<typeof v5AuditSchema>;
 export type ExcerptRecord = { ref: string; sourceRef: string; path: string; offsetStart: number; offsetEnd: number; text: string };
-export type ValidatedClaim = ClaimBatch["claims"][number] & { claimKey: string; lineIds: string[]; sourceSpan: { page?: number; text: string } };
+export type ValidatedClaim = z.infer<typeof validatedClaimSchema>;
 export type ValidatedExclusion = ClaimBatch["exclusions"][number];
 export type ValidatedClaimBatch = { claims: ValidatedClaim[]; exclusions: ValidatedExclusion[]; deferredLineIds: string[] };
 export type ValidatedClaimRecords = ValidatedClaimBatch & { unresolvedLineIds: string[]; defects: string[] };
 export type FinalizationStage = "claims" | "evidence" | "summary" | "audit";
+
+const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const checkpointPathSchema = z.string().regex(/^(?:claims\/C0*[1-9]\d*\.json|evidence\/C0*[1-9]\d*\.(?:candidates|judgment)\.json|line-catalog\.json|coverage\.json|source-authority-snapshot\.json|summary\.json|audit\.json)$/);
+const stageManifestEntrySchema = z.object({
+  fingerprint: sha256Schema,
+  configuration: z.record(z.string(), z.unknown()),
+}).strict();
+
+export const v5StageManifestSchema = z.object({
+  schemaVersion: z.literal(3),
+  implementation: z.literal("incremental-finalizer-v5"),
+  stages: z.object({
+    claims: stageManifestEntrySchema.optional(),
+    evidence: stageManifestEntrySchema.optional(),
+    summary: stageManifestEntrySchema.optional(),
+    audit: stageManifestEntrySchema.optional(),
+  }).strict(),
+  files: z.record(checkpointPathSchema, sha256Schema),
+}).strict();
+
+export type V5StageManifest = z.infer<typeof v5StageManifestSchema>;
 
 export function invalidatedFinalizationStages(stored: Partial<Record<FinalizationStage, string>>, current: Partial<Record<FinalizationStage, string>>): FinalizationStage[] {
   const order: FinalizationStage[] = ["claims", "evidence", "summary", "audit"];
@@ -95,6 +122,24 @@ function orderedIds(catalog: LineCatalog, values: Iterable<string>): string[] {
   return catalog.lines.filter(({ id }) => wanted.has(id)).map(({ id }) => id);
 }
 
+function likelyFactualAssertion(text: string): boolean {
+  return /\b(?:19\d{2}|20\d{2}|worked|works|engineer|developer|founded|built|created|led|managed|published|degree|university|company|employer|employment|experience|contributed|maintained|served| at )\b/iu.test(` ${text} `);
+}
+
+function lexicalCompare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function contactDetail(text: string): boolean {
+  return /(?:\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b|https?:\/\/|\b(?:linkedin|github)\.com\/|\+?\d[\d().\s-]{7,}\d)/iu.test(text);
+}
+
+function sectionHeading(text: string): boolean {
+  const value = text.trim().replace(/:$/u, "");
+  return /^(?:profile|professional summary|summary|experience|employment|employment history|work experience|education|skills|technical skills|projects|publications|certifications|awards|affiliations|volunteering|contact)$/iu.test(value)
+    || (value.length >= 2 && value === value.toLocaleUpperCase("en-US") && !/\d/u.test(value) && !likelyFactualAssertion(value));
+}
+
 export function validateClaimBatchRecords(value: unknown, catalog: LineCatalog, assignedLineIds: readonly string[], claimKeyPrefix = "C", claimKeyStart = 0): ValidatedClaimRecords {
   const assigned = orderedIds(catalog, assignedLineIds);
   if (assigned.length !== new Set(assignedLineIds).size) throw new Error("Assigned line IDs contain duplicates or unknown lines.");
@@ -123,7 +168,27 @@ export function validateClaimBatchRecords(value: unknown, catalog: LineCatalog, 
   });
   const parsedExclusions = (Array.isArray(raw.exclusions) ? raw.exclusions : []).flatMap((candidate, index) => {
     const result = exclusionSchema.safeParse(candidate);
-    if (result.success) return [{ index, value: result.data }];
+    if (result.success) {
+      const lines = result.data.lineIds.flatMap((lineId) => catalog.lines.find(({ id }) => id === lineId) ?? []);
+      const normalized = (text: string) => text.trim().replace(/\s+/gu, " ").toLocaleLowerCase("en-US");
+      if (result.data.reason === "DUPLICATE" && lines.some((line) => catalog.lines.filter((candidateLine) => normalized(candidateLine.text) === normalized(line.text)).length < 2)) {
+        defects.push(`exclusion ${index + 1}: line is not duplicated in the frozen input.`);
+        return [];
+      }
+      if (new Set(["BARE_SKILL", "SUBJECTIVE_DESCRIPTION", "NON_ASSERTIVE"]).has(result.data.reason) && lines.some(({ text }) => likelyFactualAssertion(text))) {
+        defects.push(`exclusion ${index + 1}: likely factual assertion must remain a claim.`);
+        return [];
+      }
+      if (result.data.reason === "CONTACT_DETAIL" && lines.some(({ text }) => !contactDetail(text))) {
+        defects.push(`exclusion ${index + 1}: line is not a contact detail.`);
+        return [];
+      }
+      if (result.data.reason === "SECTION_HEADING" && lines.some(({ text }) => !sectionHeading(text))) {
+        defects.push(`exclusion ${index + 1}: line is not a recognized section heading.`);
+        return [];
+      }
+      return [{ index, value: result.data }];
+    }
     defects.push(`exclusion ${index + 1}: ${z.prettifyError(result.error)}`);
     return [];
   });
@@ -142,12 +207,22 @@ export function validateClaimBatchRecords(value: unknown, catalog: LineCatalog, 
     if (!assignedSet.has(lineId)) defects.push(`Line ${lineId} is outside the assigned claim window.`);
     else if (lineOwners.length > 1) defects.push(`Line ${lineId} has more than one disposition.`);
   }
-  const acceptedClaims = parsedClaims.filter(({ index }) => !invalidOwners.has(`claim:${index}`));
+  const assignedPosition = new Map(assigned.map((lineId, index) => [lineId, index]));
+  const earliestPosition = (lineIds: readonly string[]) => Math.min(...lineIds.map((lineId) => assignedPosition.get(lineId) ?? Number.MAX_SAFE_INTEGER));
+  const acceptedClaims = parsedClaims
+    .filter(({ index }) => !invalidOwners.has(`claim:${index}`))
+    .sort((left, right) => earliestPosition(left.value.facets.flatMap(({ lineIds }) => lineIds)) - earliestPosition(right.value.facets.flatMap(({ lineIds }) => lineIds)) || lexicalCompare(left.value.localKey, right.value.localKey));
   const claims = acceptedClaims.map(({ value: claim }, index) => {
-    const lineIds = orderedIds(catalog, claim.facets.flatMap(({ lineIds }) => lineIds));
-    return { ...claim, claimKey: `${claimKeyPrefix}${String(claimKeyStart + index + 1).padStart(3, "0")}`, lineIds, sourceSpan: lineSpan(catalog, lineIds) };
+    const facets = claim.facets
+      .map((facet) => ({ ...facet, lineIds: orderedIds(catalog, facet.lineIds) }))
+      .sort((left, right) => earliestPosition(left.lineIds) - earliestPosition(right.lineIds) || lexicalCompare(left.key, right.key));
+    const lineIds = orderedIds(catalog, facets.flatMap(({ lineIds }) => lineIds));
+    return { ...claim, facets, claimKey: `${claimKeyPrefix}${String(claimKeyStart + index + 1).padStart(3, "0")}`, lineIds, sourceSpan: lineSpan(catalog, lineIds) };
   });
-  const exclusions = parsedExclusions.filter(({ index }) => !invalidOwners.has(`exclusion:${index}`)).map(({ value }) => ({ ...value, lineIds: orderedIds(catalog, value.lineIds) }));
+  const exclusions = parsedExclusions
+    .filter(({ index }) => !invalidOwners.has(`exclusion:${index}`))
+    .sort((left, right) => earliestPosition(left.value.lineIds) - earliestPosition(right.value.lineIds) || lexicalCompare(left.value.reason, right.value.reason))
+    .map(({ value }) => ({ ...value, lineIds: orderedIds(catalog, value.lineIds) }));
   const earliest = assigned[0];
   const deferredEarliest = earliest !== undefined && deferred.includes(earliest) && !invalidOwners.has("deferred");
   if (deferredEarliest) defects.push(`Claim batch deferred the earliest unresolved line ${earliest}.`);
@@ -156,7 +231,7 @@ export function validateClaimBatchRecords(value: unknown, catalog: LineCatalog, 
   return { claims, exclusions, deferredLineIds: acceptedDeferred, unresolvedLineIds: assigned.filter((lineId) => !resolved.has(lineId)), defects };
 }
 
-export function validateEvidenceJudgment(value: unknown, claim: { claimKey: string; facets: ReadonlyArray<{ key: string }> }, candidatesByFacet: ReadonlyMap<string, readonly ExcerptRecord[]>, candidateSetHash: string): EvidenceJudgment {
+export function validateEvidenceJudgment(value: unknown, claim: { claimKey: string; facets: ReadonlyArray<{ key: string; label?: string }> }, candidatesByFacet: ReadonlyMap<string, readonly ExcerptRecord[]>, candidateSetHash: string): EvidenceJudgment {
   const judgment = evidenceJudgmentSchema.parse(value);
   if (judgment.claimId !== claim.claimKey) throw new Error(`Evidence judgment references unknown claim ${judgment.claimId}.`);
   if (judgment.candidateSetHash !== candidateSetHash) throw new Error(`Evidence judgment candidate-set hash does not match claim ${claim.claimKey}.`);
@@ -170,8 +245,22 @@ export function validateEvidenceJudgment(value: unknown, claim: { claimKey: stri
     const unknown = facet.candidates.find(({ excerptRef }) => !expected.has(excerptRef));
     if (unknown) throw new Error(`Evidence judgment references unknown excerpt ${unknown.excerptRef}.`);
     if (actual.size !== expected.size || [...expected].some((ref) => !actual.has(ref))) throw new Error(`Evidence judgment must exactly account for assigned candidates on ${claim.claimKey}/${facet.facetKey}.`);
+    const label = claim.facets.find(({ key }) => key === facet.facetKey)?.label;
+    const incompatible = label && facet.candidates.find(({ excerptRef, relation }) => relation !== "IRRELEVANT" && !v5FacetEvidenceCompatible(assigned.find(({ ref }) => ref === excerptRef)!.text, label));
+    if (incompatible) throw new Error(`Evidence judgment marks semantically incompatible excerpt ${incompatible.excerptRef} as ${incompatible.relation} on ${claim.claimKey}/${facet.facetKey}.`);
   }
-  return judgment;
+  const facetsByKey = new Map(judgment.facets.map((facet) => [facet.facetKey, facet]));
+  return {
+    ...judgment,
+    facets: claim.facets.map(({ key }) => {
+      const facet = facetsByKey.get(key)!;
+      const candidatesByRef = new Map(facet.candidates.map((candidate) => [candidate.excerptRef, candidate]));
+      return {
+        facetKey: key,
+        candidates: (candidatesByFacet.get(key) ?? []).map(({ ref }) => candidatesByRef.get(ref)!),
+      };
+    }),
+  };
 }
 
 export async function atomicJson(path: string, value: unknown): Promise<void> {

@@ -92,6 +92,10 @@ export function finalizerPromptPayload<T>(provider: "ZEN" | "GO", model: string,
   };
 }
 
+export function finalizerRepairPayload(originalResponse: string, validatorError: string) {
+  return { originalResponse, validatorError };
+}
+
 export function finalizerTextPromptPayload(prompt: string) {
   return {
     system: FINALIZER_TEXT_MODE_MARKER,

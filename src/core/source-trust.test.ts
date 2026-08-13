@@ -4,10 +4,11 @@ import test from "node:test";
 import { deriveArtifactTrust, effectiveAttestationGroup, effectiveSourceAuthority, institutionalAuthorityRule, SOURCE_AUTHORITY_POLICY_VERSION } from "./source-trust.ts";
 
 test("offline authority policy promotes only explicit official institutional hosts", () => {
-  assert.equal(SOURCE_AUTHORITY_POLICY_VERSION, "institutional-domains-v1");
+  assert.equal(SOURCE_AUTHORITY_POLICY_VERSION, "institutional-domains-v2");
   assert.equal(institutionalAuthorityRule("https://docs.python.org/3/whatsnew/"), "python-official");
   assert.equal(institutionalAuthorityRule("https://developer.arm.com/documentation"), "arm-official");
   assert.equal(institutionalAuthorityRule("https://ep2024.europython.eu/session/example"), "europython-official");
+  assert.equal(institutionalAuthorityRule("https://staging.europython.eu/session/example"), undefined);
   assert.equal(institutionalAuthorityRule("https://discuss.python.org/t/example"), undefined);
   assert.equal(institutionalAuthorityRule("https://blog.example.com/python"), undefined);
   assert.equal(effectiveSourceAuthority({ artifact: { sourceAuthority: "CONTEXT", sourceUrl: "https://www.python.org/dev/core-developers/" } }), "FIRST_PARTY_INSTITUTIONAL");

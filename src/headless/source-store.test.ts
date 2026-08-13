@@ -197,3 +197,22 @@ test("finds deterministic bounded candidates from memo citations without network
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("memo-tier candidates are globally ranked by excerpt overlap before source order", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-source-ranking-"));
+  try {
+    const store = await FileSourceStore.open(directory, { finalizationVersion: "v5" });
+    const first = await store.capture({ kind: "SOURCE_CONTENT", provider: "public-fetch", providerRoute: "web.fetch", sourceUrl: "https://www.python.org/first", mimeType: "application/json", content: { a: "Diego contributed.", b: "Russo contributed." }, provenance: {} });
+    const second = await store.capture({ kind: "SOURCE_CONTENT", provider: "public-fetch", providerRoute: "web.fetch", sourceUrl: "https://www.python.org/second", mimeType: "application/json", content: { a: "Diego used CPython.", b: "Russo used CPython." }, provenance: {} });
+    const strongest = await store.capture({ kind: "SOURCE_CONTENT", provider: "public-fetch", providerRoute: "web.fetch", sourceUrl: "https://www.python.org/strongest", mimeType: "text/plain", content: "Diego Russo is listed as a CPython core developer.", provenance: {} });
+    const candidates = await store.findStoredExcerpts({
+      statement: "Diego Russo is a CPython core developer.",
+      facets: [{ key: "status", statement: "Diego Russo is a CPython core developer." }],
+      researchMemos: `Diego Russo CPython core developer records [${first.ref}] [${second.ref}] [${strongest.ref}]`,
+      eligibleSourceRefs: new Set([first.ref, second.ref, strongest.ref]),
+    });
+    assert.equal(candidates.candidatesByFacet.status?.[0]?.sourceRef, strongest.ref);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

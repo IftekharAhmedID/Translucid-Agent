@@ -8,7 +8,7 @@ export type SourceAuthority =
   | "CONTEXT"
   | "DISCOVERY_ONLY";
 
-export const SOURCE_AUTHORITY_POLICY_VERSION = "institutional-domains-v1";
+export const SOURCE_AUTHORITY_POLICY_VERSION = "institutional-domains-v2";
 
 export type InstitutionalAuthorityRule = "python-official" | "arm-official" | "europython-official";
 
@@ -144,7 +144,7 @@ export function institutionalAuthorityRule(value: string | null | undefined): In
   if (!host) return undefined;
   if (new Set(["www.python.org", "docs.python.org", "devguide.python.org"]).has(host)) return "python-official";
   if (host === "arm.com" || host === "www.arm.com" || host === "developer.arm.com") return "arm-official";
-  if (host === "europython.eu" || host.endsWith(".europython.eu") || host === "europython-society.org" || host.endsWith(".europython-society.org")) return "europython-official";
+  if (new Set(["europython.eu", "www.europython.eu", "europython-society.org", "www.europython-society.org"]).has(host) || /^ep20(?:1[1-9]|2[0-6])\.europython\.eu$/u.test(host)) return "europython-official";
   return undefined;
 }
 

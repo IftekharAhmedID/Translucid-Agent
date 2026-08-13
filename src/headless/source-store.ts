@@ -252,6 +252,7 @@ export class FileSourceStore {
     let remaining = maximum;
     const excerpts: SourceExcerptResult["excerpts"] = [];
     let matchCount = 0;
+    const previousExcerptCount = this.excerptIndex.size;
     if (source.mimeType.includes("json")) {
       const leaves = flatten(JSON.parse(raw));
       for (const query of input.queries) {
@@ -280,7 +281,7 @@ export class FileSourceStore {
         remaining -= window.text.length;
       }
     }
-    await this.persistExcerpts();
+    if (this.excerptIndex.size !== previousExcerptCount) await this.persistExcerpts();
     return { sourceRef: source.ref, excerpts, truncated: matchCount > excerpts.length || remaining <= 0 };
   }
 
@@ -312,6 +313,10 @@ export class FileSourceStore {
     let remainingCharacters = 16_000;
     let remainingCandidates = 16;
     for (const facet of input.facets) {
+      if (remainingCharacters <= 0 || remainingCandidates <= 0) {
+        candidatesByFacet[facet.key] = [];
+        continue;
+      }
       const facetTokens = tokens(`${input.statement} ${facet.statement}`);
       const specificTokens = facetTokens.filter((token) => !entityTokens.includes(token));
       const strongMemoRefs = new Set<string>();
@@ -330,22 +335,27 @@ export class FileSourceStore {
       }).sort((left, right) => left.tier - right.tier || right.score - left.score || Number(left.source.ref.slice(1)) - Number(right.source.ref.slice(1)));
       const facetCandidates: Array<{ excerpt: StoredExcerptCandidates["candidatesByFacet"][string][number]; tier: number; score: number }> = [];
       const queries = [...new Set([facet.statement, input.statement, ...facetTokens])].filter(Boolean).slice(0, 12);
-      for (const { source, tier } of ranked) {
-        if (facetCandidates.length >= 3 || remainingCharacters <= 0 || remainingCandidates <= 0) break;
-        const found = await this.excerpts({ sourceRef: source.ref, queries, maxCharacters: Math.min(2_000, remainingCharacters) });
-        const rankedExcerpts = found.excerpts.map((excerpt) => ({ excerpt, score: facetTokens.filter((token) => excerpt.text.toLocaleLowerCase("en-US").includes(token)).length }))
-          .sort((left, right) => right.score - left.score || left.excerpt.offsetStart - right.excerpt.offsetStart)
-          .slice(0, 2);
-        for (const { excerpt, score } of rankedExcerpts) {
-          if (facetCandidates.length >= 8 || remainingCandidates <= 0 || remainingCharacters < excerpt.text.length) break;
-          facetCandidates.push({ excerpt: { ...excerpt, sourceRef: source.ref }, tier, score });
-          remainingCharacters -= excerpt.text.length;
-          remainingCandidates -= 1;
+      for (const tier of [1, 2, 3, 4]) {
+        for (const { source } of ranked.filter((candidate) => candidate.tier === tier)) {
+          if (remainingCharacters <= 0 || remainingCandidates <= 0) break;
+          const found = await this.excerpts({ sourceRef: source.ref, queries, maxCharacters: Math.min(2_000, remainingCharacters) });
+          facetCandidates.push(...found.excerpts.map((excerpt) => ({
+            excerpt: { ...excerpt, sourceRef: source.ref },
+            tier,
+            score: facetTokens.filter((token) => excerpt.text.toLocaleLowerCase("en-US").includes(token)).length,
+          })).sort((left, right) => right.score - left.score || left.excerpt.offsetStart - right.excerpt.offsetStart).slice(0, 2));
         }
+        if (facetCandidates.length >= 3) break;
       }
-      candidatesByFacet[facet.key] = facetCandidates
-        .sort((left, right) => left.tier - right.tier || right.score - left.score || Number(left.excerpt.sourceRef.slice(1)) - Number(right.excerpt.sourceRef.slice(1)) || left.excerpt.offsetStart - right.excerpt.offsetStart)
-        .map(({ excerpt }) => excerpt);
+      const selected: StoredExcerptCandidates["candidatesByFacet"][string] = [];
+      for (const { excerpt } of facetCandidates.sort((left, right) => left.tier - right.tier || right.score - left.score || Number(left.excerpt.sourceRef.slice(1)) - Number(right.excerpt.sourceRef.slice(1)) || left.excerpt.offsetStart - right.excerpt.offsetStart)) {
+        if (selected.length >= 3 || remainingCandidates <= 0) break;
+        if (remainingCharacters < excerpt.text.length) continue;
+        selected.push(excerpt);
+        remainingCharacters -= excerpt.text.length;
+        remainingCandidates -= 1;
+      }
+      candidatesByFacet[facet.key] = selected;
     }
     const totalCharacters = 16_000 - remainingCharacters;
     const fingerprint = createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.entries(candidatesByFacet).sort(([left], [right]) => left.localeCompare(right))))).digest("hex");

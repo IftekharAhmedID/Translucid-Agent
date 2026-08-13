@@ -170,7 +170,8 @@ export function assertPublishableResult(result: InvestigationResult): void {
   if (result.run.classification !== "PUBLIC_PROFESSIONAL") return;
   for (const source of result.sources) {
     const providerMetadata = `${source.provider}\n${source.providerRoute}\n${source.kind}`.toLowerCase();
-    if (/\b(?:fixture|synthetic)\b/u.test(providerMetadata)) throw new Error(`Public result contains fixture provider metadata on ${source.ref}.`);
+    const syntheticRecordTitle = /^(?:fixture|synthetic)(?:[\s:_-]+(?:candidate|source|record|profile|test)\b|$)/iu.test(source.title ?? "");
+    if (/\b(?:fixture|synthetic)\b/u.test(providerMetadata) || syntheticRecordTitle) throw new Error(`Public result contains fixture provider metadata on ${source.ref}.`);
     if (!source.url) continue;
     if (!URL.canParse(source.url)) throw new Error(`Public result contains a malformed source URL on ${source.ref}.`);
     const hostname = new URL(source.url).hostname.toLowerCase();

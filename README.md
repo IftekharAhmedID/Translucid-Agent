@@ -1,12 +1,12 @@
 # Translucid Investigation Agent
 
-Translucid is a synthetic-data development system for evidence-bounded candidate-claim investigations. It accepts a PDF plus arbitrary text or JSON, runs a pinned OpenCode investigator in local Docker or E2B, persists every durable state transition in PostgreSQL, and renders a deterministic evidence report. It does not score, rank, recommend, or infer protected traits.
+Translucid is a development system for evidence-bounded professional-claim investigations. The active headless path accepts a PDF plus arbitrary text or JSON, runs a pinned OpenCode investigator in local Docker or E2B, preserves research and immutable sources in a file-backed run, and renders a deterministic evidence report. The legacy dashboard path still uses PostgreSQL during migration. Neither path scores, ranks, recommends, or infers protected traits.
 
 ## What is implemented
 
 ### Headless exhaustive report path
 
-The current headless path is the acceptance path for exhaustive evidence reports. `npm run investigate` preserves parsed input, every immutable provider response, specialist memos, memo citation sidecars, and a versioned research checkpoint. Finalization is recovery-only: `npm run finalize -- --run <absolute-run-directory> [--keep-debug]` validates that checkpoint, creates an exhaustive résumé coverage outline, compiles deterministic five-claim evidence packets (two concurrent sessions), merges them host-side into `.work/finalization/evidence-dossier.json`, runs a fresh independent audit, and publishes `report.pdf` before the success-marker `result.json`. A successful `result.json` is never overwritten.
+The current headless path is the acceptance path for exhaustive evidence reports. `npm run investigate` preserves parsed input, every immutable provider response, specialist memos, memo citation sidecars, and a versioned research checkpoint. Finalization is recovery-only: `npm run finalize -- --run <absolute-run-directory> [--keep-debug]` validates that checkpoint, builds a fresh V5 claim ledger under `.work/finalization/v5`, retrieves bounded candidates from frozen source bytes, judges one claim at a time through marked plain-text JSON, derives the canonical result in TypeScript, and runs a fresh independent audit. It verifies and publishes `report.pdf` before the success-marker `result.json`; a successful result is never overwritten. V3/V4 artifacts are not imported or modified.
 
 The result is schema `1.1`. Every substantive factual résumé assertion—including LOW-materiality facts—must be a claim. Each claim lists its facets, conclusion, status, strength, every supporting or contradicting evidence item, exact quotation, immutable source location, authority, hash, and clickable public URL where available. Unresolved claim and facet strengths render as `—`; the identity-resolution status is labeled as identity metadata and is never a candidate-level verdict.
 
@@ -89,7 +89,7 @@ While an active local live-provider run is attached, the focused finalizer compa
 npm run smoke:finalizer -- <active-run-id>
 ```
 
-It requires three consecutive critic, five-claim finding, and summary structured-output cycles before a real résumé acceptance run proceeds.
+It runs the exact 20-call V5 qualification set: five claim batches, ten evidence judgments, three summaries, and two audits. Qualification requires 20/20 valid after at most one repair, at least 19 first-pass responses, no transport failures, and no gold-fixture semantic defects.
 
 ## Verification
 
@@ -100,10 +100,10 @@ npm run typecheck
 npm run lint
 DATABASE_URL=postgres://translucid:translucid@127.0.0.1:54329/translucid npm run build
 npm audit --audit-level=high
-docker build -t translucid-investigator:1.18.15 .
+docker build -t translucid-investigator:1.18.18 .
 ```
 
-The synthetic acceptance path should also verify four simultaneous local runtimes, native child-session trace events, a separate adjudicator session, saved artifacts/findings, deterministic PDF output, and zero remaining case containers after cleanup.
+The synthetic acceptance path should also verify native child sessions, an independent auditor model, frozen source hashes, deterministic V5 semantic output across restarts, temporary-PDF verification, result-last publication, and zero remaining case containers after cleanup.
 
 ## Primary implementation references
 

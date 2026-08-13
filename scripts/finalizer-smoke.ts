@@ -7,11 +7,11 @@ import { z } from "zod";
 
 import { extractMarkedJson } from "../src/agent/structured-output.ts";
 import { FINALIZER_MODEL_CATALOG, finalizerModelDefinition } from "../src/core/model-catalog.ts";
-import { describeSdkError, finalizerPromptPayload, type AssistantMessage } from "../src/headless/finalization-controller.ts";
+import { describeSdkError, finalizerPromptPayload, finalizerRepairPayload, type AssistantMessage } from "../src/headless/finalization-controller.ts";
 import { claimBatchSchema, evidenceJudgmentSchema, v5AuditSchema, validateClaimBatchRecords, validateEvidenceJudgment } from "../src/headless/incremental-finalization.ts";
 import { buildLineCatalog } from "../src/headless/line-catalog.ts";
 import { summaryTimelineOutputSchema } from "../src/headless/packet-dossier.ts";
-import { CLAIM_BATCH_PROMPT_CONTRACT, EVIDENCE_JUDGE_PROMPT_CONTRACT, promptWithPayload, V5_AUDITOR_PROMPT_CONTRACT } from "../src/headless/prompt-contracts.ts";
+import { CLAIM_BATCH_PROMPT_CONTRACT, EVIDENCE_JUDGE_PROMPT_CONTRACT, promptWithPayload, SUMMARY_TIMELINE_PROMPT_CONTRACT, V5_AUDITOR_PROMPT_CONTRACT } from "../src/headless/prompt-contracts.ts";
 
 type Case<T> = {
   name: string;
@@ -108,7 +108,6 @@ function evidenceCases(): Array<Case<z.infer<typeof evidenceJudgmentSchema>>> {
 }
 
 const summaryPayload = {
-  input: { pages: [{ page: 1, lines: [{ line: 1, text: "Diego Russo works at Arm." }] }] },
   claims: [{ claimKey: "C001", statement: "Diego Russo works at Arm.", facets: [{ key: "employer", label: "Diego Russo works at Arm.", materiality: "HIGH" }] }],
   evidence: [{ key: "E001", claimKey: "C001", facetKeys: ["employer"], relation: "SUPPORTS", sourceRef: "S1", exactQuote: "Diego Russo works at Arm.", sourceLocation: { path: "record.text" } }],
 };
@@ -117,7 +116,7 @@ function summaryCases(): Array<Case<z.infer<typeof summaryTimelineOutputSchema>>
   return Array.from({ length: 3 }, (_, index) => ({
     name: `summary-${index + 1}`,
     agent: "evidence-compiler" as const,
-    contract: "MODE: SUMMARY_TIMELINE\n\nWrite narrative only from the supplied claim and evidence keys. Do not add facts.",
+    contract: SUMMARY_TIMELINE_PROMPT_CONTRACT,
     payload: summaryPayload,
     schema: summaryTimelineOutputSchema,
     semantic: (value: z.infer<typeof summaryTimelineOutputSchema>) => {
@@ -128,7 +127,7 @@ function summaryCases(): Array<Case<z.infer<typeof summaryTimelineOutputSchema>>
 }
 
 function auditCases(): Array<Case<z.infer<typeof v5AuditSchema>>> {
-  const base = { input: summaryPayload.input, claims: summaryPayload.claims, candidateJudgments: [], summary: { note: "Only C001 and E001 are referenced." } };
+  const base = { input: { pages: [{ page: 1, lines: [{ line: 1, text: "Diego Russo works at Arm." }] }] }, claims: summaryPayload.claims, candidateJudgments: [], summary: { note: "Only C001 and E001 are referenced." } };
   return [
     {
       name: "audit-clean",
@@ -168,7 +167,7 @@ async function qualify(model: string, attach: { openCodeUrl: string; password: s
     let lastFailure: "FORMAT" | "SEMANTIC" = "FORMAT";
     let passed = false;
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const requestPayload = attempt === 0 ? item.payload : { originalPayload: item.payload, originalResponse, validatorError, repairInstruction: "Correct only the exact validator defect and return the complete requested object." };
+      const requestPayload = attempt === 0 ? item.payload : finalizerRepairPayload(originalResponse, validatorError);
       const prompt = finalizerPromptPayload(provider, model, promptWithPayload(item.contract, requestPayload), item.schema);
       if ("format" in prompt) throw new Error("V5 qualification attempted native structured output.");
       try {

@@ -156,6 +156,14 @@ test("public publication rejects fixture provider metadata and reserved test URL
     fixtureProvider.sources[0]!.provider = "fixture";
     assert.throws(() => assertPublishableResult(fixtureProvider), /fixture provider metadata/i);
 
+    const syntheticTitle = structuredClone(result);
+    syntheticTitle.sources[0]!.title = "Synthetic candidate profile";
+    assert.throws(() => assertPublishableResult(syntheticTitle), /fixture provider metadata/i);
+
+    const legitimateTitle = structuredClone(result);
+    legitimateTitle.sources[0]!.title = "Synthetic biology research at Example Corp";
+    assert.doesNotThrow(() => assertPublishableResult(legitimateTitle));
+
     const reservedUrl = structuredClone(result);
     reservedUrl.sources[0]!.url = "https://candidate.test/profile";
     assert.throws(() => assertPublishableResult(reservedUrl), /reserved \.test URL/i);

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
@@ -12,6 +12,7 @@ import {
   buildFinalizerContext,
   describeSdkError,
   finalizerPromptPayload,
+  finalizerRepairPayload,
   type AssistantMessage,
   type FinalizationPipelineInput,
 } from "./finalization-controller.ts";
@@ -21,8 +22,10 @@ import {
   evidenceJudgmentSchema,
   invalidatedFinalizationStages,
   v5FacetEvidenceCompatible,
+  v5StageManifestSchema,
   v5AuditSchema,
   readJsonIfPresent,
+  validatedClaimSchema,
   validateClaimBatchRecords,
   validateEvidenceJudgment,
   type EvidenceJudgment,
@@ -30,10 +33,11 @@ import {
   type ValidatedClaim,
   type ValidatedExclusion,
   type V5Audit,
+  type V5StageManifest,
 } from "./incremental-finalization.ts";
 import { buildLineCatalog, lineCatalogSchema, type LineCatalog } from "./line-catalog.ts";
 import { summaryTimelineOutputSchema } from "./packet-dossier.ts";
-import { CLAIM_BATCH_PROMPT_CONTRACT, EVIDENCE_JUDGE_PROMPT_CONTRACT, promptWithPayload, V5_AUDITOR_PROMPT_CONTRACT } from "./prompt-contracts.ts";
+import { CLAIM_BATCH_PROMPT_CONTRACT, EVIDENCE_JUDGE_PROMPT_CONTRACT, promptWithPayload, SUMMARY_TIMELINE_PROMPT_CONTRACT, V5_AUDITOR_PROMPT_CONTRACT } from "./prompt-contracts.ts";
 import { canonicalizeInvestigationResult, investigationDraftSchema, type InvestigationDraft, type InvestigationResult } from "./result-contract.ts";
 import type { CapturedSourceMetadata, StoredExcerptCandidates } from "./source-store.ts";
 
@@ -58,12 +62,6 @@ type V5Input = FinalizationPipelineInput;
 type V5Evidence = InvestigationDraft["evidence"][number];
 type V5Claim = InvestigationDraft["claims"][number];
 type Audit = V5Audit;
-type StageManifest = {
-  schemaVersion: 3;
-  implementation: "incremental-finalizer-v5";
-  stages: Partial<Record<"claims" | "evidence" | "summary" | "audit", { fingerprint: string; configuration: Record<string, unknown> }>>;
-  files: Record<string, string>;
-};
 
 export async function publishFinalizationProvenance(root: string): Promise<void> {
   await cp(join(root, stageDirectory), join(root, provenanceDirectory), { recursive: true, force: true });
@@ -147,12 +145,12 @@ function claimDraft(claim: ValidatedClaim, evidence: V5Evidence[], judgment?: Ev
   };
 }
 
-async function readStageRecords<T>(root: string, directoryName: string): Promise<T[]> {
+async function readStageRecords<T>(root: string, directoryName: string, parse: (value: unknown) => T): Promise<T[]> {
   const directoryPath = join(root, stageDirectory, directoryName);
   const entries = await readdir(directoryPath, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error));
   const records: T[] = [];
   for (const entry of entries.filter((item) => item.isFile() && /^C\d+\.json$/u.test(item.name)).sort((left, right) => left.name.localeCompare(right.name))) {
-    const record = await readJsonIfPresent(join(directoryPath, entry.name), (value) => value as T);
+    const record = await readJsonIfPresent(join(directoryPath, entry.name), parse);
     if (record) records.push(record);
   }
   return records;
@@ -196,19 +194,52 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
     runtimeManifestHash: input.handle.manifestHash,
   };
   const claimsFingerprint = digest(claimsConfiguration);
-  let storedManifest = await readJsonIfPresent(join(v5Root, "manifest.json"), (value) => value as StageManifest);
+  let storedManifest = await readJsonIfPresent(join(v5Root, "manifest.json"), (value) => v5StageManifestSchema.parse(value));
   if (storedManifest?.stages.claims?.fingerprint && storedManifest.stages.claims.fingerprint !== claimsFingerprint) {
     await rm(v5Root, { recursive: true, force: true });
     storedManifest = undefined;
   }
   if (storedManifest?.files) {
+    const invalidFiles: string[] = [];
     for (const [relativePath, expectedHash] of Object.entries(storedManifest.files)) {
-      const actualHash = await fileDigest(join(v5Root, relativePath));
-      if (actualHash !== expectedHash) throw new Error(`Finalization checkpoint hash mismatch for ${relativePath}.`);
+      try { if (await fileDigest(join(v5Root, relativePath)) !== expectedHash) invalidFiles.push(relativePath); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") invalidFiles.push(relativePath); else throw error; }
+    }
+    if (invalidFiles.includes("line-catalog.json")) {
+      await rm(v5Root, { recursive: true, force: true });
+      storedManifest = undefined;
+    } else if (invalidFiles.some((path) => path.startsWith("claims/"))) {
+      const firstInvalid = Math.min(...invalidFiles.filter((path) => path.startsWith("claims/")).map((path) => Number(path.match(/C(\d+)\.json$/u)?.[1] ?? 1)));
+      const entries = await readdir(join(v5Root, "claims"), { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error));
+      await Promise.all(entries.filter((entry) => entry.isFile() && Number(entry.name.match(/^C(\d+)\.json$/u)?.[1] ?? 0) >= firstInvalid).map((entry) => rm(join(v5Root, "claims", entry.name), { force: true })));
+      await rm(join(v5Root, "coverage.json"), { force: true });
+      await rm(join(v5Root, "evidence"), { recursive: true, force: true });
+      await rm(join(v5Root, "summary.json"), { force: true });
+      await rm(join(v5Root, "audit.json"), { force: true });
+      delete storedManifest.stages.evidence;
+      delete storedManifest.stages.summary;
+      delete storedManifest.stages.audit;
+    } else {
+      if (invalidFiles.includes("coverage.json")) await rm(join(v5Root, "coverage.json"), { force: true });
+      if (invalidFiles.includes("source-authority-snapshot.json")) await rm(join(v5Root, "source-authority-snapshot.json"), { force: true });
+      for (const path of invalidFiles.filter((value) => value.startsWith("evidence/"))) {
+        await rm(join(v5Root, path), { force: true });
+        if (path.endsWith(".candidates.json")) await rm(join(v5Root, path.replace(".candidates.json", ".judgment.json")), { force: true });
+      }
+      if (invalidFiles.some((path) => path.startsWith("evidence/") || path === "summary.json")) {
+        await rm(join(v5Root, "summary.json"), { force: true });
+        await rm(join(v5Root, "audit.json"), { force: true });
+        delete storedManifest.stages.summary;
+        delete storedManifest.stages.audit;
+      } else if (invalidFiles.includes("audit.json")) {
+        await rm(join(v5Root, "audit.json"), { force: true });
+        delete storedManifest.stages.audit;
+      }
     }
   }
   await mkdir(join(v5Root, "claims"), { recursive: true, mode: 0o700 });
   await mkdir(join(v5Root, "evidence"), { recursive: true, mode: 0o700 });
+  await mkdir(join(v5Root, "attempts"), { recursive: true, mode: 0o700 });
   const storedCatalog = await readJsonIfPresent(join(v5Root, "line-catalog.json"), (value) => lineCatalogSchema.parse(value));
   if (storedCatalog && storedCatalog.fingerprint !== builtCatalog.fingerprint) throw new Error("Finalization line catalog changed since the V5 checkpoint was created.");
   const catalog = storedCatalog ?? builtCatalog;
@@ -217,7 +248,7 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
   const sourceAuthority = authoritySnapshot(sources);
   await atomicJson(join(v5Root, "source-authority-snapshot.json"), sourceAuthority);
   const eligibleSourceRefs = new Set(sourceAuthority.sources.filter(({ effectiveAuthority }) => !new Set(["CONTEXT", "DISCOVERY_ONLY"]).has(effectiveAuthority)).map(({ sourceRef }) => sourceRef));
-  const manifest: StageManifest = storedManifest ?? { schemaVersion: 3, implementation: "incremental-finalizer-v5", stages: {}, files: {} };
+  const manifest: V5StageManifest = storedManifest ?? { schemaVersion: 3, implementation: "incremental-finalizer-v5", stages: {}, files: {} };
   manifest.stages.claims = { fingerprint: claimsFingerprint, configuration: claimsConfiguration };
   const persistManifest = async () => {
     manifest.files = await committedFileHashes(root);
@@ -242,9 +273,11 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
     let originalResponse = "";
     let validatorError = "";
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const requestPayload = attempt === 0 ? payload : { originalPayload: payload, originalResponse, validatorError, repairInstruction: "Correct only the reported defects and return the complete requested object." };
+      const requestPayload = attempt === 0 ? payload : finalizerRepairPayload(originalResponse, validatorError);
       const response = await promptSession(agent, `${title}${attempt ? " repair" : ""}`, { tools: { "source.excerpts": false, skill: false }, ...finalizerPromptPayload(input.finalizerProvider, model, promptWithPayload(contract, requestPayload), schema) });
       originalResponse = assistantText(response);
+      const attemptPath = join(v5Root, "attempts", `${Date.now()}-${randomUUID()}.json`);
+      await atomicJson(attemptPath, { agent, title, attempt: attempt + 1, originalResponse });
       try {
         const value = validate(extractMarkedJson(response));
         if (attempt) {
@@ -254,13 +287,14 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
         return value;
       } catch (error) {
         validatorError = error instanceof Error ? error.message : String(error);
+        await atomicJson(attemptPath, { agent, title, attempt: attempt + 1, originalResponse, validatorError });
         if (attempt === 1) throw error;
       }
     }
     throw new Error(`${title} produced no validated result.`);
   };
 
-  const claims: ValidatedClaim[] = await readStageRecords<ValidatedClaim>(root, "claims");
+  const claims: ValidatedClaim[] = await readStageRecords(root, "claims", (value) => validatedClaimSchema.parse(value));
   const storedCoverage = await readJsonIfPresent(join(v5Root, "coverage.json"), (value) => value as { exclusions?: ValidatedExclusion[] });
   const exclusions: ValidatedExclusion[] = storedCoverage?.exclusions ? [...storedCoverage.exclusions] : [];
   const dispositions = new Set<string>([...claims.flatMap(({ lineIds }) => lineIds), ...exclusions.flatMap(({ lineIds }) => lineIds)]);
@@ -275,20 +309,23 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
     let originalResponse = "";
     let validatorError = "";
     for (let attempt = 0; attempt < 2 && assignedLineIds.length; attempt += 1) {
+      const requestPayload = attempt ? finalizerRepairPayload(originalResponse, validatorError) : {
+        contextLines: window.contextLines,
+        lineWindow: catalog.lines.filter(({ id }) => assignedLineIds.includes(id)),
+        acceptedClaims: claims.slice(-20).map((claim) => ({ claimKey: claim.claimKey, statement: claim.statement, facets: claim.facets.map(({ key, label }) => ({ key, statement: label })) })),
+      };
       const response = await promptSession("evidence-compiler", `Claim batch ${claims.length + 1}${attempt ? " repair" : ""}`, {
         tools: { "source.excerpts": false, skill: false },
-        ...finalizerPromptPayload(input.finalizerProvider, input.compilerModel, promptWithPayload(CLAIM_BATCH_PROMPT_CONTRACT, {
-          contextLines: window.contextLines,
-          lineWindow: catalog.lines.filter(({ id }) => assignedLineIds.includes(id)),
-          acceptedClaims: claims.slice(-20).map((claim) => ({ claimKey: claim.claimKey, statement: claim.statement, facets: claim.facets.map(({ key, label }) => ({ key, statement: label })) })),
-          ...(attempt ? { originalResponse, validatorError, repairInstruction: "Repair only the unresolved lines; accepted sibling records are immutable." } : {}),
-        }), claimBatchSchema),
+        ...finalizerPromptPayload(input.finalizerProvider, input.compilerModel, promptWithPayload(CLAIM_BATCH_PROMPT_CONTRACT, requestPayload), claimBatchSchema),
       });
       originalResponse = assistantText(response);
+      const attemptPath = join(v5Root, "attempts", `${Date.now()}-${randomUUID()}.json`);
+      await atomicJson(attemptPath, { agent: "evidence-compiler", title: `Claim batch ${claims.length + 1}`, attempt: attempt + 1, originalResponse });
       let validated;
       try { validated = validateClaimBatchRecords(extractMarkedJson(response), catalog, assignedLineIds, "C", claims.length); }
       catch (error) {
         validatorError = error instanceof Error ? error.message : String(error);
+        await atomicJson(attemptPath, { agent: "evidence-compiler", title: `Claim batch ${claims.length + 1}`, attempt: attempt + 1, originalResponse, validatorError });
         if (attempt === 1) throw error;
         continue;
       }
@@ -303,7 +340,7 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
       await persistManifest();
       if (validated.defects.length && !validated.unresolvedLineIds.length) throw new Error(`Claim batch returned unscoped malformed records: ${validated.defects.join("; ")}`);
       assignedLineIds = validated.unresolvedLineIds;
-      validatorError = validated.defects.join("\n") || `Unresolved line IDs: ${assignedLineIds.join(", ")}`;
+      validatorError = [validated.defects.join("\n"), assignedLineIds.length ? `Unresolved line IDs: ${assignedLineIds.join(", ")}. Valid siblings were committed and must not be repeated.` : ""].filter(Boolean).join("\n");
       if (attempt && assignedLineIds.length) throw new Error(`Claim batch remained invalid after one local repair: ${validatorError}`);
       if (attempt) compilerAttempts = 2;
     }
@@ -314,7 +351,7 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
     claimsHash: digest(claims),
     sourceHashes: Object.fromEntries(sources.map(({ ref, sha256 }) => [ref, sha256])),
     sourceAuthorityPolicyVersion: SOURCE_AUTHORITY_POLICY_VERSION,
-    retrievalVersion: "memo-first-bounded-v2",
+    retrievalVersion: "memo-first-bounded-v3",
     schemaHash: digest(z.toJSONSchema(evidenceJudgmentSchema)),
     promptHash: digest(EVIDENCE_JUDGE_PROMPT_CONTRACT),
     compilerModel: input.compilerModel,
@@ -396,13 +433,12 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
   };
   let evidence = await materializeEvidence();
   let draftClaims = claims.map((claim) => claimDraft(claim, evidence.filter(({ claimKey }) => claimKey === claim.claimKey), judgments.get(claim.claimKey)));
-  const compileSummary = async (repairDefects?: Audit["defects"]) => promptValidated("evidence-compiler", "V5 summary and timeline", "MODE: SUMMARY_TIMELINE", {
-    input: parsedInput,
+  const compileSummary = async (repairDefects?: Audit["defects"]) => promptValidated("evidence-compiler", "V5 summary and timeline", SUMMARY_TIMELINE_PROMPT_CONTRACT, {
     claims: draftClaims.map((claim) => ({ claimKey: claim.key, statement: claim.statement, facets: claim.facets.map(({ key, label, materiality }) => ({ key, label, materiality })) })),
     evidence,
     ...(repairDefects ? { auditDefects: repairDefects } : {}),
   }, summaryTimelineOutputSchema);
-  const summaryConfiguration = { claimsHash: digest(claims), evidenceHash: digest(evidence), promptHash: digest("MODE: SUMMARY_TIMELINE"), compilerModel: input.compilerModel };
+  const summaryConfiguration = { claimsHash: digest(claims), evidenceHash: digest(evidence), schemaHash: digest(z.toJSONSchema(summaryTimelineOutputSchema)), promptHash: digest(SUMMARY_TIMELINE_PROMPT_CONTRACT), compilerModel: input.compilerModel };
   const summaryFingerprint = digest(summaryConfiguration);
   if (invalidatedFinalizationStages({ summary: manifest.stages.summary?.fingerprint }, { summary: summaryFingerprint }).includes("summary")) {
     await rm(join(v5Root, "summary.json"), { force: true });
@@ -436,7 +472,18 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
     await atomicJson(join(v5Root, "audit.json"), value);
     return value;
   };
-  let audit = await auditOnce();
+  let auditConfiguration = { claimsHash: digest(claims), evidenceHash: digest(evidence), summaryHash: digest(summary), schemaHash: digest(z.toJSONSchema(v5AuditSchema)), promptHash: digest(V5_AUDITOR_PROMPT_CONTRACT), auditorModel: input.auditorModel };
+  let auditFingerprint = digest(auditConfiguration);
+  if (manifest.stages.audit?.fingerprint && manifest.stages.audit.fingerprint !== auditFingerprint) {
+    await rm(join(v5Root, "audit.json"), { force: true });
+    delete manifest.stages.audit;
+  }
+  let audit = manifest.stages.audit?.fingerprint === auditFingerprint ? await readJsonIfPresent(join(v5Root, "audit.json"), (value) => v5AuditSchema.parse(value)) : undefined;
+  if (!audit) {
+    audit = await auditOnce();
+    manifest.stages.audit = { fingerprint: auditFingerprint, configuration: auditConfiguration };
+    await persistManifest();
+  }
   let material = audit.defects.filter(({ severity }) => severity === "MATERIAL");
   if (audit.status !== "PASSED" || material.length) {
     const affectedClaims = [...new Set(material.flatMap(({ claimKeys }) => claimKeys))];
@@ -461,8 +508,9 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
   }
   const finalSummaryConfiguration = { ...summaryConfiguration, evidenceHash: digest(evidence) };
   manifest.stages.summary = { fingerprint: digest(finalSummaryConfiguration), configuration: finalSummaryConfiguration };
-  const auditConfiguration = { claimsHash: digest(claims), evidenceHash: digest(evidence), summaryHash: digest(summary), promptHash: digest(V5_AUDITOR_PROMPT_CONTRACT), auditorModel: input.auditorModel };
-  manifest.stages.audit = { fingerprint: digest(auditConfiguration), configuration: auditConfiguration };
+  auditConfiguration = { claimsHash: digest(claims), evidenceHash: digest(evidence), summaryHash: digest(summary), schemaHash: digest(z.toJSONSchema(v5AuditSchema)), promptHash: digest(V5_AUDITOR_PROMPT_CONTRACT), auditorModel: input.auditorModel };
+  auditFingerprint = digest(auditConfiguration);
+  manifest.stages.audit = { fingerprint: auditFingerprint, configuration: auditConfiguration };
   await input.budget.flush();
   const stats = await input.sourceStore.requestStats();
   const final = await canonicalizeInvestigationResult(draft, {
