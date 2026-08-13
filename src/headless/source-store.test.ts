@@ -83,7 +83,7 @@ test("returns exact JSON paths and bounded text windows", async () => {
       providerRoute: "fixture.web.fetch",
       sourceUrl: "https://example.test/talk",
       mimeType: "text/plain",
-      content: "Opening material. Diego Russo presented the toolchain talk in Cambridge. Closing material.",
+      content: "Opening material. Casey Morgan presented the toolchain talk in Example City. Closing material.",
       provenance: {},
     });
 
@@ -159,37 +159,38 @@ test("finds deterministic bounded candidates from memo citations without network
       kind: "SOURCE_CONTENT",
       provider: "public-fetch",
       providerRoute: "web.fetch",
-      sourceUrl: "https://www.python.org/dev/core-developers/",
-      title: "Python core developers",
+      sourceUrl: "https://records.organization.test/maintainers/",
+      title: "Project Atlas maintainers",
       mimeType: "text/plain",
-      content: "Diego Russo was promoted to the CPython core development team.",
+      content: "Casey Morgan was promoted to the Project Atlas maintainer team.",
       provenance: {},
     });
     const context = await store.capture({
       kind: "SOURCE_CONTENT",
       provider: "public-fetch",
       providerRoute: "web.fetch",
-      sourceUrl: "https://blog.example.com/python",
-      title: "Python community",
+      sourceUrl: "https://blog.publisher.test/project-atlas",
+      title: "Project Atlas community",
       mimeType: "text/plain",
-      content: "Diego Russo contributed a pull request.",
+      content: "Casey Morgan contributed a pull request.",
       provenance: {},
     });
     const candidates = await store.findStoredExcerpts({
-      statement: "Diego Russo is a CPython core developer.",
-      facets: [{ key: "status", statement: "Diego Russo is a CPython core developer." }],
-      researchMemos: `Diego Russo CPython core developer official promotion record [${official.ref}]`,
+      statement: "Casey Morgan is a Project Atlas maintainer.",
+      facets: [{ key: "status", statement: "Casey Morgan is a Project Atlas maintainer." }],
+      researchMemos: `Casey Morgan Project Atlas maintainer promotion record [${official.ref}]`,
       eligibleSourceRefs: new Set([official.ref, context.ref]),
     });
     assert.equal(candidates.candidatesByFacet.status?.[0]?.sourceRef, official.ref);
-    assert.match(candidates.candidatesByFacet.status?.[0]?.text ?? "", /CPython core development team/);
+    assert.match(candidates.candidatesByFacet.status?.[0]?.text ?? "", /Project Atlas maintainer team/);
     assert.ok((candidates.candidatesByFacet.status ?? []).length <= 8);
+    assert.equal(new Set((candidates.candidatesByFacet.status ?? []).map(({ ref }) => ref)).size, (candidates.candidatesByFacet.status ?? []).length);
     assert.ok(Object.values(candidates.candidatesByFacet).flat().length <= 16);
     assert.ok(candidates.totalCharacters <= 16_000);
     assert.deepEqual(await store.findStoredExcerpts({
-      statement: "Diego Russo is a CPython core developer.",
-      facets: [{ key: "status", statement: "Diego Russo is a CPython core developer." }],
-      researchMemos: `Diego Russo CPython core developer official promotion record [${official.ref}]`,
+      statement: "Casey Morgan is a Project Atlas maintainer.",
+      facets: [{ key: "status", statement: "Casey Morgan is a Project Atlas maintainer." }],
+      researchMemos: `Casey Morgan Project Atlas maintainer promotion record [${official.ref}]`,
       eligibleSourceRefs: new Set([official.ref, context.ref]),
     }), candidates);
     assert.match(await readFile(join(directory, ".work", "finalization", "v5", "excerpts.json"), "utf8"), /schemaVersion/);
@@ -202,13 +203,13 @@ test("memo-tier candidates are globally ranked by excerpt overlap before source 
   const directory = await mkdtemp(join(tmpdir(), "translucid-source-ranking-"));
   try {
     const store = await FileSourceStore.open(directory, { finalizationVersion: "v5" });
-    const first = await store.capture({ kind: "SOURCE_CONTENT", provider: "public-fetch", providerRoute: "web.fetch", sourceUrl: "https://www.python.org/first", mimeType: "application/json", content: { a: "Diego contributed.", b: "Russo contributed." }, provenance: {} });
-    const second = await store.capture({ kind: "SOURCE_CONTENT", provider: "public-fetch", providerRoute: "web.fetch", sourceUrl: "https://www.python.org/second", mimeType: "application/json", content: { a: "Diego used CPython.", b: "Russo used CPython." }, provenance: {} });
-    const strongest = await store.capture({ kind: "SOURCE_CONTENT", provider: "public-fetch", providerRoute: "web.fetch", sourceUrl: "https://www.python.org/strongest", mimeType: "text/plain", content: "Diego Russo is listed as a CPython core developer.", provenance: {} });
+    const first = await store.capture({ kind: "SOURCE_CONTENT", provider: "public-fetch", providerRoute: "web.fetch", sourceUrl: "https://records.organization.test/first", mimeType: "application/json", content: { a: "Casey contributed.", b: "Morgan contributed." }, provenance: {} });
+    const second = await store.capture({ kind: "SOURCE_CONTENT", provider: "public-fetch", providerRoute: "web.fetch", sourceUrl: "https://records.organization.test/second", mimeType: "application/json", content: { a: "Casey used Project Atlas.", b: "Morgan used Project Atlas." }, provenance: {} });
+    const strongest = await store.capture({ kind: "SOURCE_CONTENT", provider: "public-fetch", providerRoute: "web.fetch", sourceUrl: "https://records.organization.test/strongest", mimeType: "text/plain", content: "Casey Morgan is listed as a Project Atlas maintainer.", provenance: {} });
     const candidates = await store.findStoredExcerpts({
-      statement: "Diego Russo is a CPython core developer.",
-      facets: [{ key: "status", statement: "Diego Russo is a CPython core developer." }],
-      researchMemos: `Diego Russo CPython core developer records [${first.ref}] [${second.ref}] [${strongest.ref}]`,
+      statement: "Casey Morgan is a Project Atlas maintainer.",
+      facets: [{ key: "status", statement: "Casey Morgan is a Project Atlas maintainer." }],
+      researchMemos: `Casey Morgan Project Atlas maintainer records [${first.ref}] [${second.ref}] [${strongest.ref}]`,
       eligibleSourceRefs: new Set([first.ref, second.ref, strongest.ref]),
     });
     assert.equal(candidates.candidatesByFacet.status?.[0]?.sourceRef, strongest.ref);

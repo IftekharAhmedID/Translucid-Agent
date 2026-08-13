@@ -53,6 +53,10 @@ export async function renderInvestigationReport(result: InvestigationResult): Pr
   };
   const paragraph = (value: string) => document.font("Helvetica").fontSize(9.3).fillColor("#273449").text(value || "Not available", { lineGap: 2 }).moveDown(0.4);
   const bullet = (value: string, options?: { link?: string; destination?: string }) => document.font("Helvetica").fontSize(8.8).fillColor("#273449").text(`• ${value}`, { indent: 10, lineGap: 2, ...(options?.link ? { link: options.link } : {}), ...(options?.destination ? { goTo: options.destination } : {}) }).moveDown(0.18);
+  const ensureSpace = (points: number) => {
+    const bottom = document.page.height - document.page.margins.bottom;
+    if (document.y + points > bottom) document.addPage();
+  };
   const sourceByRef = new Map(result.sources.map((source) => [source.ref, source]));
   const citedRefs = new Set(result.evidence.map((evidence) => evidence.sourceRef));
   const citedSources = [...result.sources].filter((source) => citedRefs.has(source.ref)).sort((left, right) => numericId(left.ref) - numericId(right.ref));
@@ -112,11 +116,12 @@ export async function renderInvestigationReport(result: InvestigationResult): Pr
     }
   }
 
+  ensureSpace(70);
   heading("Professional timeline");
   if (!result.timeline.length) paragraph("No timeline entries were compiled.");
   for (const item of result.timeline) bullet(`${item.validFrom ?? "undated"} to ${item.validTo ?? "open"} · ${item.state} · ${item.label} [claims: ${item.claimIds.join(", ")}; evidence: ${item.evidenceIds.join(", ") || "none"}]`, { destination: item.claimIds[0] ? `claim-${item.claimIds[0]}` : undefined });
 
-  document.addPage();
+  ensureSpace(120);
   heading("Cited source registry");
   paragraph("Only sources used by at least one evidence item appear here. The immutable source store may retain additional uncited discovery and context responses.");
   for (const source of citedSources) {

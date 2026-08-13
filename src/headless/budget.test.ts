@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { MemoryRunBudget } from "./budget.ts";
+import { headlessBudgetCeilings, MemoryRunBudget } from "./budget.ts";
 
 test("enforces model, provider, network, and route ceilings atomically", async () => {
   const budget = new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 3, repositoryClones: 1, socialProfiles: 1 });
@@ -77,4 +77,15 @@ test("rolls back an in-memory reservation when atomic persistence fails", async 
     externalNetworkCalls: 0,
     routeCounts: {},
   });
+});
+
+test("headless budget ceilings honor the existing environment contract", () => {
+  assert.deepEqual(headlessBudgetCeilings({ MODEL_BUDGET_USD: "10.5", PROVIDER_BUDGET_USD: "12", GITHUB_CLONE_CEILING: "4", SOCIAL_PROFILE_CEILING: "2" }), {
+    modelUsd: 10.5,
+    providerUsd: 12,
+    externalNetworkCalls: 300,
+    repositoryClones: 4,
+    socialProfiles: 2,
+  });
+  assert.throws(() => headlessBudgetCeilings({ MODEL_BUDGET_USD: "-1" }), /MODEL_BUDGET_USD/);
 });

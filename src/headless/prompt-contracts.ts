@@ -22,7 +22,7 @@ Process only the supplied unresolved résumé line window; preceding context lin
 
 export const EVIDENCE_JUDGE_PROMPT_CONTRACT = `MODE: EVIDENCE_JUDGE
 
-Judge exactly one frozen claim. For every facet, return exactly one judgment for every assigned candidate excerpt. The only relations are SUPPORTS, CONTRADICTS, and IRRELEVANT. A candidate about the same person, employer, project, or technology is IRRELEVANT unless its exact text establishes or contradicts that specific facet. Return only excerptRef, relation, and a concise reason; never return quotes, source refs, paths, URLs, authority, IDs, verdicts, or strengths. Do not call tools or research.`;
+Judge exactly one frozen claim. For every facet, return exactly one judgment for every assigned candidate excerpt. The only relations are SUPPORTS, CONTRADICTS, and IRRELEVANT. A candidate about the same person, employer, project, or technology is IRRELEVANT unless its exact text establishes or contradicts that specific facet. For a facet containing multiple material clauses, SUPPORTS requires the excerpt to establish every clause; partial or neighboring-facet support is IRRELEVANT. CONTRADICTS requires explicit negation or incompatible facts in the same or overlapping temporal scope; an undated, current, earlier, or later alternative title is IRRELEVANT to a dated title unless the periods conflict. Return only excerptRef, relation, and a concise reason; never return quotes, source refs, paths, URLs, authority, IDs, verdicts, or strengths. Do not call tools or research.`;
 
 export const V5_AUDITOR_PROMPT_CONTRACT = `MODE: INCREMENTAL_AUDIT
 

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { assertDossierMatchesDraft, parseEvidenceDossier } from "./dossier.ts";
 import { canonicalizeInvestigationResult, type InvestigationDraft } from "./result-contract.ts";
+import { loadSourceAuthority } from "./source-authority.ts";
 import { FileSourceStore } from "./source-store.ts";
 
 function highCardinalityDraft(sourceRef: string): { draft: InvestigationDraft; sourceRecords: Array<{ text: string }> } {
@@ -106,6 +107,7 @@ test("validates and canonicalizes a lossless thirty-claim mixed-outcome dossier"
     const dossier = dossierText(draft);
     const inventory = parseEvidenceDossier(dossier, new Set([source.ref]));
     assert.doesNotThrow(() => assertDossierMatchesDraft(inventory, draft));
+    const { snapshot: authoritySnapshot } = await loadSourceAuthority(directory, store);
 
     const result = await canonicalizeInvestigationResult(draft, {
       run: {
@@ -119,6 +121,7 @@ test("validates and canonicalizes a lossless thirty-claim mixed-outcome dossier"
         budgets: { modelUsd: 0, providerUsd: 0, externalNetworkCalls: 0 },
       },
       sourceStore: store,
+      authoritySnapshot,
       compilerAttempts: 1,
       auditorAttempts: 1,
     });

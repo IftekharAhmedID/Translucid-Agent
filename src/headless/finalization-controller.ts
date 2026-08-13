@@ -27,6 +27,7 @@ import {
 } from "./result-contract.ts";
 import type { FileSourceStore } from "./source-store.ts";
 import type { PacketDossier } from "./packet-dossier.ts";
+import { loadSourceAuthority } from "./source-authority.ts";
 
 const directory = "/workspace/case";
 const auditSchema = z.object({
@@ -253,6 +254,7 @@ export async function runLegacyFinalizationPipeline(input: FinalizationPipelineI
   const compilerBase = await buildFinalizerContext(input.root, input.sourceStore, input.researchMemos);
   warnings.push(...compilerBase.warnings);
   const memoSourceRefs = new Set(compilerBase.citedSources.flatMap((source) => typeof source.ref === "string" ? [source.ref] : []));
+  const { snapshot: authoritySnapshot } = await loadSourceAuthority(input.root, input.sourceStore);
   if (input.researchCheckpointConfig) {
     await input.budget.flush();
     await writeResearchCheckpoint(input.root, { warnings, budget: input.budget.snapshot(), config: input.researchCheckpointConfig });
@@ -354,6 +356,7 @@ export async function runLegacyFinalizationPipeline(input: FinalizationPipelineI
     validateResult: (draft) => canonicalizeInvestigationResult(draft, {
       run: provisionalRun,
       sourceStore: input.sourceStore,
+      authoritySnapshot,
       compilerAttempts: 1,
       auditorAttempts: 1,
       warnings,
@@ -384,6 +387,7 @@ export async function runLegacyFinalizationPipeline(input: FinalizationPipelineI
       },
     },
     sourceStore: input.sourceStore,
+    authoritySnapshot,
     compilerAttempts: validated.compilerAttempts,
     auditorAttempts: validated.auditorAttempts,
     warnings,

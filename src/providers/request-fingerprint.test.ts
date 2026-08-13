@@ -5,14 +5,14 @@ import { canonicalNetworkArguments, providerRequestFingerprint } from "./request
 
 test("provider fingerprints ignore question, claim, agent and rationale metadata", () => {
   const first = providerRequestFingerprint("linkdapi.profile", {
-    username: " DiegoR ",
+    username: " Casey_Profile ",
     requiredMaterialField: "IDENTITY",
     questionId: "question-a",
     claimIds: ["claim-a"],
     publicRationale: "First rationale",
   });
   const second = providerRequestFingerprint("linkdapi.profile", {
-    username: "diegor",
+    username: "casey_profile",
     requiredMaterialField: "EDUCATION",
     questionId: "question-b",
     claimIds: ["claim-b"],

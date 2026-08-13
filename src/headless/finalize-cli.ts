@@ -7,6 +7,7 @@ import { FINALIZER_MODEL_CATALOG, PAID_GO_MODEL_IDS } from "../core/model-catalo
 import { loadModelRequestTimeouts } from "../core/config.ts";
 import { getPinnedLocalManifestHash, getPinnedResearchManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
+import { headlessBudgetCeilings } from "./budget.ts";
 import { currentCheckpointConfigs } from "./checkpoint-config.ts";
 import {
   loadValidDossierCheckpoint,
@@ -26,8 +27,6 @@ import { assertPublishableResult } from "./result-contract.ts";
 import { openRunWorkspace, removeRunDiagnostics, sealRunFailure, type ExistingRunWorkspace } from "./run-workspace.ts";
 
 const RUN_TIMEOUT_MS = 60 * 60_000;
-const ceilings = { modelUsd: 5, providerUsd: 10, externalNetworkCalls: 300, repositoryClones: 3, socialProfiles: 1 } as const;
-
 async function exists(path: string): Promise<boolean> {
   try { await stat(path); return true; }
   catch (error) {
@@ -109,7 +108,7 @@ async function main(): Promise<void> {
   const manifest = await validateResearchCheckpoint(workspace.root, checkpointConfigs.research);
   const reusableDossier = await loadValidDossierCheckpoint(workspace.root, manifest, checkpointConfigs.dossier);
   const reusablePacketDossier = await loadValidPacketDossierCheckpoint(workspace.root, manifest, checkpointConfigs.dossier);
-  const budget = await openPersistentRunBudget(workspace.root, ceilings, manifest.research.budget);
+  const budget = await openPersistentRunBudget(workspace.root, headlessBudgetCeilings(), manifest.research.budget);
   const memos = await researchMemos(workspace.root);
 
   const finalizerProvider = process.env.FINALIZER_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";

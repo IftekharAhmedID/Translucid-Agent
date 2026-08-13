@@ -5,11 +5,11 @@ import { assertSelfContainedFacetLabels, auditClaimFacetCoverage } from "./facet
 
 test("facet coverage accepts coherent employment clauses with self-contained labels", () => {
   const result = auditClaimFacetCoverage(
-    "Staff Software Engineer at Arm DSG, Cambridge UK, 2013–2017; collaborated with GNU team on optimized GNU toolchains for Arm processors.",
+    "Staff Software Engineer at Organization Alpha, Example City, 2013–2017; collaborated with Project Atlas team on optimized toolchains.",
     [
-      { key: "employer", label: "Employer/team: Arm Ltd, DSG", materiality: "HIGH" },
+      { key: "employer", label: "Employer: Organization Alpha", materiality: "HIGH" },
       { key: "dates", label: "Employment interval: 2013–2017", materiality: "HIGH" },
-      { key: "gnu", label: "GNU collaboration: optimized GNU toolchains for Arm processors", materiality: "MEDIUM" },
+      { key: "toolchain", label: "Project Atlas collaboration: optimized toolchains", materiality: "MEDIUM" },
     ],
   );
   assert.equal(result.complete, true);
@@ -35,4 +35,5 @@ test("facet labels cannot be generic field names", () => {
     /facet title.*self-contained/i,
   );
   assert.doesNotThrow(() => assertSelfContainedFacetLabels("employment", [{ key: "title", label: "Title: Principal Engineer" }]));
+  assert.doesNotThrow(() => assertSelfContainedFacetLabels("language", [{ key: "proficiency", label: "Language: C1" }]));
 });

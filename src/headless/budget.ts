@@ -13,6 +13,29 @@ export type BudgetSnapshot = {
   routeCounts: Record<string, number>;
 };
 
+function nonNegativeEnvironmentNumber(value: string | undefined, fallback: number, name: string): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${name} must be a finite non-negative number.`);
+  return parsed;
+}
+
+function nonNegativeEnvironmentInteger(value: string | undefined, fallback: number, name: string): number {
+  const parsed = nonNegativeEnvironmentNumber(value, fallback, name);
+  if (!Number.isInteger(parsed)) throw new Error(`${name} must be an integer.`);
+  return parsed;
+}
+
+export function headlessBudgetCeilings(environment: Record<string, string | undefined> = process.env): BudgetCeilings {
+  return {
+    modelUsd: nonNegativeEnvironmentNumber(environment.MODEL_BUDGET_USD, 5, "MODEL_BUDGET_USD"),
+    providerUsd: nonNegativeEnvironmentNumber(environment.PROVIDER_BUDGET_USD, 10, "PROVIDER_BUDGET_USD"),
+    externalNetworkCalls: 300,
+    repositoryClones: nonNegativeEnvironmentInteger(environment.GITHUB_CLONE_CEILING, 3, "GITHUB_CLONE_CEILING"),
+    socialProfiles: nonNegativeEnvironmentInteger(environment.SOCIAL_PROFILE_CEILING, 1, "SOCIAL_PROFILE_CEILING"),
+  };
+}
+
 type BudgetOptions = {
   initial?: BudgetSnapshot;
   onChange?: (snapshot: BudgetSnapshot) => void | Promise<void>;

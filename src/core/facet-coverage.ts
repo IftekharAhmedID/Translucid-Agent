@@ -12,7 +12,7 @@ const materialSignals = new Set([
 ]);
 
 function tokens(value: string): Set<string> {
-  return new Set((value.toLocaleLowerCase("en-US").match(/[a-z][a-z0-9+#.-]{2,}|\d[\dA-Za-z+.#-]*\d/g) ?? []).filter((token) => !ignored.has(token)));
+  return new Set((value.toLocaleLowerCase("en-US").match(/[a-z][a-z0-9+#.-]{2,}|\b[a-z]\d\b|\d[\dA-Za-z+.#-]*\d/g) ?? []).filter((token) => !ignored.has(token)));
 }
 
 function splitClauses(value: string): string[] {

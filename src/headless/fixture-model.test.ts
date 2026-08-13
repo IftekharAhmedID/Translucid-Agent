@@ -43,7 +43,7 @@ test("fixture payload parsing ignores the GO transport schema suffix", async () 
       role: "user",
       content: [{
         type: "text",
-        text: `MODE: COVERAGE_ONLY\n\n${JSON.stringify({ input: { pages: [{ page: 1, lines: [{ line: 1, text: "Ada Lovelace" }] }] }, repairDefects: [] })}\n\nReturn exactly one JSON object inside these markers:\n<RESULT_JSON>\n{}\n</RESULT_JSON>\nThe object must validate against this JSON Schema:\n${JSON.stringify({ type: "object" })}`,
+        text: `MODE: COVERAGE_ONLY\n\n${JSON.stringify({ input: { pages: [{ page: 1, lines: [{ line: 1, text: "Casey Morgan" }] }] }, repairDefects: [] })}\n\nReturn exactly one JSON object inside these markers:\n<RESULT_JSON>\n{}\n</RESULT_JSON>\nThe object must validate against this JSON Schema:\n${JSON.stringify({ type: "object" })}`,
       }],
     }],
     tools: [{ type: "function", function: { name: "StructuredOutput" } }],
@@ -52,5 +52,5 @@ test("fixture payload parsing ignores the GO transport schema suffix", async () 
   const claims = response.toolCall?.arguments && typeof response.toolCall.arguments === "object"
     ? (response.toolCall.arguments as { claims?: Array<{ sourceSpan?: { text?: string } }> }).claims
     : undefined;
-  assert.equal(claims?.[0]?.sourceSpan?.text, "Ada Lovelace");
+  assert.equal(claims?.[0]?.sourceSpan?.text, "Casey Morgan");
 });

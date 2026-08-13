@@ -3,7 +3,8 @@ import { z } from "zod";
 import { assertSafeInvestigationLanguage } from "../core/adjudication.ts";
 import { facetEvidenceCompatible } from "../core/evidence-fit.ts";
 import { assertSelfContainedFacetLabels, auditClaimFacetCoverage } from "../core/facet-coverage.ts";
-import { effectiveAttestationGroup, effectiveSourceAuthority, type SourceAuthority } from "../core/source-trust.ts";
+import type { SourceAuthority } from "../core/source-trust.ts";
+import { sourceAuthoritySnapshotSchema, type SourceAuthoritySnapshot } from "./source-authority.ts";
 import type { FileSourceStore } from "./source-store.ts";
 
 const key = z.string().min(1).max(200);
@@ -182,6 +183,8 @@ export function assertPublishableResult(result: InvestigationResult): void {
 type ResultContext = {
   run: Omit<InvestigationResult["run"], "status">;
   sourceStore: FileSourceStore;
+  authoritySnapshot: SourceAuthoritySnapshot;
+  judgmentReasonsByClaim?: ReadonlyMap<string, readonly string[]>;
   compilerAttempts: 1 | 2;
   auditorAttempts: 1 | 2;
   warnings?: string[];
@@ -247,6 +250,17 @@ function mapKnown(values: string[], mapping: Map<string, string>, label: string)
   });
 }
 
+function claimExplanation(
+  facets: InvestigationResult["claims"][number]["facets"],
+  evidence: Array<{ sourceAuthority: Exclude<SourceAuthority, "CONTEXT" | "DISCOVERY_ONLY"> }>,
+  reasons: readonly string[],
+): string {
+  const dispositions = facets.map(({ key, status, strength }) => `${key} ${status} (${strength ?? "NONE"})`).join("; ");
+  const authorities = [...new Set(evidence.map(({ sourceAuthority }) => sourceAuthority))].sort().join(", ") || "NONE";
+  const judgments = [...new Set(reasons.map((reason) => reason.trim()).filter(Boolean))].join(" ") || "No eligible immutable evidence resolved the remaining facets.";
+  return `Facet disposition: ${dispositions}. Evidence authority: ${authorities}. Judgment: ${judgments}`;
+}
+
 export async function canonicalizeInvestigationResult(value: unknown, context: ResultContext): Promise<InvestigationResult> {
   const draft = investigationDraftSchema.parse(value);
   assertSafeInvestigationLanguage(draft);
@@ -264,6 +278,13 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
   const claimByKey = new Map(sortedClaims.map((claim) => [claim.key, claim]));
   const sources = await context.sourceStore.list();
   const sourceByRef = new Map(sources.map((source) => [source.ref, source]));
+  const authoritySnapshot = sourceAuthoritySnapshotSchema.parse(context.authoritySnapshot);
+  const authorityByRef = new Map(authoritySnapshot.sources.map((source) => [source.sourceRef, source]));
+  if (authorityByRef.size !== sourceByRef.size) throw new Error("Source authority snapshot does not exactly cover the immutable source ledger.");
+  for (const source of sources) {
+    const authority = authorityByRef.get(source.ref);
+    if (!authority || authority.sourceHash !== source.sha256) throw new Error(`Source authority snapshot does not match immutable source ${source.ref}.`);
+  }
 
   const preparedEvidence = [] as Array<InvestigationDraft["evidence"][number] & {
     sourceAuthority: Exclude<SourceAuthority, "CONTEXT" | "DISCOVERY_ONLY">;
@@ -284,7 +305,8 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
     }
     const source = sourceByRef.get(item.sourceRef);
     if (!source) throw new Error(`Evidence ${item.key} references unknown source ${item.sourceRef}.`);
-    const sourceAuthority = effectiveSourceAuthority({ artifact: source });
+    const authority = authorityByRef.get(source.ref)!;
+    const sourceAuthority = authority.effectiveAuthority;
     if (sourceAuthority === "CONTEXT" || sourceAuthority === "DISCOVERY_ONLY") throw new Error(`${sourceAuthority} source ${source.ref} cannot be cited as evidence.`);
     const exactQuote = await context.sourceStore.verifyExactQuote({ sourceRef: source.ref, path: item.sourceLocation.path, exactQuote: item.exactQuote });
     if (!exactQuote.valid) {
@@ -294,7 +316,7 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
       ...item,
       sourceAuthority,
       independenceGroup: source.independenceGroup,
-      attestationGroup: effectiveAttestationGroup({ artifact: source }),
+      attestationGroup: authority.attestationGroup,
       claimOrder: sortedClaims.indexOf(claim),
       facetOrder: Math.min(...item.facetKeys.map((keyValue) => declared.get(keyValue)!.index)),
     });
@@ -340,7 +362,7 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
       sourceSpan: claim.sourceSpan,
       verdict: verdict(facets),
       strength: materialFloorStrength(facets),
-      explanation: claim.explanation,
+      explanation: claimExplanation(facets, claimEvidence, context.judgmentReasonsByClaim?.get(claim.key) ?? []),
       facets,
     };
   });
@@ -429,9 +451,9 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
       sha256: source.sha256,
       byteLength: source.byteLength,
       mimeType: source.mimeType,
-      sourceAuthority: effectiveSourceAuthority({ artifact: source }),
+      sourceAuthority: authorityByRef.get(source.ref)!.effectiveAuthority,
       independenceGroup: source.independenceGroup,
-      attestationGroup: effectiveAttestationGroup({ artifact: source }),
+      attestationGroup: authorityByRef.get(source.ref)!.attestationGroup,
       relativePath: source.relativePath,
     }));
   const sourceAuthorityCounts: Record<string, number> = {};

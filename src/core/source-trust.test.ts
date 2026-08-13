@@ -1,49 +1,45 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { deriveArtifactTrust, effectiveAttestationGroup, effectiveSourceAuthority, institutionalAuthorityRule, SOURCE_AUTHORITY_POLICY_VERSION } from "./source-trust.ts";
+import { deriveArtifactTrust, effectiveAttestationGroup, effectiveSourceAuthority, SOURCE_AUTHORITY_POLICY_VERSION } from "./source-trust.ts";
 
-test("offline authority policy promotes only explicit official institutional hosts", () => {
-  assert.equal(SOURCE_AUTHORITY_POLICY_VERSION, "institutional-domains-v2");
-  assert.equal(institutionalAuthorityRule("https://docs.python.org/3/whatsnew/"), "python-official");
-  assert.equal(institutionalAuthorityRule("https://developer.arm.com/documentation"), "arm-official");
-  assert.equal(institutionalAuthorityRule("https://ep2024.europython.eu/session/example"), "europython-official");
-  assert.equal(institutionalAuthorityRule("https://staging.europython.eu/session/example"), undefined);
-  assert.equal(institutionalAuthorityRule("https://discuss.python.org/t/example"), undefined);
-  assert.equal(institutionalAuthorityRule("https://blog.example.com/python"), undefined);
-  assert.equal(effectiveSourceAuthority({ artifact: { sourceAuthority: "CONTEXT", sourceUrl: "https://www.python.org/dev/core-developers/" } }), "FIRST_PARTY_INSTITUTIONAL");
+test("offline authority policy never promotes a web domain by name", () => {
+  assert.equal(SOURCE_AUTHORITY_POLICY_VERSION, "verified-domain-registry-v1");
+  assert.equal(effectiveSourceAuthority({ artifact: { sourceAuthority: "CONTEXT", sourceUrl: "https://organization.test/about" } }), "CONTEXT");
 });
 
 test("source authority is backend-derived from capture lineage", () => {
   assert.equal(deriveArtifactTrust({ kind: "SEARCH_DISCOVERY", provider: "exa", sourceUrl: "https://api.exa.ai/search", provenance: {}, content: {} }).sourceAuthority, "DISCOVERY_ONLY");
   assert.equal(deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "linkdapi", sourceUrl: "https://www.linkedin.com/in/Ada", provenance: { providerRoute: "linkdapi.profile" }, content: {} }).sourceAuthority, "SELF_REPRESENTATION");
   assert.equal(deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "github", sourceUrl: "https://github.com/acme/tool", provenance: { providerRoute: "github.clone" }, content: {} }).sourceAuthority, "DIRECT_WORK");
-  const githubGraphql = deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "github", sourceUrl: "https://api.github.com/graphql", provenance: { providerRoute: "github.graphql", networkArguments: { query: "search(query: \"repo:python/cpython is:pr\") { edges { node { ... on PullRequest { number } } } }" } }, content: {} });
+  const githubGraphql = deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "github", sourceUrl: "https://api.github.com/graphql", provenance: { providerRoute: "github.graphql", networkArguments: { query: "search(query: \"repo:sample-org/sample-repo is:pr\") { edges { node { ... on PullRequest { number } } } }" } }, content: {} });
   assert.equal(githubGraphql.sourceAuthority, "DIRECT_WORK");
-  assert.equal(githubGraphql.independenceGroup, "github-repository:python/cpython");
-  assert.equal(deriveArtifactTrust({ kind: "SOURCE_CONTENT", provider: "public-fetch", sourceUrl: "https://engineering.example.com/team/ada", provenance: {}, content: {} }).sourceAuthority, "CONTEXT");
-  assert.equal(deriveArtifactTrust({ kind: "SOURCE_CONTENT", provider: "public-fetch", sourceUrl: "https://www.reuters.com/technology/example", provenance: {}, content: {} }).sourceAuthority, "INDEPENDENT_PROFESSIONAL");
+  assert.equal(githubGraphql.independenceGroup, "github-repository:sample-org/sample-repo");
+  assert.equal(deriveArtifactTrust({ kind: "SOURCE_CONTENT", provider: "public-fetch", sourceUrl: "https://engineering.organization.test/team/casey", provenance: {}, content: {} }).sourceAuthority, "CONTEXT");
+  assert.equal(deriveArtifactTrust({ kind: "SOURCE_CONTENT", provider: "public-fetch", sourceUrl: "https://news.publisher.test/story", provenance: {}, content: {} }).sourceAuthority, "CONTEXT");
+  assert.equal(deriveArtifactTrust({ kind: "SOURCE_CONTENT", provider: "public-fetch", sourceUrl: "https://records.agency.gov/item", provenance: {}, content: {} }).sourceAuthority, "CONTEXT");
+  assert.equal(deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "public-records", sourceUrl: "https://records.provider.test/item", provenance: { providerRoute: "public-records.registry" }, content: {} }).sourceAuthority, "FIRST_PARTY_INSTITUTIONAL");
 });
 
 test("GitHub REST and GraphQL artifacts use repository or account lineage instead of the API domain", () => {
   const restCommit = deriveArtifactTrust({
     kind: "PROVIDER_RESPONSE",
     provider: "github",
-    sourceUrl: "https://api.github.com/repos/python/cpython/commits?author=ada",
-    provenance: { providerRoute: "github.rest", networkArguments: { path: "/repos/python/cpython/commits?author=ada" } },
+    sourceUrl: "https://api.github.com/repos/sample-org/sample-repo/commits?author=casey",
+    provenance: { providerRoute: "github.rest", networkArguments: { path: "/repos/sample-org/sample-repo/commits?author=casey" } },
     content: {},
   });
   assert.equal(restCommit.sourceAuthority, "DIRECT_WORK");
-  assert.equal(restCommit.independenceGroup, "github-repository:python/cpython");
+  assert.equal(restCommit.independenceGroup, "github-repository:sample-org/sample-repo");
 
   const repositoryQuery = deriveArtifactTrust({
     kind: "PROVIDER_RESPONSE",
     provider: "github",
     sourceUrl: "https://api.github.com/graphql",
-    provenance: { providerRoute: "github.graphql", networkArguments: { query: "query { repository(owner: \"python\", name: \"cpython\") { pullRequests(first: 5) { nodes { number } } } }" } },
+    provenance: { providerRoute: "github.graphql", networkArguments: { query: "query { repository(owner: \"sample-org\", name: \"sample-repo\") { pullRequests(first: 5) { nodes { number } } } }" } },
     content: {},
   });
-  assert.equal(repositoryQuery.independenceGroup, "github-repository:python/cpython");
+  assert.equal(repositoryQuery.independenceGroup, "github-repository:sample-org/sample-repo");
 
   const accountQuery = deriveArtifactTrust({
     kind: "PROVIDER_RESPONSE",
@@ -62,9 +58,9 @@ test("LinkdAPI and Bright Data views of one LinkedIn profile share an independen
 });
 
 test("live and archived captures group by the underlying registrable domain", () => {
-  const live = deriveArtifactTrust({ kind: "SOURCE_CONTENT", provider: "public-fetch", sourceUrl: "https://careers.example.co.uk/team/ada", provenance: {}, content: {} });
-  const archive = deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "wayback", sourceUrl: "https://web.archive.org/web/20200101000000/https://careers.example.co.uk/team/ada", provenance: { providerRoute: "wayback.capture", networkArguments: { url: "https://careers.example.co.uk/team/ada" } }, content: {} });
-  assert.equal(live.independenceGroup, "domain:example.co.uk");
+  const live = deriveArtifactTrust({ kind: "SOURCE_CONTENT", provider: "public-fetch", sourceUrl: "https://careers.synthetic-unit.co.uk/team/casey", provenance: {}, content: {} });
+  const archive = deriveArtifactTrust({ kind: "PROVIDER_RESPONSE", provider: "wayback", sourceUrl: "https://web.archive.org/web/20200101000000/https://careers.synthetic-unit.co.uk/team/casey", provenance: { providerRoute: "wayback.capture", networkArguments: { url: "https://careers.synthetic-unit.co.uk/team/casey" } }, content: {} });
+  assert.equal(live.independenceGroup, "domain:synthetic-unit.co.uk");
   assert.equal(archive.independenceGroup, live.independenceGroup);
 });
 
@@ -77,8 +73,8 @@ test("DOI and CVE lineages override provider domains", () => {
 });
 
 test("effective candidate-domain authority is computed without changing stored artifact authority", () => {
-  const artifact = { sourceAuthority: "CONTEXT", sourceUrl: "https://diegor.it/work", provider: "public-fetch", kind: "SOURCE_CONTENT", independenceGroup: "domain:diegor.it" };
-  const entities = [{ id: "root", type: "PERSON", canonicalName: "Diego Russo" }, { id: "website", type: "WEBSITE", canonicalName: "diegor.it" }];
+  const artifact = { sourceAuthority: "CONTEXT", sourceUrl: "https://profile-owner.test/work", provider: "public-fetch", kind: "SOURCE_CONTENT", independenceGroup: "domain:profile-owner.test" };
+  const entities = [{ id: "root", type: "PERSON", canonicalName: "Casey Morgan" }, { id: "website", type: "WEBSITE", canonicalName: "profile-owner.test" }];
   const links = [{ fromEntityId: "root", toEntityId: "website", relationship: "VERIFIED_DOMAIN" }];
   assert.equal(effectiveSourceAuthority({ artifact, entities, entityLinks: links, rootCandidate: "root" }), "SELF_REPRESENTATION");
   assert.equal(effectiveAttestationGroup({ artifact, entities, entityLinks: links, rootCandidate: "root" }), "CANDIDATE_SELF");

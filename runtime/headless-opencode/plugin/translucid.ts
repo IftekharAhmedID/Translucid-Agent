@@ -113,6 +113,15 @@ const plugin: Plugin = async () => {
     "packages.inspect": gatewayTool("packages.inspect", "Inspect public package metadata and repository links.", { registry: z.enum(["NPM", "PYPI", "HUGGING_FACE"]), package: z.string().min(1).max(300) }),
     "security_records.search": gatewayTool("security_records.search", "Search public vulnerability records.", { ecosystem: z.string().max(100).optional(), package: z.string().max(300).optional(), cve: z.string().max(40).optional() }),
     "source.excerpts": gatewayTool("source.excerpts", "Search one immutable S reference locally for exact JSON scalar paths or bounded text windows without a network call.", { sourceRef: z.string().regex(/^S[1-9]\d*$/), queries: z.array(z.string().min(1).max(500)).min(1).max(12), maxCharacters: z.number().int().min(1).max(60000).optional() }),
+    "official_domain.register": gatewayTool("official_domain.register", "Propose an organization domain for deterministic host verification. This does not grant authority.", {
+      organization: z.string().trim().min(2).max(300),
+      url: z.string().url(),
+      proofs: z.array(z.object({
+        sourceRef: z.string().regex(/^S[1-9]\d*$/),
+        organizationExcerpt: z.object({ path: z.string().min(1).max(2_000), exactQuote: z.string().min(1).max(4_000) }),
+        domainExcerpt: z.object({ path: z.string().min(1).max(2_000), exactQuote: z.string().min(1).max(4_000) }),
+      })).min(1).max(4),
+    }),
   };
 
   return {

@@ -66,20 +66,20 @@ test("candidate-root authorization is atomic and cannot leave ghost entities", a
 
 test("entity graph requires independent evidence-backed anchors", async () => {
   const ids = await createInvestigation({
-    submission: "Synthetic Ada claims Acme employment.",
+    submission: "Synthetic Casey claims Acme employment.",
     runtimeKind: "LOCAL",
     dataClassification: "SYNTHETIC",
   });
   const claim = await createClaim({
     ...ids,
     category: "EMPLOYMENT",
-    normalizedClaim: "Synthetic Ada worked at Acme.",
+    normalizedClaim: "Synthetic Casey worked at Acme.",
     materiality: "HIGH",
   });
   const person = await upsertEntity({
     ...ids,
     type: "PERSON",
-    canonicalName: "Synthetic Ada",
+    canonicalName: "Synthetic Casey",
   });
   const account = await upsertEntity({
     ...ids,
@@ -92,7 +92,7 @@ test("entity graph requires independent evidence-backed anchors", async () => {
     provider: "fixture-linkedin",
     sourceUrl: "https://example.test/synthetic-ada",
     mimeType: "text/plain",
-    content: "Synthetic Ada — Acme — Principal Engineer",
+    content: "Synthetic Casey — Acme — Principal Engineer",
   });
   const artifactB = await captureArtifact({
     ...ids,
@@ -105,7 +105,7 @@ test("entity graph requires independent evidence-backed anchors", async () => {
   const evidenceA = await captureEvidence({
     ...ids,
     artifactId: artifactA.id,
-    exactQuote: "Synthetic Ada — Acme — Principal Engineer",
+    exactQuote: "Synthetic Casey — Acme — Principal Engineer",
     relation: "SUPPORTS",
     claimIds: [claim.id],
     facetKeys: ["legacy_claim"],
@@ -164,7 +164,7 @@ test("entity graph requires independent evidence-backed anchors", async () => {
 
 test("same-lineage evidence cannot be promoted into independent identity anchors", async () => {
   const ids = await createInvestigation({ submission: "Synthetic same-lineage profile.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
-  const person = await upsertEntity({ ...ids, type: "PERSON", canonicalName: "Synthetic Ada" });
+  const person = await upsertEntity({ ...ids, type: "PERSON", canonicalName: "Synthetic Casey" });
   const account = await upsertEntity({ ...ids, type: "ACCOUNT", canonicalName: "ada-dev" });
   const first = await captureArtifact({ ...ids, kind: "PROVIDER_RESPONSE", provider: "linkdapi", sourceUrl: "https://www.linkedin.com/in/ada", mimeType: "text/plain", content: "Ada works at Acme.", provenance: { providerRoute: "linkdapi.profile" } });
   const second = await captureArtifact({ ...ids, kind: "PROVIDER_RESPONSE", provider: "brightdata-linkedin-profile", sourceUrl: "https://linkedin.com/in/Ada/#about", mimeType: "text/plain", content: "Ada links to ada-dev.", provenance: { providerRoute: "brightdata.linkedin-profile" } });
@@ -181,7 +181,7 @@ test("search snippets cannot become evidence and temporal observations remain se
     runtimeKind: "LOCAL",
     dataClassification: "SYNTHETIC",
   });
-  const entity = await upsertEntity({ ...ids, type: "PERSON", canonicalName: "Synthetic Ada" });
+  const entity = await upsertEntity({ ...ids, type: "PERSON", canonicalName: "Synthetic Casey" });
   const snippet = await captureArtifact({
     ...ids,
     kind: "SEARCH_RESULT",
@@ -211,7 +211,7 @@ test("search snippets cannot become evidence and temporal observations remain se
     provider: "fixture-company",
     sourceUrl: "https://acme.example.test/team",
     mimeType: "text/plain",
-    content: "Synthetic Ada — Software Engineer",
+    content: "Synthetic Casey — Software Engineer",
   });
   await recordObservation({
     ...ids,
@@ -246,7 +246,7 @@ test("research questions persist route selection and resolution", async () => {
   const question = await openResearchQuestion({
     ...ids,
     claimIds: [],
-    question: "What title did Synthetic Ada hold in 2023?",
+    question: "What title did Synthetic Casey hold in 2023?",
     priority: "HIGH",
     possibleRoutes: ["company-site", "archives"],
     createdByAgent: "lead-investigator",
@@ -345,7 +345,7 @@ test("forced finalization closes active questions without falsely claiming artif
 
 test("one targeted second research wave is allowed while duplicate assignments and a third wave are rejected", async () => {
   const ids = await createInvestigation({ submission: "Synthetic adaptive research.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
-  const claim = await createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Ada worked at Acme.", materiality: "HIGH" });
+  const claim = await createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Casey worked at Acme.", materiality: "HIGH" });
   const question = await openResearchQuestion({ ...ids, claimIds: [claim.id], question: "What was Ada's Acme title?", priority: "HIGH", possibleRoutes: ["web.search"], createdByAgent: "lead-investigator" });
   const secondQuestion = await openResearchQuestion({ ...ids, claimIds: [claim.id], question: "What was Ada's Acme tenure?", priority: "HIGH", possibleRoutes: ["web.search"], createdByAgent: "lead-investigator" });
   const initial = await beginResearchWave({ ...ids, kind: "INITIAL", questionIds: [question.id, secondQuestion.id], publicRationale: "Starting one broad route for the active material title and tenure questions.", agent: "lead-investigator" });
@@ -364,8 +364,8 @@ test("one targeted second research wave is allowed while duplicate assignments a
 
 test("the initial research wave rejects uncovered material claims", async () => {
   const ids = await createInvestigation({ submission: "Synthetic uncovered material claim.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
-  const covered = await createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Ada worked at Acme.", materiality: "HIGH" });
-  await createClaim({ ...ids, category: "EDUCATION", normalizedClaim: "Synthetic Ada studied computer science.", materiality: "HIGH" });
+  const covered = await createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Casey worked at Acme.", materiality: "HIGH" });
+  await createClaim({ ...ids, category: "EDUCATION", normalizedClaim: "Synthetic Casey studied computer science.", materiality: "HIGH" });
   const question = await openResearchQuestion({ ...ids, claimIds: [covered.id], question: "What was Ada's Acme title?", priority: "HIGH", possibleRoutes: ["web.search"], createdByAgent: "lead-investigator" });
   await assert.rejects(
     () => beginResearchWave({ ...ids, kind: "INITIAL", questionIds: [question.id], publicRationale: "Attempting to begin before material claim coverage is complete.", agent: "lead-investigator" }),
@@ -388,15 +388,15 @@ test("claim 61 is rejected and preserves a visible truncation limitation", async
 
 test("evidence edges are one-claim for findings and artifacts are searchable locally", async () => {
   const ids = await createInvestigation({ submission: "Synthetic artifact retrieval.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
-  const first = await createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Ada worked at Acme.", materiality: "HIGH" });
-  const second = await createClaim({ ...ids, category: "PROJECT", normalizedClaim: "Synthetic Ada maintained Atlas.", materiality: "MEDIUM" });
+  const first = await createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Casey worked at Acme.", materiality: "HIGH" });
+  const second = await createClaim({ ...ids, category: "PROJECT", normalizedClaim: "Synthetic Casey maintained Atlas.", materiality: "MEDIUM" });
   const artifact = await captureArtifact({
     ...ids,
     kind: "PROVIDER_RESPONSE",
     provider: "fixture-profile",
     sourceUrl: "https://example.test/profile",
     mimeType: "application/json",
-    content: JSON.stringify({ experience: [{ title: "Old" }, { title: "Principal Engineer", company: "Acme" }], sharedQuote: "Synthetic Ada maintained Atlas at Acme.", hidden: { package: "atlas-core" } }),
+    content: JSON.stringify({ experience: [{ title: "Old" }, { title: "Principal Engineer", company: "Acme" }], sharedQuote: "Synthetic Casey maintained Atlas at Acme.", hidden: { package: "atlas-core" } }),
   });
   await assert.rejects(
     () => captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Principal Engineer", relation: "SUPPORTS", claimIds: [first.id, second.id], facetKeys: ["legacy_claim"], entityIds: [] }),
@@ -406,9 +406,9 @@ test("evidence edges are one-claim for findings and artifacts are searchable loc
   await assert.rejects(() => linkEvidence({ ...ids, evidenceId: context.id, claimIds: [first.id], entityIds: [] }), /only associates entities/i);
   const sharedClaims: string[] = [];
   for (let index = 0; index < 3; index += 1) {
-    sharedClaims.push((await createClaim({ ...ids, category: "PROJECT", normalizedClaim: "Synthetic Ada maintained Atlas at Acme.", materiality: "MEDIUM" })).id);
+    sharedClaims.push((await createClaim({ ...ids, category: "PROJECT", normalizedClaim: "Synthetic Casey maintained Atlas at Acme.", materiality: "MEDIUM" })).id);
   }
-  const sharedEvidence = await Promise.all(sharedClaims.map((claimId) => captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Ada maintained Atlas at Acme.", relation: "SUPPORTS", claimIds: [claimId], facetKeys: ["legacy_claim"], entityIds: [] })));
+  const sharedEvidence = await Promise.all(sharedClaims.map((claimId) => captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Casey maintained Atlas at Acme.", relation: "SUPPORTS", claimIds: [claimId], facetKeys: ["legacy_claim"], entityIds: [] })));
   assert.equal(new Set(sharedEvidence.map(({ id }) => id)).size, 3);
   const excerpts = await getArtifactExcerpts(ids.investigationId, ids.runId, { artifactId: artifact.id, queries: ["experience", "atlas-core"] });
   assert.ok((excerpts.excerpts as Array<{ path: string }>).some(({ path }) => path === "$.experience[1].title"));
@@ -426,7 +426,7 @@ test("facet declarations can be replaced only before the initial research wave",
   const claim = await createClaim({
     ...ids,
     category: "EMPLOYMENT",
-    normalizedClaim: "Synthetic Ada worked at Acme Labs from 2020 to 2023.",
+    normalizedClaim: "Synthetic Casey worked at Acme Labs from 2020 to 2023.",
     materiality: "HIGH",
     facets: [{ key: "employer", label: "Acme Labs", materiality: "HIGH" }],
   });
@@ -449,7 +449,7 @@ test("facet declarations can be replaced only before the initial research wave",
   const question = await openResearchQuestion({
     ...ids,
     claimIds: [claim.id],
-    question: "What was Synthetic Ada's Acme Labs employment interval and Principal Engineer title?",
+    question: "What was Synthetic Casey's Acme Labs employment interval and Principal Engineer title?",
     priority: "HIGH",
     possibleRoutes: ["web.search"],
     createdByAgent: "lead-investigator",
@@ -457,7 +457,7 @@ test("facet declarations can be replaced only before the initial research wave",
   const secondClaim = await createClaim({
     ...ids,
     category: "EMPLOYMENT",
-    normalizedClaim: "Synthetic Ada held a Principal Engineer title at Acme Labs from 2020 to 2023.",
+    normalizedClaim: "Synthetic Casey held a Principal Engineer title at Acme Labs from 2020 to 2023.",
     materiality: "HIGH",
     facets: [
       { key: "employer", label: "Employer: Acme Labs", materiality: "HIGH" },
@@ -483,7 +483,7 @@ test("new evidence persists declared facet keys and rejects missing or unknown k
   const claim = await createClaim({
     ...ids,
     category: "EMPLOYMENT",
-    normalizedClaim: "Synthetic Ada worked at Acme Labs.",
+    normalizedClaim: "Synthetic Casey worked at Acme Labs.",
     materiality: "HIGH",
     facets: [{ key: "employer", label: "Acme Labs", materiality: "HIGH" }],
   });
@@ -493,12 +493,12 @@ test("new evidence persists declared facet keys and rejects missing or unknown k
     provider: "fixture-company",
     sourceUrl: "https://acme.example.test/team",
     mimeType: "text/plain",
-    content: "Synthetic Ada worked at Acme Labs.",
+    content: "Synthetic Casey worked at Acme Labs.",
   });
   const evidence = await captureEvidence({
     ...ids,
     artifactId: artifact.id,
-    exactQuote: "Synthetic Ada worked at Acme Labs.",
+    exactQuote: "Synthetic Casey worked at Acme Labs.",
     relation: "SUPPORTS",
     claimIds: [claim.id],
     facetKeys: ["employer"],
@@ -507,14 +507,14 @@ test("new evidence persists declared facet keys and rejects missing or unknown k
   const [stored] = await sql<Array<{ facetKeys: string[] }>>`SELECT facet_keys AS "facetKeys" FROM evidence WHERE id = ${evidence.id}`;
   assert.deepEqual(stored?.facetKeys, ["employer"]);
   await assert.rejects(
-    () => captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Ada worked at Acme Labs.", relation: "SUPPORTS", claimIds: [claim.id], facetKeys: [], entityIds: [] }),
+    () => captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Casey worked at Acme Labs.", relation: "SUPPORTS", claimIds: [claim.id], facetKeys: [], entityIds: [] }),
     /at least one declared claim facet/i,
   );
   await assert.rejects(
-    () => captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Ada worked at Acme Labs.", relation: "SUPPORTS", claimIds: [claim.id], facetKeys: ["title"], entityIds: [] }),
+    () => captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Casey worked at Acme Labs.", relation: "SUPPORTS", claimIds: [claim.id], facetKeys: ["title"], entityIds: [] }),
     /not declared/i,
   );
-  const context = await captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Ada worked at Acme Labs.", relation: "CONTEXT", claimIds: [claim.id], facetKeys: [], entityIds: [] });
+  const context = await captureEvidence({ ...ids, artifactId: artifact.id, exactQuote: "Synthetic Casey worked at Acme Labs.", relation: "CONTEXT", claimIds: [claim.id], facetKeys: [], entityIds: [] });
   const [contextRow] = await sql<Array<{ facetKeys: string[]; claimCount: number }>>`SELECT facet_keys AS "facetKeys", cardinality(claim_ids)::integer AS "claimCount" FROM evidence WHERE id = ${context.id}`;
   assert.deepEqual(contextRow, { facetKeys: [], claimCount: 1 });
 });
@@ -524,10 +524,10 @@ test("facet-specific evidence does not require anchors from unrelated facets", a
   const claim = await createClaim({
     ...ids,
     category: "CONTRIBUTION",
-    normalizedClaim: "Diego Russo was a core developer on CPython, served on the triage team, and worked at Arm Ltd.",
+    normalizedClaim: "Casey Morgan was a maintainer on Project Atlas, served on the triage team, and worked at Organization Alpha.",
     materiality: "HIGH",
     facets: [
-      { key: "core_developer", label: "Core developer: CPython JIT code ownership", materiality: "HIGH" },
+      { key: "core_developer", label: "Maintainer: Project Atlas code ownership", materiality: "HIGH" },
       { key: "triage", label: "Triage team membership", materiality: "MEDIUM" },
     ],
   });
@@ -535,14 +535,14 @@ test("facet-specific evidence does not require anchors from unrelated facets", a
     ...ids,
     kind: "SOURCE_CONTENT",
     provider: "github",
-    sourceUrl: "https://github.com/python/cpython/pull/136460",
+    sourceUrl: "https://github.com/sample-org/project-atlas/pull/123",
     mimeType: "text/plain",
-    content: "Add Diego as code owner of the JIT",
+    content: "Add Casey as code owner of Project Atlas",
   });
   const evidence = await captureEvidence({
     ...ids,
     artifactId: artifact.id,
-    exactQuote: "Add Diego as code owner of the JIT",
+    exactQuote: "Add Casey as code owner of Project Atlas",
     relation: "SUPPORTS",
     claimIds: [claim.id],
     facetKeys: ["core_developer"],
@@ -553,7 +553,7 @@ test("facet-specific evidence does not require anchors from unrelated facets", a
     () => captureEvidence({
       ...ids,
       artifactId: artifact.id,
-      exactQuote: "Add Diego as code owner of the JIT",
+      exactQuote: "Add Casey as code owner of Project Atlas",
       relation: "SUPPORTS",
       claimIds: [claim.id],
       facetKeys: ["triage"],
@@ -565,9 +565,9 @@ test("facet-specific evidence does not require anchors from unrelated facets", a
 
 test("artifact lookup recovers immutable provider metadata and exhaustion requires review", async () => {
   const ids = await createInvestigation({ submission: "Synthetic artifact recovery.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
-  const claim = await createClaim({ ...ids, category: "IDENTITY", normalizedClaim: "Synthetic Ada has a public profile.", materiality: "HIGH" });
+  const claim = await createClaim({ ...ids, category: "IDENTITY", normalizedClaim: "Synthetic Casey has a public profile.", materiality: "HIGH" });
   const question = await openResearchQuestion({ ...ids, claimIds: [claim.id], question: "Does a public profile exist?", priority: "HIGH", possibleRoutes: ["web.search"], createdByAgent: "lead-investigator" });
-  const artifact = await captureArtifact({ ...ids, kind: "SOURCE_CONTENT", provider: "exa", sourceUrl: "https://example.test/profile", mimeType: "text/plain", content: "Synthetic Ada public profile." });
+  const artifact = await captureArtifact({ ...ids, kind: "SOURCE_CONTENT", provider: "exa", sourceUrl: "https://example.test/profile", mimeType: "text/plain", content: "Synthetic Casey public profile." });
   const providerCallId = randomUUID();
   await sql`
     INSERT INTO provider_calls (
@@ -600,17 +600,17 @@ test("artifact lookup recovers immutable provider metadata and exhaustion requir
 test("research context reports facet gaps without treating unknown context as corroboration", async () => {
   const ids = await createInvestigation({ submission: "Synthetic facet-gap state.", runtimeKind: "LOCAL", dataClassification: "SYNTHETIC" });
   const claims = await Promise.all([
-    createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Ada worked at Acme Labs.", materiality: "HIGH", facets: [{ key: "employer", label: "Acme Labs", materiality: "HIGH" }] }),
-    createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Ada held a Principal Engineer title.", materiality: "HIGH", facets: [{ key: "title", label: "Principal Engineer", materiality: "HIGH" }] }),
-    createClaim({ ...ids, category: "PROJECT", normalizedClaim: "Synthetic Ada published the Atlas package.", materiality: "HIGH", facets: [{ key: "package", label: "Atlas package", materiality: "HIGH" }] }),
-    createClaim({ ...ids, category: "PROJECT", normalizedClaim: "Synthetic Ada led Northstar.", materiality: "HIGH", facets: [{ key: "project", label: "Northstar", materiality: "HIGH" }] }),
+    createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Casey worked at Acme Labs.", materiality: "HIGH", facets: [{ key: "employer", label: "Acme Labs", materiality: "HIGH" }] }),
+    createClaim({ ...ids, category: "EMPLOYMENT", normalizedClaim: "Synthetic Casey held a Principal Engineer title.", materiality: "HIGH", facets: [{ key: "title", label: "Principal Engineer", materiality: "HIGH" }] }),
+    createClaim({ ...ids, category: "PROJECT", normalizedClaim: "Synthetic Casey published the Atlas package.", materiality: "HIGH", facets: [{ key: "package", label: "Atlas package", materiality: "HIGH" }] }),
+    createClaim({ ...ids, category: "PROJECT", normalizedClaim: "Synthetic Casey led Northstar.", materiality: "HIGH", facets: [{ key: "project", label: "Northstar", materiality: "HIGH" }] }),
   ]);
-  const selfArtifact = await captureArtifact({ ...ids, kind: "PROVIDER_RESPONSE", provider: "linkdapi", sourceUrl: "https://www.linkedin.com/in/synthetic-ada", mimeType: "text/plain", content: "Synthetic Ada worked at Acme Labs." , provenance: { providerRoute: "linkdapi.profile" } });
-  const institutionalArtifact = await captureArtifact({ ...ids, kind: "PROVIDER_RESPONSE", provider: "packages", sourceUrl: "https://pypi.org/project/atlas", mimeType: "text/plain", content: "Synthetic Ada published the Atlas package.", provenance: { providerRoute: "packages.inspect" } });
-  const contradictionArtifact = await captureArtifact({ ...ids, kind: "SOURCE_CONTENT", provider: "fixture-project", sourceUrl: "https://project.example.test/northstar", mimeType: "text/plain", content: "Synthetic Ada did not lead Northstar." });
-  await captureEvidence({ ...ids, artifactId: selfArtifact.id, exactQuote: "Synthetic Ada worked at Acme Labs.", relation: "SUPPORTS", claimIds: [claims[0]!.id], facetKeys: ["employer"], entityIds: [] });
-  await captureEvidence({ ...ids, artifactId: institutionalArtifact.id, exactQuote: "Synthetic Ada published the Atlas package.", relation: "SUPPORTS", claimIds: [claims[2]!.id], facetKeys: ["package"], entityIds: [] });
-  await captureEvidence({ ...ids, artifactId: contradictionArtifact.id, exactQuote: "Synthetic Ada did not lead Northstar.", relation: "CONTRADICTS", claimIds: [claims[3]!.id], facetKeys: ["project"], entityIds: [] });
+  const selfArtifact = await captureArtifact({ ...ids, kind: "PROVIDER_RESPONSE", provider: "linkdapi", sourceUrl: "https://www.linkedin.com/in/synthetic-ada", mimeType: "text/plain", content: "Synthetic Casey worked at Acme Labs." , provenance: { providerRoute: "linkdapi.profile" } });
+  const institutionalArtifact = await captureArtifact({ ...ids, kind: "PROVIDER_RESPONSE", provider: "packages", sourceUrl: "https://pypi.org/project/atlas", mimeType: "text/plain", content: "Synthetic Casey published the Atlas package.", provenance: { providerRoute: "packages.inspect" } });
+  const contradictionArtifact = await captureArtifact({ ...ids, kind: "SOURCE_CONTENT", provider: "fixture-project", sourceUrl: "https://project.example.test/northstar", mimeType: "text/plain", content: "Synthetic Casey did not lead Northstar." });
+  await captureEvidence({ ...ids, artifactId: selfArtifact.id, exactQuote: "Synthetic Casey worked at Acme Labs.", relation: "SUPPORTS", claimIds: [claims[0]!.id], facetKeys: ["employer"], entityIds: [] });
+  await captureEvidence({ ...ids, artifactId: institutionalArtifact.id, exactQuote: "Synthetic Casey published the Atlas package.", relation: "SUPPORTS", claimIds: [claims[2]!.id], facetKeys: ["package"], entityIds: [] });
+  await captureEvidence({ ...ids, artifactId: contradictionArtifact.id, exactQuote: "Synthetic Casey did not lead Northstar.", relation: "CONTRADICTS", claimIds: [claims[3]!.id], facetKeys: ["project"], entityIds: [] });
   const question = await openResearchQuestion({ ...ids, claimIds: claims.map(({ id }) => id), question: "Which facets have durable evidence?", priority: "HIGH", possibleRoutes: ["web.search"], createdByAgent: "lead-investigator" });
   const context = await getResearchContext(ids.investigationId, ids.runId, [question.id]);
   const coverage = context.facetCoverage as Array<{ claimId: string; status: string; supportEvidenceIds: string[]; contradictingEvidenceIds: string[] }>;

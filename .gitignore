@@ -6,6 +6,11 @@ dist/
 runs/
 runtime-manifest.json
 
+# Private profile inputs and generated acceptance documents never belong in Git.
+/*.pdf
+/acceptance-private/
+/gold-private/
+
 # Local investigation inputs and generated acceptance artifacts. Keep on disk,
 # but do not add candidate material or generated reports to the repository.
 /tmp/acceptance/*.pdf

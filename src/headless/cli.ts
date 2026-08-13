@@ -12,11 +12,13 @@ import { getPinnedLocalManifestHash, getPinnedResearchManifestHash, LocalDockerR
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
 import { currentCheckpointConfigs } from "./checkpoint-config.ts";
 import { openPersistentRunBudget } from "./checkpoint.ts";
+import { headlessBudgetCeilings } from "./budget.ts";
 import { parseInvestigationArguments } from "./cli-options.ts";
 import { HeadlessInvestigationController } from "./controller.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 import { publishFinalizationProvenance } from "./incremental-pipeline.ts";
 import { createHeadlessGateway } from "./gateway.ts";
+import { registerOfficialDomainProposal } from "./source-authority.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
 import { renderInvestigationReport, verifyInvestigationReport } from "./report.ts";
 import { assertPublishableResult } from "./result-contract.ts";
@@ -50,7 +52,7 @@ function providerEnvironment(mode: "fixture" | "live"): Record<string, string | 
 
 function agentToolAllowlist(): Map<string, Set<string>> {
   return new Map([
-    ["lead-researcher", new Set(["source.excerpts"])],
+    ["lead-researcher", new Set(["source.excerpts", "official_domain.register"])],
     ["professional-researcher", new Set(["professional.profile", "professional.activity", "web.search", "web.fetch", "archives.search", "source.excerpts"])],
     ["github-researcher", new Set(["github.graphql", "github.rest", "github.clone", "web.fetch", "source.excerpts"])],
     ["web-records-researcher", new Set(["web.search", "web.fetch", "archives.search", "public_records.search", "scholarly.search", "packages.inspect", "security_records.search", "source.excerpts"])],
@@ -123,7 +125,7 @@ async function main(): Promise<void> {
       compilerModel,
       runtimeManifestHash: researchManifestHash,
     });
-    const budget = await openPersistentRunBudget(workspace.root, { modelUsd: 5, providerUsd: 10, externalNetworkCalls: 300, repositoryClones: 3, socialProfiles: 1 });
+    const budget = await openPersistentRunBudget(workspace.root, headlessBudgetCeilings());
     const providerExecutor = new ProviderExecutor(providerEnvironment(options.providerMode), createFileProviderBackend({ sourceStore: workspace.sourceStore, budget, deadlineAt: deadlineAt.getTime() }));
     const researchProvider = process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
     const finalizerProvider = process.env.FINALIZER_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
@@ -131,9 +133,10 @@ async function main(): Promise<void> {
     gateway = createHeadlessGateway({
       runId,
       deadlineAt: deadlineAt.getTime(),
-      allowedTools: new Set([...toolNames, "source.excerpts"]),
+      allowedTools: new Set([...toolNames, "source.excerpts", "official_domain.register"]),
       allowedModels: new Set([researchModel, compilerModel, auditorModel, ...PAID_GO_MODEL_IDS, ...FINALIZER_MODEL_CATALOG.map(({ id }) => id)]),
       agentTools: agentToolAllowlist(),
+      officialDomainRegistration: (value) => registerOfficialDomainProposal(workspace!.root, workspace!.sourceStore, value),
       executor: providerExecutor,
       sourceStore: workspace.sourceStore,
       budget,

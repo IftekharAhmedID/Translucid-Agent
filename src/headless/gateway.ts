@@ -53,6 +53,7 @@ type GatewayInput = {
   budget: MemoryRunBudget;
   providerMode: "fixture" | "live";
   agentTools?: Map<string, Set<string>>;
+  officialDomainRegistration?: (value: unknown) => Promise<unknown>;
   researchUpstreamUrl?: string;
   finalizerUpstreamUrl?: string;
   finalizerProvider?: "ZEN" | "GO";
@@ -112,6 +113,10 @@ export function createHeadlessGateway(input: GatewayInput) {
             (maximumCharacters) => input.sourceStore.excerpts({ sourceRef, queries, maxCharacters: maximumCharacters }),
           );
           return json(response, 200, excerpt);
+        }
+        if (name === "official_domain.register") {
+          if (!input.officialDomainRegistration) throw new GatewayError(403, "Official-domain proposals are unavailable in this run.");
+          return json(response, 200, await input.officialDomainRegistration(body.arguments));
         }
         if (!toolNames.includes(name as (typeof toolNames)[number])) throw new GatewayError(403, "State and database tools are unavailable in headless runs.");
         if (!input.executor) throw new GatewayError(403, "Research providers are unavailable during finalization-only recovery.");

@@ -27,7 +27,7 @@ function inputDocument() {
         { line: 2, text: "Principal Engineer at Example Corp" },
         { line: 3, text: "Python, TypeScript" },
       ],
-      text: "Ada Lovelace\nPrincipal Engineer at Example Corp\nPython, TypeScript",
+      text: "Casey Morgan\nPrincipal Engineer at Example Corp\nPython, TypeScript",
     }],
   };
 }
@@ -37,7 +37,7 @@ function plan(): CoveragePlan {
     claims: [{
       key: "employment",
       category: "EMPLOYMENT",
-      statement: "Ada Lovelace was a Principal Engineer at Example Corp.",
+      statement: "Casey Morgan was a Principal Engineer at Example Corp.",
       materiality: "HIGH",
       sourceSpan: { page: 1, lineStart: 2, lineEnd: 2, text: "Principal Engineer at Example Corp" },
       facets: [
@@ -108,7 +108,7 @@ test("coverage validation requires every non-empty input line and exact spans", 
 
 test("coverage validation rejects a material claim clause without a facet before packet compilation", () => {
   const value = structuredClone(plan());
-  value.claims[0]!.statement = "Ada Lovelace was a Principal Engineer at Example Corp and built software using Java and Vanilla JavaScript.";
+  value.claims[0]!.statement = "Casey Morgan was a Principal Engineer at Example Corp and built software using Java and Vanilla JavaScript.";
   assert.throws(() => validateCoveragePlan(value, inputDocument()), /material claim clause|facet/i);
 });
 

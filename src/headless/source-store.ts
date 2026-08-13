@@ -3,7 +3,7 @@ import { appendFile, mkdir, open, readFile, rename, stat } from "node:fs/promise
 import { dirname, join, relative } from "node:path";
 import { z } from "zod";
 
-import { effectiveSourceAuthority, deriveArtifactTrust } from "../core/source-trust.ts";
+import { deriveArtifactTrust } from "../core/source-trust.ts";
 
 const sourceSchema = z.object({
   ref: z.string().regex(/^S[1-9]\d*$/),
@@ -304,7 +304,7 @@ export class FileSourceStore {
     researchMemos: string;
     eligibleSourceRefs: ReadonlySet<string>;
   }): Promise<StoredExcerptCandidates> {
-    const sources = (await this.list()).filter((source) => input.eligibleSourceRefs.has(source.ref) && !new Set(["CONTEXT", "DISCOVERY_ONLY"]).has(effectiveSourceAuthority({ artifact: source })));
+    const sources = (await this.list()).filter((source) => input.eligibleSourceRefs.has(source.ref));
     const sourceByRef = new Map(sources.map((source) => [source.ref, source]));
     const paragraphs = input.researchMemos.split(/\n\s*\n/gu);
     const tokens = (text: string) => [...new Set(text.toLocaleLowerCase("en-US").split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 3 && !new Set(["with", "from", "that", "this", "have", "were", "their", "about", "into"]).has(token)))];
@@ -348,10 +348,13 @@ export class FileSourceStore {
         if (facetCandidates.length >= 3) break;
       }
       const selected: StoredExcerptCandidates["candidatesByFacet"][string] = [];
+      const selectedRefs = new Set<string>();
       for (const { excerpt } of facetCandidates.sort((left, right) => left.tier - right.tier || right.score - left.score || Number(left.excerpt.sourceRef.slice(1)) - Number(right.excerpt.sourceRef.slice(1)) || left.excerpt.offsetStart - right.excerpt.offsetStart)) {
         if (selected.length >= 3 || remainingCandidates <= 0) break;
+        if (selectedRefs.has(excerpt.ref)) continue;
         if (remainingCharacters < excerpt.text.length) continue;
         selected.push(excerpt);
+        selectedRefs.add(excerpt.ref);
         remainingCharacters -= excerpt.text.length;
         remainingCandidates -= 1;
       }

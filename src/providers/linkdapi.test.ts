@@ -8,14 +8,14 @@ test("unwraps a successful LinkdAPI profile response instead of matching a human
     success: true,
     message: "Data retrieved successfully",
     data: {
-      username: "diegor",
+      username: "casey-profile",
       headline: "Principal Software Engineer",
-      currentPositions: [{ title: "Principal Software Engineer", companyName: "Arm" }],
-      fullPositions: [{ title: "Principal Software Engineer", companyName: "Arm" }],
+      currentPositions: [{ title: "Principal Software Engineer", companyName: "Organization Alpha" }],
+      fullPositions: [{ title: "Principal Software Engineer", companyName: "Organization Alpha" }],
     },
   });
 
-  assert.equal(profile?.username, "diegor");
+  assert.equal(profile?.username, "casey-profile");
   assert.equal(Array.isArray(profile?.fullPositions), true);
 });
 
@@ -23,10 +23,10 @@ test("material-field routing distinguishes identity, current role, history and e
   const profile = unwrapLinkdProfileResponse({
     success: true,
     data: {
-      username: "diegor",
-      fullName: "Diego Russo",
-      currentPositions: [{ title: "Principal Software Engineer", companyName: "Arm" }],
-      fullPositions: [{ title: "Principal Software Engineer", companyName: "Arm" }],
+      username: "casey-profile",
+      fullName: "Casey Morgan",
+      currentPositions: [{ title: "Principal Software Engineer", companyName: "Organization Alpha" }],
+      fullPositions: [{ title: "Principal Software Engineer", companyName: "Organization Alpha" }],
       educations: [],
     },
   })!;

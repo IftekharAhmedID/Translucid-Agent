@@ -8,9 +8,7 @@ export type SourceAuthority =
   | "CONTEXT"
   | "DISCOVERY_ONLY";
 
-export const SOURCE_AUTHORITY_POLICY_VERSION = "institutional-domains-v2";
-
-export type InstitutionalAuthorityRule = "python-official" | "arm-official" | "europython-official";
+export const SOURCE_AUTHORITY_POLICY_VERSION = "verified-domain-registry-v1";
 
 type SourceArtifact = {
   sourceAuthority?: SourceAuthority | string | null;
@@ -119,17 +117,13 @@ function authority(input: TrustInput, canonicalUrl: string | undefined): SourceA
     || route === "github.rest" && typeof network.path === "string" && /^\/repos\/[^/]+\/[^/]+\/(commits|issues|pulls)\b/.test(network.path)
     || route === "github.graphql" && typeof network.query === "string" && /\b(pullRequests?|commits?|reviews?|repository)\b/i.test(network.query);
   if (input.kind === "SEARCH_DISCOVERY") return "DISCOVERY_ONLY";
-  if (input.provider === "fixture" && canonicalUrl && new URL(canonicalUrl).hostname === "example.test") return "FIRST_PARTY_INSTITUTIONAL";
+  if (input.provider === "fixture") return "FIRST_PARTY_INSTITUTIONAL";
   if (input.kind.startsWith("INPUT_") || input.provider === "submission") return "SELF_REPRESENTATION";
   if (route.startsWith("linkdapi.") || route.startsWith("brightdata.") || canonicalUrl && /(^|\.)(linkedin|x|instagram|tiktok)\.com$/.test(new URL(canonicalUrl).hostname)) return "SELF_REPRESENTATION";
   if (githubDirect) return "DIRECT_WORK";
   if (route.startsWith("packages.")) return "FIRST_PARTY_INSTITUTIONAL";
   if (route.startsWith("github.")) return "SELF_REPRESENTATION";
-  if (route.startsWith("public-records.") || canonicalUrl && (/\.gov$/.test(new URL(canonicalUrl).hostname) || /\.edu$/.test(new URL(canonicalUrl).hostname) || new URL(canonicalUrl).hostname === "datatracker.ietf.org")) return "FIRST_PARTY_INSTITUTIONAL";
-  if (canonicalUrl) {
-    const domain = getDomain(new URL(canonicalUrl).hostname, { allowPrivateDomains: false });
-    if (domain && new Set(["reuters.com", "apnews.com", "bbc.com", "ft.com", "wired.com"]).has(domain)) return "INDEPENDENT_PROFESSIONAL";
-  }
+  if (route.startsWith("public-records.")) return "FIRST_PARTY_INSTITUTIONAL";
   return "CONTEXT";
 }
 
@@ -137,15 +131,6 @@ function hostname(value: string | null | undefined): string | undefined {
   if (!value) return undefined;
   try { return new URL(value).hostname.toLocaleLowerCase("en-US"); }
   catch { return undefined; }
-}
-
-export function institutionalAuthorityRule(value: string | null | undefined): InstitutionalAuthorityRule | undefined {
-  const host = hostname(value);
-  if (!host) return undefined;
-  if (new Set(["www.python.org", "docs.python.org", "devguide.python.org"]).has(host)) return "python-official";
-  if (host === "arm.com" || host === "www.arm.com" || host === "developer.arm.com") return "arm-official";
-  if (new Set(["europython.eu", "www.europython.eu", "europython-society.org", "www.europython-society.org"]).has(host) || /^ep20(?:1[1-9]|2[0-6])\.europython\.eu$/u.test(host)) return "europython-official";
-  return undefined;
 }
 
 function candidateDomainNames(entities: SourceEntity[], links: SourceEntityLink[], rootCandidate: string | null | undefined): Set<string> {
@@ -182,7 +167,6 @@ export function effectiveSourceAuthority(input: {
   const stored = String(input.artifact.sourceAuthority ?? "CONTEXT") as SourceAuthority;
   if (stored === "DISCOVERY_ONLY") return stored;
   if (stored !== "CONTEXT") return stored;
-  if (institutionalAuthorityRule(input.artifact.sourceUrl)) return "FIRST_PARTY_INSTITUTIONAL";
   if (isVerifiedCandidateDomain(input.artifact, input.entities ?? [], input.entityLinks ?? [], input.rootCandidate)) return "SELF_REPRESENTATION";
   return "CONTEXT";
 }
@@ -198,7 +182,7 @@ export function effectiveAttestationGroup(input: {
   if (authority === "SELF_REPRESENTATION" && (isVerifiedCandidateDomain(input.artifact, input.entities ?? [], input.entityLinks ?? [], input.rootCandidate) || Boolean(sourceHost && /(^|\.)linkedin\.com$/.test(sourceHost)))) return "CANDIDATE_SELF";
   if (input.artifact.independenceGroup?.startsWith("github-repository:")) return input.artifact.independenceGroup;
   if (authority === "DIRECT_WORK" && input.artifact.independenceGroup) return input.artifact.independenceGroup;
-  if ((authority === "FIRST_PARTY_INSTITUTIONAL" || authority === "INDEPENDENT_PROFESSIONAL") && sourceHost) return `domain:${getDomain(sourceHost, { allowPrivateDomains: false }) ?? sourceHost}`;
+  if ((authority === "FIRST_PARTY_INSTITUTIONAL" || authority === "INDEPENDENT_PROFESSIONAL") && sourceHost) return `domain:${getDomain(sourceHost, { allowPrivateDomains: true }) ?? sourceHost}`;
   return input.artifact.independenceGroup ?? `source:${input.artifact.provider ?? "unknown"}:${input.artifact.kind ?? "unknown"}`;
 }
 
@@ -213,7 +197,7 @@ export function deriveArtifactTrust(input: TrustInput): {
   const cve = cveLineage(input);
   const linkedIn = linkedinGroup(httpUrl);
   const github = githubRepositoryGroup(input, httpUrl);
-  const domain = httpUrl ? getDomain(new URL(httpUrl).hostname, { allowPrivateDomains: false }) : null;
+  const domain = httpUrl ? getDomain(new URL(httpUrl).hostname, { allowPrivateDomains: true }) : null;
   const independenceGroup = doi ? `doi:${doi}`
     : cve ? `cve:${cve}`
     : linkedIn ?? github ?? (domain ? `domain:${domain}` : `source:${input.provider}:${input.kind}`);

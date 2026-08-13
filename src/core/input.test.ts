@@ -12,14 +12,14 @@ import {
 } from "./input.ts";
 
 test("normalizeSubmission retains raw JSON and creates a stable normalized representation", () => {
-  const raw = '{"candidate":{"name":"Synthetic Ada"},"claims":["Built Atlas"]}';
+  const raw = '{"candidate":{"name":"Synthetic Casey"},"claims":["Built Atlas"]}';
   const result = normalizeSubmission(raw);
 
   assert.equal(result.kind, "JSON");
   assert.equal(result.raw, raw);
   assert.equal(
     result.normalized,
-    '{\n  "candidate": {\n    "name": "Synthetic Ada"\n  },\n  "claims": [\n    "Built Atlas"\n  ]\n}',
+    '{\n  "candidate": {\n    "name": "Synthetic Casey"\n  },\n  "claims": [\n    "Built Atlas"\n  ]\n}',
   );
 });
 
@@ -61,17 +61,17 @@ test("wrapExtractedText keeps all extracted words readable below the OpenCode li
 
 test("pdfTextItemsToLines preserves PDF.js line boundaries instead of flattening a page", () => {
   const lines = pdfTextItemsToLines([
-    { str: "Diego Russo", hasEOL: false },
+    { str: "Casey Morgan", hasEOL: false },
     { str: " | Principal Software Engineer", hasEOL: true },
     { str: "Career Experience", hasEOL: true },
-    { str: "Arm Ltd.", hasEOL: false },
+    { str: "Organization Alpha", hasEOL: false },
     { str: " 2023-present", hasEOL: false },
   ]);
 
   assert.deepEqual(lines, [
-    "Diego Russo | Principal Software Engineer",
+    "Casey Morgan | Principal Software Engineer",
     "Career Experience",
-    "Arm Ltd. 2023-present",
+    "Organization Alpha 2023-present",
   ]);
 });
 

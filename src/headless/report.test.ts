@@ -78,6 +78,7 @@ test("renders deterministic PDF bytes from the canonical result only", async () 
   assert.equal(first.subarray(0, 5).toString(), "%PDF-");
 
   const pdf = await getDocument({ data: new Uint8Array(first), disableFontFace: true, useSystemFonts: false }).promise;
+  assert.equal(pdf.numPages, 2, "small reports should not orphan timeline or source-registry sections");
   const pages: string[] = [];
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);

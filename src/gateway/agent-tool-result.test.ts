@@ -11,7 +11,7 @@ test("agent-facing provider results keep artifact IDs and useful excerpts below 
     data: {
       results: [{
         text: "navigation ".repeat(100_000),
-        highlights: ["Diego Russo organised the CPython Core Dev Sprint 2025 at Arm Cambridge."],
+        highlights: ["Casey Morgan organised the Project Atlas maintainer sprint at Organization Alpha."],
       }],
     },
     artifactIds: ["11111111-1111-4111-8111-111111111111"],
@@ -24,7 +24,7 @@ test("agent-facing provider results keep artifact IDs and useful excerpts below 
   const serialized = JSON.stringify(result);
   assert.ok(Buffer.byteLength(serialized) <= 24 * 1024);
   assert.match(serialized, /11111111-1111-4111-8111-111111111111/);
-  assert.match(serialized, /CPython Core Dev Sprint 2025/);
+  assert.match(serialized, /Project Atlas maintainer sprint/);
   assert.equal(result.dataTruncated, true);
   assert.match(result.instruction ?? "", /never refetch/i);
 });
@@ -34,7 +34,7 @@ test("agent-facing provider results redact secret-shaped response fields", () =>
     status: "OK",
     capability: "LINKEDIN_PROFILE",
     provider: "linkdapi",
-    data: { name: "Diego Russo", access_token: "should-not-cross-the-gateway" },
+    data: { name: "Casey Morgan", access_token: "should-not-cross-the-gateway" },
     artifactIds: ["22222222-2222-4222-8222-222222222222"],
     evidenceEligibleArtifactIds: ["22222222-2222-4222-8222-222222222222"],
     observedAt: "2026-08-10T00:00:00.000Z",

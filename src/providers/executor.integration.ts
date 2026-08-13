@@ -155,7 +155,7 @@ test("LinkdAPI material-field success skips Bright Data", async () => {
   const urls: string[] = [];
   globalThis.fetch = async (input) => {
     urls.push(String(input));
-    return Response.json({ success: true, data: { username: "diegor", fullName: "Diego Russo", currentPositions: [{ title: "Engineer" }] } });
+    return Response.json({ success: true, data: { username: "casey-profile", fullName: "Casey Morgan", currentPositions: [{ title: "Engineer" }] } });
   };
   const executor = new ProviderExecutor({
     PROVIDER_MODE: "live",
@@ -166,7 +166,7 @@ test("LinkdAPI material-field success skips Bright Data", async () => {
   });
   const result = await executor.execute({
     tool: "professional.profile",
-    arguments: { questionId: ids.questionId, claimIds: [ids.claimId], publicRationale: "Checking the exact submitted LinkedIn identity and current role.", username: "diegor", requiredMaterialField: "CURRENT_POSITION" },
+    arguments: { questionId: ids.questionId, claimIds: [ids.claimId], publicRationale: "Checking the exact submitted LinkedIn identity and current role.", username: "casey-profile", requiredMaterialField: "CURRENT_POSITION" },
   }, operational(ids));
   assert.equal(result.status, "OK");
   assert.equal(urls.filter((url) => url.includes("linkdapi.com")).length, 1);
@@ -179,8 +179,8 @@ test("a missing LinkdAPI material field causes exactly one Bright Data fallback"
   globalThis.fetch = async (input) => {
     const url = String(input);
     urls.push(url);
-    if (url.includes("linkdapi.com")) return Response.json({ success: true, data: { username: "diegor", fullName: "Diego Russo", educations: [] } });
-    return Response.json([{ url: "https://www.linkedin.com/in/diegor", education: [{ school: "Example University" }] }]);
+    if (url.includes("linkdapi.com")) return Response.json({ success: true, data: { username: "casey-profile", fullName: "Casey Morgan", educations: [] } });
+    return Response.json([{ url: "https://www.linkedin.com/in/casey-profile", education: [{ school: "Example University" }] }]);
   };
   const executor = new ProviderExecutor({
     PROVIDER_MODE: "live",
@@ -190,7 +190,7 @@ test("a missing LinkdAPI material field causes exactly one Bright Data fallback"
   });
   const request = {
     tool: "professional.profile",
-    arguments: { questionId: ids.questionId, claimIds: [ids.claimId], publicRationale: "Resolving a material education field absent from the primary profile route.", username: "diegor", requiredMaterialField: "EDUCATION" },
+    arguments: { questionId: ids.questionId, claimIds: [ids.claimId], publicRationale: "Resolving a material education field absent from the primary profile route.", username: "casey-profile", requiredMaterialField: "EDUCATION" },
   };
   const first = await executor.execute(request, operational(ids));
   const second = await executor.execute(request, operational(ids));
@@ -238,7 +238,7 @@ test("a zero provider budget is enforced instead of replaced by the default", as
   let fetchCalls = 0;
   globalThis.fetch = async () => {
     fetchCalls += 1;
-    return Response.json({ success: true, data: { username: "diegor", fullName: "Diego Russo" } });
+    return Response.json({ success: true, data: { username: "casey-profile", fullName: "Casey Morgan" } });
   };
   const result = await new ProviderExecutor({
     PROVIDER_MODE: "live",
@@ -247,7 +247,7 @@ test("a zero provider budget is enforced instead of replaced by the default", as
     PROVIDER_BUDGET_USD: "0",
   }).execute({
     tool: "professional.profile",
-    arguments: { questionId: ids.questionId, claimIds: [ids.claimId], publicRationale: "Verifying that an explicitly closed paid-provider budget is authoritative.", username: "diegor", requiredMaterialField: "IDENTITY" },
+    arguments: { questionId: ids.questionId, claimIds: [ids.claimId], publicRationale: "Verifying that an explicitly closed paid-provider budget is authoritative.", username: "casey-profile", requiredMaterialField: "IDENTITY" },
   }, operational(ids));
   assert.equal(result.status, "BUDGET_EXHAUSTED");
   assert.equal(fetchCalls, 0);

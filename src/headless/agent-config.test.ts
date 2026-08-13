@@ -24,6 +24,7 @@ test("headless agents expose no database or state-machine tools", async () => {
 test("lead has native delegation but no provider tools, while specialists cannot delegate", async () => {
   const lead = await readFile(join(root, "agents", "lead-researcher.md"), "utf8");
   assert.match(lead, /task:\n/);
+  assert.match(lead, /official_domain\.register: allow/);
   assert.doesNotMatch(lead, /\b(?:web\.search|professional\.profile|github\.rest|social\.profile): allow/);
   for (const file of ["professional-researcher.md", "github-researcher.md", "web-records-researcher.md", "social-researcher.md"]) {
     const source = await readFile(join(root, "agents", file), "utf8");

@@ -5,7 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { finalizeWithSingleRepair } from "./finalize.ts";
-import { assertPublishableResult, canonicalizeInvestigationResult, investigationDraftSchema, type InvestigationDraft } from "./result-contract.ts";
+import { assertPublishableResult, canonicalizeInvestigationResult, investigationDraftSchema, type InvestigationDraft, type InvestigationResult } from "./result-contract.ts";
+import { loadSourceAuthority } from "./source-authority.ts";
 import { FileSourceStore } from "./source-store.ts";
 
 const run = {
@@ -28,7 +29,7 @@ function draft(sourceRef: string): InvestigationDraft {
         claimKeys: ["employment"],
         evidenceKeys: ["employment-title", "employment-team"],
       },
-      professionalTimelineSummary: "The captured record supports the reported Arm employment.",
+      professionalTimelineSummary: "The captured record supports the reported Organization Alpha employment.",
       timelineClaimKeys: ["employment"],
       timelineEvidenceKeys: ["employment-title", "employment-team"],
       strongestEvidenceByClaim: [{
@@ -42,12 +43,12 @@ function draft(sourceRef: string): InvestigationDraft {
     claims: [{
       key: "employment",
       category: "EMPLOYMENT",
-      statement: "Diego Russo worked as Staff Software Engineer in DSG at Arm Ltd.",
+      statement: "Casey Morgan worked as Staff Software Engineer in Platform Group at Organization Alpha.",
       materiality: "HIGH",
-      sourceSpan: { page: 1, text: "Staff Software Engineer, DSG, Arm Ltd" },
+      sourceSpan: { page: 1, text: "Staff Software Engineer, Platform Group, Organization Alpha" },
       explanation: "Direct repository records align with the reported role and team.",
       facets: [
-        { key: "employer_team", label: "Employer/team: Arm Ltd, DSG", materiality: "HIGH", status: "SUPPORTED", note: "The source names Arm Ltd and DSG." },
+        { key: "employer_team", label: "Employer/team: Organization Alpha, Platform Group", materiality: "HIGH", status: "SUPPORTED", note: "The source names Organization Alpha and Platform Group." },
         { key: "title", label: "Title: Staff Software Engineer", materiality: "HIGH", status: "SUPPORTED", note: "The source states the title." },
       ],
     }],
@@ -67,12 +68,12 @@ function draft(sourceRef: string): InvestigationDraft {
         facetKeys: ["employer_team"],
         relation: "SUPPORTS",
         sourceRef,
-        exactQuote: "Arm Ltd, DSG",
+        exactQuote: "Organization Alpha, Platform Group",
         sourceLocation: { path: "role.team" },
       },
     ],
     timeline: [{
-      label: "Arm Ltd employment",
+      label: "Organization Alpha employment",
       validFrom: "2013",
       validTo: "2017",
       claimKeys: ["employment"],
@@ -89,11 +90,16 @@ async function directWorkStore(directory: string): Promise<{ store: FileSourceSt
     providerRoute: "github.clone",
     sourceUrl: "https://github.com/example/toolchain",
     mimeType: "application/json",
-    content: { role: { title: "Staff Software Engineer", team: "Arm Ltd, DSG" } },
+    content: { role: { title: "Staff Software Engineer", team: "Organization Alpha, Platform Group" } },
     provenance: { networkArguments: { repository: "example/toolchain" } },
     retrievedAt: "2026-08-11T12:05:00.000Z",
   });
   return { store, sourceRef: source.ref };
+}
+
+async function resultContext(directory: string, sourceStore: FileSourceStore, runValue: Omit<InvestigationResult["run"], "status"> = run) {
+  const { snapshot: authoritySnapshot } = await loadSourceAuthority(directory, sourceStore);
+  return { run: runValue, sourceStore, authoritySnapshot, compilerAttempts: 1 as const, auditorAttempts: 1 as const };
 }
 
 test("canonicalizes semantic keys and derives facet outcomes, trust, timeline state, and audit counts", async () => {
@@ -101,10 +107,8 @@ test("canonicalizes semantic keys and derives facet outcomes, trust, timeline st
   try {
     const { store, sourceRef } = await directWorkStore(directory);
     const result = await canonicalizeInvestigationResult(draft(sourceRef), {
-      run,
-      sourceStore: store,
-      compilerAttempts: 1,
-      auditorAttempts: 1,
+      ...await resultContext(directory, store),
+      judgmentReasonsByClaim: new Map([["employment", ["Exact role and employer fields match the reported facets."]]]),
       rejectedCitations: 0,
       providerCalls: 2,
       cacheHits: 1,
@@ -113,6 +117,10 @@ test("canonicalizes semantic keys and derives facet outcomes, trust, timeline st
     assert.equal(result.claims[0]?.id, "C1");
     assert.equal(result.claims[0]?.verdict, "CORROBORATED");
     assert.equal(result.claims[0]?.strength, "STRONG");
+    assert.match(result.claims[0]?.explanation ?? "", /employer_team SUPPORTED \(STRONG\).*title SUPPORTED \(STRONG\)/);
+    assert.match(result.claims[0]?.explanation ?? "", /DIRECT_WORK/);
+    assert.match(result.claims[0]?.explanation ?? "", /Exact role and employer fields match/);
+    assert.notEqual(result.claims[0]?.explanation, draft(sourceRef).claims[0]?.explanation);
     assert.equal(result.schemaVersion, "1.1");
     assert.deepEqual(result.claims[0]?.facets.map(({ evidenceIds, strength }) => ({ evidenceIds, strength })), [
       { evidenceIds: ["E1"], strength: "STRONG" },
@@ -144,12 +152,7 @@ test("public publication rejects fixture provider metadata and reserved test URL
   const directory = await mkdtemp(join(tmpdir(), "translucid-result-publication-"));
   try {
     const { store, sourceRef } = await directWorkStore(directory);
-    const result = await canonicalizeInvestigationResult(draft(sourceRef), {
-      run: { ...run, classification: "PUBLIC_PROFESSIONAL" },
-      sourceStore: store,
-      compilerAttempts: 1,
-      auditorAttempts: 1,
-    });
+    const result = await canonicalizeInvestigationResult(draft(sourceRef), await resultContext(directory, store, { ...run, classification: "PUBLIC_PROFESSIONAL" }));
     assert.doesNotThrow(() => assertPublishableResult(result));
 
     const fixtureProvider = structuredClone(result);
@@ -182,7 +185,7 @@ test("drops empty strongest-evidence rows before validation without spending the
       createDossier: async () => null,
       encode: async () => investigationDraftSchema.parse(emptyRow),
       validateEncoding: () => undefined,
-      validateResult: (value) => canonicalizeInvestigationResult(value, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+      validateResult: async (value) => canonicalizeInvestigationResult(value, await resultContext(directory, store)),
       audit: async () => ({ status: "PASSED", defects: [] }),
     });
 
@@ -203,12 +206,12 @@ test("direct technical evidence strengthens only its mapped facet and claim stre
       providerRoute: "linkdapi.profile",
       sourceUrl: "https://www.linkedin.com/in/example",
       mimeType: "application/json",
-      content: { role: { team: "Arm Ltd, DSG" } },
+      content: { role: { team: "Organization Alpha, Platform Group" } },
       provenance: {},
     });
     const mixed = draft(sourceRef);
     mixed.evidence[1]!.sourceRef = self.ref;
-    const result = await canonicalizeInvestigationResult(mixed, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 });
+    const result = await canonicalizeInvestigationResult(mixed, await resultContext(directory, store));
 
     assert.deepEqual(result.claims[0]?.facets.map(({ key, status, strength }) => ({ key, status, strength })), [
       { key: "employer_team", status: "SUPPORTED", strength: "WEAK" },
@@ -217,7 +220,7 @@ test("direct technical evidence strengthens only its mapped facet and claim stre
     assert.equal(result.claims[0]?.strength, "WEAK");
 
     mixed.claims[0]!.facets[0]!.materiality = "MEDIUM";
-    const highFloor = await canonicalizeInvestigationResult(mixed, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 });
+    const highFloor = await canonicalizeInvestigationResult(mixed, await resultContext(directory, store));
     assert.equal(highFloor.claims[0]?.strength, "STRONG");
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -231,7 +234,7 @@ test("a direct contradiction remains CONTRADICTED with STRONG evidence", async (
     const contradicted = draft(sourceRef);
     contradicted.evidence[0]!.relation = "CONTRADICTS";
     contradicted.claims[0]!.facets.find(({ key }) => key === "title")!.status = "CONTRADICTED";
-    const result = await canonicalizeInvestigationResult(contradicted, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 });
+    const result = await canonicalizeInvestigationResult(contradicted, await resultContext(directory, store));
     assert.equal(result.claims[0]?.verdict, "CONTRADICTED");
     assert.equal(result.claims[0]?.strength, "STRONG");
   } finally {
@@ -263,7 +266,7 @@ test("contradicted facet strength uses only contradiction evidence", async () =>
       exactQuote: "Staff Software Engineer",
       sourceLocation: { path: "role.title" },
     });
-    const result = await canonicalizeInvestigationResult(contradicted, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 });
+    const result = await canonicalizeInvestigationResult(contradicted, await resultContext(directory, store));
 
     assert.deepEqual(
       result.claims[0]?.facets.find(({ key }) => key === "title"),
@@ -292,7 +295,7 @@ test("unresolved facets and fully unresolved claims have null strength", async (
     unresolved.summary.timelineEvidenceKeys = [];
     unresolved.summary.strongestEvidenceByClaim = [];
     unresolved.timeline[0]!.evidenceKeys = [];
-    const result = await canonicalizeInvestigationResult(unresolved, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 });
+    const result = await canonicalizeInvestigationResult(unresolved, await resultContext(directory, store));
 
     assert.equal(result.claims[0]?.strength, null);
     assert.deepEqual(result.claims[0]?.facets.map(({ status, strength }) => ({ status, strength })), [
@@ -311,7 +314,7 @@ test("rejects a quote that does not exist in the immutable source", async () => 
     const invalid = draft(sourceRef);
     invalid.evidence[0]!.exactQuote = "Staff Software Engineer II";
     await assert.rejects(
-      canonicalizeInvestigationResult(invalid, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+      canonicalizeInvestigationResult(invalid, await resultContext(directory, store)),
       /exact quote.*not present/i,
     );
   } finally {
@@ -326,7 +329,7 @@ test("rejects an exact quote assigned to the wrong immutable source location", a
     const invalid = draft(sourceRef);
     invalid.evidence[0]!.sourceLocation = { path: "role.team" };
     await assert.rejects(
-      canonicalizeInvestigationResult(invalid, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+      canonicalizeInvestigationResult(invalid, await resultContext(directory, store)),
       /exact quote.*location.*role\.team/i,
     );
   } finally {
@@ -342,7 +345,7 @@ test("rejects a timeline interval whose end precedes its start", async () => {
     invalid.timeline[0]!.validFrom = "2025-01-01";
     invalid.timeline[0]!.validTo = "2024-01-01";
     await assert.rejects(
-      canonicalizeInvestigationResult(invalid, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+      canonicalizeInvestigationResult(invalid, await resultContext(directory, store)),
       /timeline.*end.*precedes.*start/i,
     );
   } finally {
@@ -357,7 +360,7 @@ test("rejects neighboring-facet evidence and context citations", async () => {
     const neighboring = draft(sourceRef);
     neighboring.evidence[0]!.facetKeys = ["employer_team"];
     await assert.rejects(
-      canonicalizeInvestigationResult(neighboring, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+      canonicalizeInvestigationResult(neighboring, await resultContext(directory, store)),
       /incompatible with facet employer_team/i,
     );
 
@@ -368,11 +371,11 @@ test("rejects neighboring-facet evidence and context citations", async () => {
       providerRoute: "exa.contents",
       sourceUrl: "https://unknown.example/profile",
       mimeType: "application/json",
-      content: { role: { title: "Staff Software Engineer", team: "Arm Ltd, DSG" } },
+      content: { role: { title: "Staff Software Engineer", team: "Organization Alpha, Platform Group" } },
       provenance: {},
     });
     await assert.rejects(
-      canonicalizeInvestigationResult(draft(context.ref), { run, sourceStore: contextStore, compilerAttempts: 1, auditorAttempts: 1 }),
+      canonicalizeInvestigationResult(draft(context.ref), await resultContext(join(directory, "context"), contextStore)),
       /CONTEXT.*cannot be cited/i,
     );
   } finally {
@@ -388,7 +391,7 @@ test("rejects summary evidence that crosses claim boundaries", async () => {
     invalid.claims.push({
       key: "education",
       category: "EDUCATION",
-      statement: "Diego Russo completed a degree at Example University.",
+      statement: "Casey Morgan completed a degree at Example University.",
       materiality: "MEDIUM",
       sourceSpan: { page: 2, text: "Example University" },
       explanation: "No eligible source was captured.",
@@ -397,7 +400,7 @@ test("rejects summary evidence that crosses claim boundaries", async () => {
     invalid.summary.strongestEvidenceByClaim = [{ claimKey: "education", facetKeys: ["institution"], evidenceKeys: ["employment-title"] }];
 
     await assert.rejects(
-      canonicalizeInvestigationResult(invalid, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+      canonicalizeInvestigationResult(invalid, await resultContext(directory, store)),
       /does not belong to claim education/i,
     );
   } finally {
@@ -420,7 +423,7 @@ test("derives facet status and accepts opaque semantic keys without spending the
       createDossier: async () => null,
       encode: async () => investigationDraftSchema.parse(loose),
       validateEncoding: () => undefined,
-      validateResult: (value) => canonicalizeInvestigationResult(value, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+      validateResult: async (value) => canonicalizeInvestigationResult(value, await resultContext(directory, store)),
       audit: async () => ({ status: "PASSED", defects: [] }),
     });
 
@@ -440,7 +443,7 @@ test("rejects a material claim clause that has no declared facet", async () => {
     invalid.claims[0]!.sourceSpan.text += " Led twelve engineers.";
 
     await assert.rejects(
-      canonicalizeInvestigationResult(invalid, { run, sourceStore: store, compilerAttempts: 1, auditorAttempts: 1 }),
+      canonicalizeInvestigationResult(invalid, await resultContext(directory, store)),
       /material claim clause.*led twelve engineers/i,
     );
   } finally {

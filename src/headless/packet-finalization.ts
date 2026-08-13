@@ -33,6 +33,7 @@ import {
 import { AUDITOR_PROMPT_CONTRACT, COVERAGE_PROMPT_CONTRACT, PACKET_PROMPT_CONTRACT, SUMMARY_TIMELINE_PROMPT_CONTRACT, promptWithPayload } from "./prompt-contracts.ts";
 import { canonicalizeInvestigationResult, type InvestigationResult } from "./result-contract.ts";
 import type { FileSourceStore } from "./source-store.ts";
+import { loadSourceAuthority } from "./source-authority.ts";
 
 const directory = "/workspace/case";
 export type FinalizationStage = "COVERAGE" | "PACKET" | "SUMMARY" | "CANONICAL" | "AUDIT";
@@ -149,6 +150,7 @@ export function repairScope(defects: FinalizationDefect[]): "COVERAGE" | "PACKET
 }
 
 export async function runPacketizedFinalization(input: Input): Promise<{ result: InvestigationResult; artifact: PacketFinalizationArtifact; compilerAttempts: 1 | 2; auditorAttempts: 1 | 2 }> {
+  const { snapshot: authoritySnapshot } = await loadSourceAuthority(input.root, input.sourceStore);
   const client = createOpencodeClient({ baseUrl: input.handle.openCodeUrl, headers: input.handle.accessHeaders, throwOnError: false });
   const base = await buildFinalizerContext(input.root, input.sourceStore, input.researchMemos);
   const warnings = [...input.warnings, ...base.warnings];
@@ -288,6 +290,7 @@ export async function runPacketizedFinalization(input: Input): Promise<{ result:
       const result = await canonicalizeInvestigationResult(packetDossierToDraft(dossier), {
         run: provisionalRun,
         sourceStore: input.sourceStore,
+        authoritySnapshot,
         compilerAttempts: compilerAttempt,
         auditorAttempts: 1,
         warnings,
@@ -334,6 +337,7 @@ export async function runPacketizedFinalization(input: Input): Promise<{ result:
         result: await canonicalizeInvestigationResult(packetDossierToDraft(dossier), {
           run: provisionalRun,
           sourceStore: input.sourceStore,
+          authoritySnapshot,
           compilerAttempts: 1,
           auditorAttempts: 1,
           warnings,
@@ -448,6 +452,7 @@ export async function runPacketizedFinalization(input: Input): Promise<{ result:
       },
     },
     sourceStore: input.sourceStore,
+    authoritySnapshot,
     compilerAttempts,
     auditorAttempts,
     warnings,

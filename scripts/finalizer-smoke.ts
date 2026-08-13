@@ -52,11 +52,11 @@ function assistantText(message: AssistantMessage): string {
 
 function claimCases(): Array<Case<z.infer<typeof claimBatchSchema>>> {
   const lines = [
-    "Diego Russo is the named professional.",
-    "Diego Russo works as a Principal Software Engineer at Arm.",
-    "Diego Russo contributed patches to CPython.",
-    "Diego Russo organized EuroPython 2024.",
-    "Diego Russo earned an MSc in Computer Science.",
+    "Casey Morgan is the named professional.",
+    "Casey Morgan worked as Principal Engineer at Organization Alpha from 2020 to 2024.",
+    "Casey Morgan contributed patches to Project Atlas.",
+    "Casey Morgan organized Example Conference 2024.",
+    "Casey Morgan earned a graduate degree in Computer Science.",
   ];
   return lines.map((text, index) => {
     const catalog = buildLineCatalog({ pages: [{ page: 1, lines: [{ line: 1, text }] }] });
@@ -76,17 +76,17 @@ function claimCases(): Array<Case<z.infer<typeof claimBatchSchema>>> {
 }
 
 function evidenceCases(): Array<Case<z.infer<typeof evidenceJudgmentSchema>>> {
-  const fixtures: Array<{ name: string; facet: string; excerpt: string; expected: "SUPPORTS" | "IRRELEVANT" }> = [
-    { name: "cpython-pr-is-not-core-status", facet: "Diego Russo is a CPython core developer.", excerpt: "Diego Russo authored CPython pull request 12345.", expected: "IRRELEVANT" },
-    { name: "mlia-commit-is-not-arm-employment", facet: "Diego Russo was employed by Arm.", excerpt: "Commit abc123 in the MLIA repository was authored by Diego Russo.", expected: "IRRELEVANT" },
-    { name: "mlia-commit-is-not-arm-title", facet: "Diego Russo held the title Principal Software Engineer at Arm.", excerpt: "Commit abc123 in the MLIA repository was authored by Diego Russo.", expected: "IRRELEVANT" },
-    { name: "jit-work-is-not-europython-role", facet: "Diego Russo organized EuroPython.", excerpt: "Diego Russo implemented a CPython JIT optimization.", expected: "IRRELEVANT" },
-    { name: "jit-work-is-not-python-guild-role", facet: "Diego Russo led the Arm Python Guild.", excerpt: "Diego Russo implemented a CPython JIT optimization.", expected: "IRRELEVANT" },
-    { name: "resume-is-not-independent", facet: "An independent source confirms Diego Russo's Arm employment.", excerpt: "Candidate résumé self-representation: I work at Arm.", expected: "IRRELEVANT" },
-    { name: "progression-is-not-contradiction", facet: "Diego Russo was a Senior Engineer in 2018.", excerpt: "Diego Russo was promoted to Staff Engineer in 2022.", expected: "IRRELEVANT" },
-    { name: "official-core-team-support", facet: "Diego Russo is a CPython core developer.", excerpt: "Python core team member: Diego Russo.", expected: "SUPPORTS" },
-    { name: "official-arm-title-support", facet: "Diego Russo is a Principal Software Engineer at Arm.", excerpt: "Diego Russo, Principal Software Engineer, Arm.", expected: "SUPPORTS" },
-    { name: "official-europython-support", facet: "Diego Russo organized EuroPython 2024.", excerpt: "EuroPython 2024 organizers: Diego Russo.", expected: "SUPPORTS" },
+  const fixtures: Array<{ name: string; facet: string; excerpt: string; expected: "SUPPORTS" | "CONTRADICTS" | "IRRELEVANT" }> = [
+    { name: "activity-is-not-status", facet: "Casey Morgan held maintainer status for Project Atlas.", excerpt: "Casey Morgan submitted pull request 123 to Project Atlas.", expected: "IRRELEVANT" },
+    { name: "project-is-not-employment", facet: "Casey Morgan was employed by Organization Alpha.", excerpt: "Casey Morgan contributed to Organization Alpha's public Project Atlas repository.", expected: "IRRELEVANT" },
+    { name: "contribution-is-not-title", facet: "Casey Morgan held the title Principal Engineer.", excerpt: "Casey Morgan implemented a compiler optimization in Project Atlas.", expected: "IRRELEVANT" },
+    { name: "attendance-is-not-organizer-role", facet: "Casey Morgan organized Example Conference 2024.", excerpt: "Casey Morgan attended Example Conference 2024.", expected: "IRRELEVANT" },
+    { name: "affiliation-support", facet: "Casey Morgan was a member of Association Delta.", excerpt: "Association Delta members include Casey Morgan.", expected: "SUPPORTS" },
+    { name: "tenure-support", facet: "Casey Morgan worked at Organization Alpha from 2020 to 2024.", excerpt: "Casey Morgan, Organization Alpha, 2020–2024.", expected: "SUPPORTS" },
+    { name: "progression-is-not-contradiction", facet: "Casey Morgan was a Senior Engineer in 2020.", excerpt: "Casey Morgan was promoted to Staff Engineer in 2022.", expected: "IRRELEVANT" },
+    { name: "self-representation-is-not-independent", facet: "An independent source confirms Casey Morgan's employment at Organization Alpha.", excerpt: "Candidate résumé self-representation: I work at Organization Alpha.", expected: "IRRELEVANT" },
+    { name: "explicit-contradiction", facet: "Casey Morgan worked at Organization Alpha in 2021.", excerpt: "Organization Alpha's record states Casey Morgan did not work there in 2021.", expected: "CONTRADICTS" },
+    { name: "wrong-person-evidence", facet: "Casey Morgan held the title Principal Engineer at Organization Alpha.", excerpt: "Jordan Lee held the title Principal Engineer at Organization Alpha.", expected: "IRRELEVANT" },
   ];
   return fixtures.map((fixture, index) => {
     const excerpt = { ref: `X${digest(fixture.name)}`, sourceRef: "S1", path: `records[${index}].text`, offsetStart: 0, offsetEnd: fixture.excerpt.length, text: fixture.excerpt };
@@ -108,8 +108,8 @@ function evidenceCases(): Array<Case<z.infer<typeof evidenceJudgmentSchema>>> {
 }
 
 const summaryPayload = {
-  claims: [{ claimKey: "C001", statement: "Diego Russo works at Arm.", facets: [{ key: "employer", label: "Diego Russo works at Arm.", materiality: "HIGH" }] }],
-  evidence: [{ key: "E001", claimKey: "C001", facetKeys: ["employer"], relation: "SUPPORTS", sourceRef: "S1", exactQuote: "Diego Russo works at Arm.", sourceLocation: { path: "record.text" } }],
+  claims: [{ claimKey: "C001", statement: "Casey Morgan works at Organization Alpha.", facets: [{ key: "employer", label: "Casey Morgan works at Organization Alpha.", materiality: "HIGH" }] }],
+  evidence: [{ key: "E001", claimKey: "C001", facetKeys: ["employer"], relation: "SUPPORTS", sourceRef: "S1", exactQuote: "Casey Morgan works at Organization Alpha.", sourceLocation: { path: "record.text" } }],
 };
 
 function summaryCases(): Array<Case<z.infer<typeof summaryTimelineOutputSchema>>> {
@@ -127,7 +127,14 @@ function summaryCases(): Array<Case<z.infer<typeof summaryTimelineOutputSchema>>
 }
 
 function auditCases(): Array<Case<z.infer<typeof v5AuditSchema>>> {
-  const base = { input: { pages: [{ page: 1, lines: [{ line: 1, text: "Diego Russo works at Arm." }] }] }, claims: summaryPayload.claims, candidateJudgments: [], summary: { note: "Only C001 and E001 are referenced." } };
+  const base = {
+    input: { pages: [{ page: 1, lines: [{ line: 1, text: "Casey Morgan works at Organization Alpha." }] }] },
+    claims: summaryPayload.claims,
+    candidateJudgments: [],
+    summary: { note: "Only C001 and E001 are referenced." },
+    officialDomainRegistry: { schemaVersion: 1, policyVersion: "verified-domain-registry-v1", entries: [], registryHash: "a".repeat(64) },
+    sourceAuthoritySnapshot: { schemaVersion: 1, policyVersion: "verified-domain-registry-v1", registryHash: "a".repeat(64), sources: [] },
+  };
   return [
     {
       name: "audit-clean",
@@ -141,7 +148,7 @@ function auditCases(): Array<Case<z.infer<typeof v5AuditSchema>>> {
       name: "audit-adjacent-facet",
       agent: "evidence-auditor",
       contract: V5_AUDITOR_PROMPT_CONTRACT,
-      payload: { ...base, evidence: [{ ...summaryPayload.evidence[0], exactQuote: "Diego Russo authored a CPython pull request." }] },
+      payload: { ...base, evidence: [{ ...summaryPayload.evidence[0], exactQuote: "Jordan Lee submitted a patch to Project Atlas." }] },
       schema: v5AuditSchema,
       semantic: (value) => {
         const defect = value.defects.find(({ severity, stage, claimKeys, repairable }) => severity === "MATERIAL" && stage === "EVIDENCE" && claimKeys.includes("C001") && repairable);

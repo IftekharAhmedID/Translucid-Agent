@@ -73,7 +73,7 @@ export type ValidatedClaimRecords = ValidatedClaimBatch & { unresolvedLineIds: s
 export type FinalizationStage = "claims" | "evidence" | "summary" | "audit";
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
-const checkpointPathSchema = z.string().regex(/^(?:claims\/C0*[1-9]\d*\.json|evidence\/C0*[1-9]\d*\.(?:candidates|judgment)\.json|line-catalog\.json|coverage\.json|source-authority-snapshot\.json|summary\.json|audit\.json)$/);
+const checkpointPathSchema = z.string().regex(/^(?:claims\/C0*[1-9]\d*\.json|evidence\/C0*[1-9]\d*\.(?:candidates|judgment)\.json|line-catalog\.json|coverage\.json|official-domain-registry\.json|source-authority-snapshot\.json|summary\.json|audit\.json)$/);
 const stageManifestEntrySchema = z.object({
   fingerprint: sha256Schema,
   configuration: z.record(z.string(), z.unknown()),
@@ -99,20 +99,6 @@ export function invalidatedFinalizationStages(stored: Partial<Record<Finalizatio
   return first < 0 ? [] : order.slice(first);
 }
 
-const adjacentWork = /\b(?:commit|pull request|patch|jit|optimization)\b/i;
-const statusProofs: Array<[RegExp, RegExp]> = [
-  [/\b(?:core developer|core team)\b/i, /\b(?:core developer|core team|core member)\b/i],
-  [/\b(?:employed|employment|works? at|worked at|tenure)\b/i, /\b(?:employed|employment|works? at|worked at|joined|tenure)\b/i],
-  [/\b(?:title|held the title)\b/i, /\b(?:title|engineer|developer|manager|director)\b/i],
-  [/(?:organiz\w+.*europython|europython.*organiz\w+)/i, /(?:organiz\w+.*europython|europython.*organiz\w+)/i],
-  [/(?:python guild.*(?:lead|led|member)|(?:lead|led|member).*python guild)/i, /(?:python guild.*(?:lead|led|member)|(?:lead|led|member).*python guild)/i],
-];
-
-export function v5FacetEvidenceCompatible(exactQuote: string, facetLabel: string): boolean {
-  if (adjacentWork.test(exactQuote) && statusProofs.some(([claim, proof]) => claim.test(facetLabel) && !proof.test(exactQuote))) return false;
-  return facetEvidenceCompatible(exactQuote, facetLabel);
-}
-
 function unique(values: readonly string[], label: string): void {
   if (new Set(values).size !== values.length) throw new Error(`Duplicate ${label}.`);
 }
@@ -135,8 +121,11 @@ function contactDetail(text: string): boolean {
 }
 
 function sectionHeading(text: string): boolean {
-  const value = text.trim().replace(/:$/u, "");
-  return /^(?:profile|professional summary|summary|experience|employment|employment history|work experience|education|skills|technical skills|projects|publications|certifications|awards|affiliations|volunteering|contact)$/iu.test(value)
+  const trimmed = text.trim();
+  const hasDottedLeader = /(?:\s*\.){3,}\s*$/u.test(trimmed);
+  const value = trimmed.replace(/(?:\s*\.){3,}\s*$/u, "").replace(/:$/u, "").trim();
+  if (hasDottedLeader && value.split(/\s+/u).length <= 6 && !/\d/u.test(value) && !/\b(?:worked|works|built|created|led|managed|published|contributed|maintained|served)\b/iu.test(value)) return true;
+  return /^(?:profile|professional summary|summary|experience|employment|employment history|work experience|education|skills|technical skills|languages|projects|publications|certifications|awards|affiliations|volunteering|contact)$/iu.test(value)
     || (value.length >= 2 && value === value.toLocaleUpperCase("en-US") && !/\d/u.test(value) && !likelyFactualAssertion(value));
 }
 
@@ -243,10 +232,12 @@ export function validateEvidenceJudgment(value: unknown, claim: { claimKey: stri
     unique(facet.candidates.map(({ excerptRef }) => excerptRef), `candidate on ${claim.claimKey}/${facet.facetKey}`);
     const actual = new Set(facet.candidates.map(({ excerptRef }) => excerptRef));
     const unknown = facet.candidates.find(({ excerptRef }) => !expected.has(excerptRef));
-    if (unknown) throw new Error(`Evidence judgment references unknown excerpt ${unknown.excerptRef}.`);
-    if (actual.size !== expected.size || [...expected].some((ref) => !actual.has(ref))) throw new Error(`Evidence judgment must exactly account for assigned candidates on ${claim.claimKey}/${facet.facetKey}.`);
+    const expectedRefs = [...expected];
+    if (unknown) throw new Error(`Evidence judgment references unknown excerpt ${unknown.excerptRef}. Expected exact excerpt refs: ${expectedRefs.join(", ")}.`);
+    const missing = expectedRefs.filter((ref) => !actual.has(ref));
+    if (actual.size !== expected.size || missing.length) throw new Error(`Evidence judgment must exactly account for assigned candidates on ${claim.claimKey}/${facet.facetKey}; missing ${missing.join(", ") || "none"}.`);
     const label = claim.facets.find(({ key }) => key === facet.facetKey)?.label;
-    const incompatible = label && facet.candidates.find(({ excerptRef, relation }) => relation !== "IRRELEVANT" && !v5FacetEvidenceCompatible(assigned.find(({ ref }) => ref === excerptRef)!.text, label));
+    const incompatible = label && facet.candidates.find(({ excerptRef, relation }) => relation !== "IRRELEVANT" && !facetEvidenceCompatible(assigned.find(({ ref }) => ref === excerptRef)!.text, label));
     if (incompatible) throw new Error(`Evidence judgment marks semantically incompatible excerpt ${incompatible.excerptRef} as ${incompatible.relation} on ${claim.claimKey}/${facet.facetKey}.`);
   }
   const facetsByKey = new Map(judgment.facets.map((facet) => [facet.facetKey, facet]));

@@ -188,3 +188,45 @@ test("routes MiniMax finalizer traffic through Anthropic Messages only", async (
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("official-domain registration is a lead-only host proposal", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-domain-gateway-"));
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    const budget = new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 300, repositoryClones: 3, socialProfiles: 1 });
+    const proposals: unknown[] = [];
+    const gateway = createHeadlessGateway({
+      runId: "run-domain",
+      deadlineAt: Date.now() + 60_000,
+      allowedTools: new Set(["official_domain.register"]),
+      allowedModels: new Set(),
+      agentTools: new Map([
+        ["lead-researcher", new Set(["official_domain.register"])],
+        ["web-records-researcher", new Set()],
+      ]),
+      officialDomainRegistration: async (value) => {
+        proposals.push(value);
+        return { status: "REJECTED", rejectionReason: "A domain cannot authenticate itself." };
+      },
+      sourceStore,
+      budget,
+      providerMode: "fixture",
+    });
+    await new Promise<void>((resolve) => gateway.server.listen(0, "127.0.0.1", resolve));
+    const address = gateway.server.address();
+    if (!address || typeof address === "string") throw new Error("Gateway did not bind a TCP port.");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const body = JSON.stringify({ tool: "official_domain.register", arguments: { organization: "Organization Alpha", url: "https://organization.test", proofs: [] } });
+    const baseHeaders = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-domain" };
+
+    const specialist = await fetch(`${origin}/internal/tools/execute`, { method: "POST", headers: { ...baseHeaders, "x-opencode-agent": "web-records-researcher" }, body });
+    assert.equal(specialist.status, 403);
+    const lead = await fetch(`${origin}/internal/tools/execute`, { method: "POST", headers: { ...baseHeaders, "x-opencode-agent": "lead-researcher" }, body });
+    assert.equal(lead.status, 200);
+    assert.deepEqual(proposals, [{ organization: "Organization Alpha", url: "https://organization.test", proofs: [] }]);
+    gateway.cancel();
+    await new Promise<void>((resolve, reject) => gateway.server.close((error) => error ? reject(error) : resolve()));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

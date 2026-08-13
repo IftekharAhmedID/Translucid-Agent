@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { z } from "zod";
 
-import { extractMarkedJson } from "../agent/structured-output.ts";
+import { extractMarkedJson, structuredOutputRecovery } from "../agent/structured-output.ts";
+import { facetEvidenceCompatible } from "../core/evidence-fit.ts";
 import { finalizerModelDefinition } from "../core/model-catalog.ts";
-import { effectiveSourceAuthority, institutionalAuthorityRule, SOURCE_AUTHORITY_POLICY_VERSION } from "../core/source-trust.ts";
 import { HANDOFF_MANIFEST_PATH, writeResearchCheckpoint } from "./checkpoint.ts";
 import {
   buildFinalizerContext,
@@ -21,7 +21,6 @@ import {
   claimBatchSchema,
   evidenceJudgmentSchema,
   invalidatedFinalizationStages,
-  v5FacetEvidenceCompatible,
   v5StageManifestSchema,
   v5AuditSchema,
   readJsonIfPresent,
@@ -39,7 +38,8 @@ import { buildLineCatalog, lineCatalogSchema, type LineCatalog } from "./line-ca
 import { summaryTimelineOutputSchema } from "./packet-dossier.ts";
 import { CLAIM_BATCH_PROMPT_CONTRACT, EVIDENCE_JUDGE_PROMPT_CONTRACT, promptWithPayload, SUMMARY_TIMELINE_PROMPT_CONTRACT, V5_AUDITOR_PROMPT_CONTRACT } from "./prompt-contracts.ts";
 import { canonicalizeInvestigationResult, investigationDraftSchema, type InvestigationDraft, type InvestigationResult } from "./result-contract.ts";
-import type { CapturedSourceMetadata, StoredExcerptCandidates } from "./source-store.ts";
+import { loadSourceAuthority, OFFICIAL_DOMAIN_REGISTRY_PATH } from "./source-authority.ts";
+import type { StoredExcerptCandidates } from "./source-store.ts";
 
 const directory = "/workspace/case";
 const stageDirectory = ".work/finalization/v5";
@@ -140,7 +140,7 @@ function claimDraft(claim: ValidatedClaim, evidence: V5Evidence[], judgment?: Ev
     statement: claim.statement,
     materiality: claim.materiality,
     sourceSpan: { ...claim.sourceSpan },
-    explanation: evidence[0]?.exactQuote ?? "No eligible immutable source resolved this reported assertion.",
+    explanation: `Evidence relations: ${evidence.filter(({ relation }) => relation === "SUPPORTS").length} supporting, ${evidence.filter(({ relation }) => relation === "CONTRADICTS").length} contradicting. Judgment: ${[...reasonByFacet.values()].join(" ")}`,
     facets: claim.facets.map((facet) => ({ key: facet.key, label: facet.label, materiality: facet.materiality, status: "UNRESOLVED", note: reasonByFacet.get(facet.key) ?? "No eligible immutable source resolved this facet." })),
   };
 }
@@ -156,20 +156,6 @@ async function readStageRecords<T>(root: string, directoryName: string, parse: (
   return records;
 }
 
-function authoritySnapshot(sources: CapturedSourceMetadata[]) {
-  return {
-    schemaVersion: 1,
-    policyVersion: SOURCE_AUTHORITY_POLICY_VERSION,
-    sources: sources.map((source) => ({
-      sourceRef: source.ref,
-      capturedAuthority: source.sourceAuthority,
-      effectiveAuthority: effectiveSourceAuthority({ artifact: source }),
-      matchedPolicyRule: institutionalAuthorityRule(source.sourceUrl) ?? null,
-      sourceHash: source.sha256,
-    })).sort((left, right) => Number(left.sourceRef.slice(1)) - Number(right.sourceRef.slice(1))),
-  };
-}
-
 export async function runIncrementalFinalization(input: V5Input): Promise<InvestigationResult> {
   const client = createOpencodeClient({ baseUrl: input.handle.openCodeUrl, headers: input.handle.accessHeaders, throwOnError: false });
   const base = await buildFinalizerContext(input.root, input.sourceStore, input.researchMemos);
@@ -179,6 +165,8 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
     await writeResearchCheckpoint(input.root, { warnings, budget: input.budget.snapshot(), config: input.researchCheckpointConfig });
   }
   const root = input.root;
+  const sources = await input.sourceStore.list();
+  const { registry: officialDomainRegistry, snapshot: sourceAuthority } = await loadSourceAuthority(root, input.sourceStore);
   const v5Root = join(root, stageDirectory);
   const parsedInput = base.input as Parameters<typeof buildLineCatalog>[0];
   const builtCatalog = buildLineCatalog(parsedInput);
@@ -244,8 +232,7 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
   if (storedCatalog && storedCatalog.fingerprint !== builtCatalog.fingerprint) throw new Error("Finalization line catalog changed since the V5 checkpoint was created.");
   const catalog = storedCatalog ?? builtCatalog;
   if (!storedCatalog) await atomicJson(join(v5Root, "line-catalog.json"), catalog);
-  const sources = await input.sourceStore.list();
-  const sourceAuthority = authoritySnapshot(sources);
+  await atomicJson(join(root, OFFICIAL_DOMAIN_REGISTRY_PATH), officialDomainRegistry);
   await atomicJson(join(v5Root, "source-authority-snapshot.json"), sourceAuthority);
   const eligibleSourceRefs = new Set(sourceAuthority.sources.filter(({ effectiveAuthority }) => !new Set(["CONTEXT", "DISCOVERY_ONLY"]).has(effectiveAuthority)).map(({ sourceRef }) => sourceRef));
   const manifest: V5StageManifest = storedManifest ?? { schemaVersion: 3, implementation: "incremental-finalizer-v5", stages: {}, files: {} };
@@ -258,13 +245,42 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
 
   const parentProvider = providerFor(input.compilerModel);
   const parent = unwrap(await client.session.create({ directory, title: "V5 finalization", agent: "evidence-compiler", model: { id: input.compilerModel, providerID: parentProvider, variant: "medium" } }, { signal: input.signal }), "finalization parent session creation");
-  const promptSession = async (agent: "evidence-compiler" | "evidence-auditor", title: string, payload: Record<string, unknown>): Promise<AssistantMessage> => {
+  const promptSession = async (agent: "evidence-compiler" | "evidence-auditor", title: string, payload: Record<string, unknown>): Promise<{ response: AssistantMessage; sessionId: string }> => {
     const model = agent === "evidence-auditor" ? input.auditorModel : input.compilerModel;
     const providerID = providerFor(model);
     const session = unwrap(await client.session.create({ directory, parentID: parent.id, title, agent, model: { id: model, providerID, variant: "medium" } }, { signal: input.signal }), `${agent} session creation`);
     input.registerExcerptAllowance(session.id, 0);
     const response = unwrap(await client.session.prompt({ sessionID: session.id, directory, agent, model: { providerID, modelID: model }, variant: "medium", ...payload }, { signal: input.signal }), `${agent} prompt`);
-    return response as unknown as AssistantMessage;
+    return { response: response as unknown as AssistantMessage, sessionId: session.id };
+  };
+  const extractWithCompletion = async <T>(
+    agent: "evidence-compiler" | "evidence-auditor",
+    sessionId: string,
+    response: AssistantMessage,
+    schema: z.ZodType<T>,
+  ): Promise<{ value: unknown; response: AssistantMessage; completionContinuation: boolean }> => {
+    try { return { value: extractMarkedJson(response), response, completionContinuation: false }; }
+    catch (error) {
+      if (structuredOutputRecovery(error) !== "SAME_SESSION_COMPLETION") throw error;
+      const model = agent === "evidence-auditor" ? input.auditorModel : input.compilerModel;
+      const providerID = providerFor(model);
+      const continuation = unwrap(await client.session.prompt({
+        sessionID: sessionId,
+        directory,
+        agent,
+        model: { providerID, modelID: model },
+        variant: "medium",
+        tools: { "source.excerpts": false, skill: false },
+        ...finalizerPromptPayload(
+          input.finalizerProvider,
+          model,
+          "Your preceding turn completed the analysis but omitted the final answer. Do not repeat the analysis, revisit sources, or add prose. Using only the analysis already completed in this session, return the complete compact result now.",
+          schema,
+        ),
+      }, { signal: input.signal }), `${agent} same-session completion`);
+      const completedResponse = continuation as unknown as AssistantMessage;
+      return { value: extractMarkedJson(completedResponse), response: completedResponse, completionContinuation: true };
+    }
   };
   let compilerAttempts: 1 | 2 = 1;
   let auditorAttempts: 1 | 2 = 1;
@@ -274,20 +290,24 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
     let validatorError = "";
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const requestPayload = attempt === 0 ? payload : finalizerRepairPayload(originalResponse, validatorError);
-      const response = await promptSession(agent, `${title}${attempt ? " repair" : ""}`, { tools: { "source.excerpts": false, skill: false }, ...finalizerPromptPayload(input.finalizerProvider, model, promptWithPayload(contract, requestPayload), schema) });
-      originalResponse = assistantText(response);
+      const prompted = await promptSession(agent, `${title}${attempt ? " repair" : ""}`, { tools: { "source.excerpts": false, skill: false }, ...finalizerPromptPayload(input.finalizerProvider, model, promptWithPayload(contract, requestPayload), schema) });
       const attemptPath = join(v5Root, "attempts", `${Date.now()}-${randomUUID()}.json`);
-      await atomicJson(attemptPath, { agent, title, attempt: attempt + 1, originalResponse });
+      let completionContinuation = false;
       try {
-        const value = validate(extractMarkedJson(response));
+        const completed = await extractWithCompletion(agent, prompted.sessionId, prompted.response, schema);
+        completionContinuation = completed.completionContinuation;
+        originalResponse = assistantText(completed.response);
+        await atomicJson(attemptPath, { agent, title, attempt: attempt + 1, completionContinuation, originalResponse });
+        const value = validate(completed.value);
         if (attempt) {
           if (agent === "evidence-auditor") auditorAttempts = 2;
           else compilerAttempts = 2;
         }
         return value;
       } catch (error) {
+        if (!originalResponse) originalResponse = assistantText(prompted.response);
         validatorError = error instanceof Error ? error.message : String(error);
-        await atomicJson(attemptPath, { agent, title, attempt: attempt + 1, originalResponse, validatorError });
+        await atomicJson(attemptPath, { agent, title, attempt: attempt + 1, completionContinuation, originalResponse, validatorError });
         if (attempt === 1) throw error;
       }
     }
@@ -309,23 +329,32 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
     let originalResponse = "";
     let validatorError = "";
     for (let attempt = 0; attempt < 2 && assignedLineIds.length; attempt += 1) {
-      const requestPayload = attempt ? finalizerRepairPayload(originalResponse, validatorError) : {
+      const claimWindow = {
         contextLines: window.contextLines,
         lineWindow: catalog.lines.filter(({ id }) => assignedLineIds.includes(id)),
         acceptedClaims: claims.slice(-20).map((claim) => ({ claimKey: claim.claimKey, statement: claim.statement, facets: claim.facets.map(({ key, label }) => ({ key, statement: label })) })),
       };
-      const response = await promptSession("evidence-compiler", `Claim batch ${claims.length + 1}${attempt ? " repair" : ""}`, {
+      const requestPayload = attempt
+        ? { ...claimWindow, repair: finalizerRepairPayload(originalResponse, validatorError) }
+        : claimWindow;
+      const prompted = await promptSession("evidence-compiler", `Claim batch ${claims.length + 1}${attempt ? " repair" : ""}`, {
         tools: { "source.excerpts": false, skill: false },
         ...finalizerPromptPayload(input.finalizerProvider, input.compilerModel, promptWithPayload(CLAIM_BATCH_PROMPT_CONTRACT, requestPayload), claimBatchSchema),
       });
-      originalResponse = assistantText(response);
       const attemptPath = join(v5Root, "attempts", `${Date.now()}-${randomUUID()}.json`);
-      await atomicJson(attemptPath, { agent: "evidence-compiler", title: `Claim batch ${claims.length + 1}`, attempt: attempt + 1, originalResponse });
+      let completionContinuation = false;
       let validated;
-      try { validated = validateClaimBatchRecords(extractMarkedJson(response), catalog, assignedLineIds, "C", claims.length); }
+      try {
+        const completed = await extractWithCompletion("evidence-compiler", prompted.sessionId, prompted.response, claimBatchSchema);
+        completionContinuation = completed.completionContinuation;
+        originalResponse = assistantText(completed.response);
+        await atomicJson(attemptPath, { agent: "evidence-compiler", title: `Claim batch ${claims.length + 1}`, attempt: attempt + 1, completionContinuation, originalResponse });
+        validated = validateClaimBatchRecords(completed.value, catalog, assignedLineIds, "C", claims.length);
+      }
       catch (error) {
+        if (!originalResponse) originalResponse = assistantText(prompted.response);
         validatorError = error instanceof Error ? error.message : String(error);
-        await atomicJson(attemptPath, { agent: "evidence-compiler", title: `Claim batch ${claims.length + 1}`, attempt: attempt + 1, originalResponse, validatorError });
+        await atomicJson(attemptPath, { agent: "evidence-compiler", title: `Claim batch ${claims.length + 1}`, attempt: attempt + 1, completionContinuation, originalResponse, validatorError });
         if (attempt === 1) throw error;
         continue;
       }
@@ -350,8 +379,10 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
   const evidenceConfiguration = {
     claimsHash: digest(claims),
     sourceHashes: Object.fromEntries(sources.map(({ ref, sha256 }) => [ref, sha256])),
-    sourceAuthorityPolicyVersion: SOURCE_AUTHORITY_POLICY_VERSION,
-    retrievalVersion: "memo-first-bounded-v3",
+    sourceAuthorityPolicyVersion: sourceAuthority.policyVersion,
+    sourceAuthoritySnapshotHash: digest(sourceAuthority),
+    officialDomainRegistryHash: sourceAuthority.registryHash,
+    retrievalVersion: "memo-first-bounded-v4-deduplicated",
     schemaHash: digest(z.toJSONSchema(evidenceJudgmentSchema)),
     promptHash: digest(EVIDENCE_JUDGE_PROMPT_CONTRACT),
     compilerModel: input.compilerModel,
@@ -422,7 +453,7 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
       for (const group of groups.values()) {
         for (const facetKey of group.facetKeys) {
           const facet = claim.facets.find(({ key }) => key === facetKey);
-          if (!facet || !v5FacetEvidenceCompatible(group.excerpt.text, facet.label)) throw new Error(`Evidence excerpt ${group.excerpt.ref} is semantically incompatible with ${claim.claimKey}/${facetKey}.`);
+          if (!facet || !facetEvidenceCompatible(group.excerpt.text, facet.label)) throw new Error(`Evidence excerpt ${group.excerpt.ref} is semantically incompatible with ${claim.claimKey}/${facetKey}.`);
         }
         const exact = await input.sourceStore.verifyExactQuote({ sourceRef: group.excerpt.sourceRef, path: group.excerpt.path, exactQuote: group.excerpt.text });
         if (!exact.valid) throw new Error(`Evidence excerpt ${group.excerpt.ref} is not an exact immutable quote.`);
@@ -465,10 +496,11 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
     budgets: { ...input.budget.snapshot(), routeCounts: undefined },
   } as const;
   let draft = investigationDraftSchema.parse({ ...summary, claims: draftClaims, evidence });
-  const validateDraft = () => canonicalizeInvestigationResult(draft, { run: provisionalRun, sourceStore: input.sourceStore, compilerAttempts, auditorAttempts, warnings, providerCalls: input.budget.snapshot().externalNetworkCalls });
+  const judgmentReasonsByClaim = () => new Map([...judgments].map(([claimKey, judgment]) => [claimKey, judgment.facets.flatMap((facet) => facet.candidates.map(({ reason }) => reason))]));
+  const validateDraft = () => canonicalizeInvestigationResult(draft, { run: provisionalRun, sourceStore: input.sourceStore, authoritySnapshot: sourceAuthority, judgmentReasonsByClaim: judgmentReasonsByClaim(), compilerAttempts, auditorAttempts, warnings, providerCalls: input.budget.snapshot().externalNetworkCalls });
   await validateDraft();
   const auditOnce = async () => {
-    const value = await promptValidated("evidence-auditor", "V5 independent audit", V5_AUDITOR_PROMPT_CONTRACT, { input: parsedInput, lineCatalog: catalog, exclusions, claims: draftClaims, evidence, candidateJudgments: [...judgments.values()], summary }, v5AuditSchema);
+    const value = await promptValidated("evidence-auditor", "V5 independent audit", V5_AUDITOR_PROMPT_CONTRACT, { input: parsedInput, lineCatalog: catalog, exclusions, claims: draftClaims, evidence, candidateJudgments: [...judgments.values()], summary, officialDomainRegistry, sourceAuthoritySnapshot: sourceAuthority }, v5AuditSchema);
     await atomicJson(join(v5Root, "audit.json"), value);
     return value;
   };
@@ -516,6 +548,8 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
   const final = await canonicalizeInvestigationResult(draft, {
     run: { ...provisionalRun, finishedAt: new Date().toISOString(), budgets: { modelUsd: input.budget.snapshot().modelUsd, providerUsd: input.budget.snapshot().providerUsd, externalNetworkCalls: input.budget.snapshot().externalNetworkCalls } },
     sourceStore: input.sourceStore,
+    authoritySnapshot: sourceAuthority,
+    judgmentReasonsByClaim: judgmentReasonsByClaim(),
     compilerAttempts,
     auditorAttempts,
     warnings,

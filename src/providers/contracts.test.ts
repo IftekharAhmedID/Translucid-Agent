@@ -12,17 +12,17 @@ import {
 test("headless provider requests contain only network-semantic arguments", () => {
   const parsed = parseHeadlessToolRequest({
     tool: "web.search",
-    arguments: { query: "Ada Lovelace analytical engine", mode: "fast" },
+    arguments: { query: "Casey Morgan Project Atlas", mode: "fast" },
   });
   assert.equal(parsed.tool, "web.search");
   assert.equal(parsed.arguments.resultLimit, 5);
-  assert.equal(parsed.arguments.highlightQuery, "Ada Lovelace analytical engine");
+  assert.equal(parsed.arguments.highlightQuery, "Casey Morgan Project Atlas");
   assert.equal("questionId" in parsed.arguments, false);
 
   assert.throws(() => parseHeadlessToolRequest({
     tool: "web.search",
     arguments: {
-      query: "Ada Lovelace analytical engine",
+      query: "Casey Morgan Project Atlas",
       questionId: "11111111-1111-4111-8111-111111111111",
     },
   }));
@@ -32,14 +32,14 @@ test("tool requests require a durable question and public rationale", () => {
   assert.throws(() =>
     parseToolRequest({
       tool: "web.search",
-      arguments: { query: "Ada Lovelace" },
+      arguments: { query: "Casey Morgan" },
     }),
   );
 
   const parsed = parseToolRequest({
     tool: "web.search",
     arguments: {
-      query: "Ada Lovelace analytical engine",
+      query: "Casey Morgan Project Atlas",
       questionId: "11111111-1111-4111-8111-111111111111",
       claimIds: ["22222222-2222-4222-8222-222222222222"],
       publicRationale: "Checking a material authorship claim.",
@@ -48,7 +48,7 @@ test("tool requests require a durable question and public rationale", () => {
   });
   assert.equal(parsed.tool, "web.search");
   assert.equal(parsed.arguments.resultLimit, 5);
-  assert.equal(parsed.arguments.highlightQuery, "Ada Lovelace analytical engine");
+  assert.equal(parsed.arguments.highlightQuery, "Casey Morgan Project Atlas");
 });
 
 test("professional profile requests require one normalized material-field enum", () => {
