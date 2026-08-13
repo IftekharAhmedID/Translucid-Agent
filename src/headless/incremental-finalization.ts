@@ -11,13 +11,25 @@ import { lineIdSchema, lineSpan, type LineCatalog } from "./line-catalog.ts";
 const facetKey = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 const category = z.enum(["IDENTITY", "EMPLOYMENT", "PROJECT", "CONTRIBUTION", "EDUCATION", "EVENT", "PUBLICATION", "AFFILIATION", "OTHER"]);
 const materiality = z.enum(["HIGH", "MEDIUM", "LOW"]);
+export const facetKindSchema = z.enum(["IDENTITY", "ORGANIZATION", "ORG_UNIT", "TITLE", "INTERVAL", "LOCATION", "ACTIVITY", "RESPONSIBILITY", "CONTRIBUTION", "OUTPUT", "EDUCATION", "AFFILIATION", "OTHER"]);
+
+const claimFacetSchema = z.object({
+  key: facetKey,
+  kind: facetKindSchema,
+  label: z.string().min(1).max(500),
+  sourceFragment: z.string().min(1).max(500),
+  materiality,
+  lineIds: z.array(lineIdSchema).min(1).max(100),
+  from: z.string().min(1).max(50).optional(),
+  to: z.string().min(1).max(50).optional(),
+}).strict();
 
 const claimCandidateSchema = z.object({
   localKey: z.string().min(1).max(200),
   category,
   statement: z.string().min(1).max(8_000),
   materiality,
-  facets: z.array(z.object({ key: facetKey, label: z.string().min(1).max(500), materiality, lineIds: z.array(lineIdSchema).min(1).max(100) }).strict()).min(1).max(12),
+  facets: z.array(claimFacetSchema).min(1).max(12),
 }).strict();
 
 const exclusionSchema = z.object({
@@ -63,6 +75,7 @@ export const v5AuditSchema = z.object({
 }).strict();
 
 export type ClaimBatch = z.infer<typeof claimBatchSchema>;
+export type FacetKind = z.infer<typeof facetKindSchema>;
 export type EvidenceJudgment = z.infer<typeof evidenceJudgmentSchema>;
 export type V5Audit = z.infer<typeof v5AuditSchema>;
 export type ExcerptRecord = { ref: string; sourceRef: string; path: string; offsetStart: number; offsetEnd: number; text: string };
@@ -92,6 +105,84 @@ export const v5StageManifestSchema = z.object({
 }).strict();
 
 export type V5StageManifest = z.infer<typeof v5StageManifestSchema>;
+
+const anchorKinds = new Set<FacetKind>(["ORGANIZATION", "ORG_UNIT", "ACTIVITY", "CONTRIBUTION", "OUTPUT", "EDUCATION", "AFFILIATION"]);
+const genericAnchorTokens = new Set(["company", "corporation", "education", "event", "group", "organization", "project", "publication", "team", "university"]);
+
+function normalizedAnchor(value: string): string {
+  return value.toLocaleLowerCase("en-US").normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+function claimAnchors(claim: ValidatedClaim): string[] {
+  return [...new Set(claim.facets
+    .filter(({ kind }) => anchorKinds.has(kind))
+    .flatMap(({ sourceFragment }) => {
+      const phrase = normalizedAnchor(sourceFragment);
+      const tokens = phrase.split(" ").filter((token) => token.length >= 3 && !genericAnchorTokens.has(token));
+      return [phrase, ...tokens].filter((token) => token.length >= 3 && !genericAnchorTokens.has(token));
+    }))].sort();
+}
+
+export const claimBundlePlanSchema = z.object({
+  schemaVersion: z.literal(1),
+  plannerVersion: z.literal("claim-bundles-v1"),
+  inputSha256: sha256Schema,
+  bundles: z.array(z.object({
+    bundleId: z.string().regex(/^B0*[1-9]\d*$/),
+    claimKeys: z.array(z.string().regex(/^C0*[1-9]\d*$/)).min(1).max(5),
+    facetKeys: z.array(facetKey).min(1).max(60),
+    sourceSpans: z.array(z.object({ page: z.number().int().positive().optional(), text: z.string().min(1) }).strict()).min(1).max(5),
+    anchorTokens: z.array(z.string().min(1)).max(100),
+  }).strict()).min(1),
+}).strict();
+
+export type ClaimBundlePlan = z.infer<typeof claimBundlePlanSchema>;
+
+export function buildClaimBundles(claims: readonly ValidatedClaim[], exclusions: readonly ValidatedExclusion[], catalog: LineCatalog, inputSha256: string): ClaimBundlePlan {
+  const positions = new Map(catalog.lines.map((line, index) => [line.id, index]));
+  const headings = new Set(exclusions.filter(({ reason }) => reason === "SECTION_HEADING").flatMap(({ lineIds }) => lineIds));
+  const ordered = [...claims].sort((left, right) => Math.min(...left.lineIds.map((id) => positions.get(id) ?? Number.MAX_SAFE_INTEGER)) - Math.min(...right.lineIds.map((id) => positions.get(id) ?? Number.MAX_SAFE_INTEGER)));
+  const sections: ValidatedClaim[][] = [];
+  for (const claim of ordered) {
+    const current = sections.at(-1);
+    const previous = current?.at(-1);
+    const previousEnd = previous ? Math.max(...previous.lineIds.map((id) => positions.get(id) ?? -1)) : -1;
+    const currentStart = Math.min(...claim.lineIds.map((id) => positions.get(id) ?? Number.MAX_SAFE_INTEGER));
+    const pageChanged = previous?.sourceSpan.page !== claim.sourceSpan.page;
+    const headingBetween = catalog.lines.slice(previousEnd + 1, currentStart).some(({ id }) => headings.has(id));
+    if (!current || pageChanged || headingBetween) sections.push([claim]);
+    else current.push(claim);
+  }
+  const grouped: ValidatedClaim[][] = [];
+  for (const section of sections) {
+    let current: ValidatedClaim[] = [];
+    let anchors = new Set<string>();
+    for (const claim of section) {
+      const nextAnchors = claimAnchors(claim);
+      const sharesAnchor = nextAnchors.some((anchor) => anchors.has(anchor));
+      if (current.length >= 5 || (current.length >= 3 && !sharesAnchor)) {
+        grouped.push(current);
+        current = [];
+        anchors = new Set<string>();
+      }
+      current.push(claim);
+      nextAnchors.forEach((anchor) => anchors.add(anchor));
+    }
+    if (current.length) grouped.push(current);
+  }
+  return claimBundlePlanSchema.parse({
+    schemaVersion: 1,
+    plannerVersion: "claim-bundles-v1",
+    inputSha256,
+    bundles: grouped.map((bundle, index) => ({
+      bundleId: `B${String(index + 1).padStart(3, "0")}`,
+      claimKeys: bundle.map(({ claimKey }) => claimKey),
+      facetKeys: bundle.flatMap(({ facets }) => facets.map(({ key }) => key)),
+      sourceSpans: bundle.map(({ sourceSpan }) => sourceSpan),
+      anchorTokens: [...new Set(bundle.flatMap(claimAnchors))].sort(),
+    })),
+  });
+}
 
 export function invalidatedFinalizationStages(stored: Partial<Record<FinalizationStage, string>>, current: Partial<Record<FinalizationStage, string>>): FinalizationStage[] {
   const order: FinalizationStage[] = ["claims", "evidence", "summary", "audit"];
@@ -129,6 +220,17 @@ function sectionHeading(text: string): boolean {
     || (value.length >= 2 && value === value.toLocaleUpperCase("en-US") && !/\d/u.test(value) && !likelyFactualAssertion(value));
 }
 
+function validateAtomicFacets(claimKey: string, facets: ClaimBatch["claims"][number]["facets"], catalog: LineCatalog): void {
+  const normalizedFragments = facets.map(({ sourceFragment }) => normalizedAnchor(sourceFragment));
+  unique(normalizedFragments, `source fragment on ${claimKey}`);
+  for (const facet of facets) {
+    const span = lineSpan(catalog, orderedIds(catalog, facet.lineIds));
+    if (!span.text.includes(facet.sourceFragment)) throw new Error(`Facet ${facet.key} on claim ${claimKey} must retain an exact submission fragment.`);
+    if (facet.kind !== "INTERVAL" && (facet.from !== undefined || facet.to !== undefined)) throw new Error(`Only INTERVAL facet ${facet.key} may declare normalized dates.`);
+    if (/[;\n]/u.test(facet.sourceFragment) || /\b(?:and then|as well as)\b/iu.test(facet.label)) throw new Error(`Facet ${facet.key} on claim ${claimKey} must contain one atomic predicate.`);
+  }
+}
+
 export function validateClaimBatchRecords(value: unknown, catalog: LineCatalog, assignedLineIds: readonly string[], claimKeyPrefix = "C", claimKeyStart = 0): ValidatedClaimRecords {
   const assigned = orderedIds(catalog, assignedLineIds);
   if (assigned.length !== new Set(assignedLineIds).size) throw new Error("Assigned line IDs contain duplicates or unknown lines.");
@@ -142,6 +244,7 @@ export function validateClaimBatchRecords(value: unknown, catalog: LineCatalog, 
       try {
         unique(result.data.facets.map(({ key }) => key), `facet key on ${result.data.localKey}`);
         assertSelfContainedFacetLabels(result.data.localKey, result.data.facets);
+        validateAtomicFacets(result.data.localKey, result.data.facets, catalog);
         const coverage = auditClaimFacetCoverage(result.data.statement, result.data.facets);
         if (!coverage.complete) throw new Error(`Material claim clause has no facet: ${coverage.uncovered.map(({ clause }) => clause).join(" | ")}`);
         assertSafeInvestigationLanguage(result.data);

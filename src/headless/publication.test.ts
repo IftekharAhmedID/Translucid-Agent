@@ -71,9 +71,9 @@ test("V5 evidence retrieval fingerprints deduplicated candidate refs", async () 
   assert.match(store, /selectedRefs\.has\(excerpt\.ref\)/u);
 });
 
-test("V5 evidence contract rejects partial support for compound facets", async () => {
+test("V5.1 evidence contract requires atomic facets and preserves context-only candidates", async () => {
   const source = await readFile(new URL("prompt-contracts.ts", import.meta.url), "utf8");
-  assert.match(source, /SUPPORTS requires the excerpt to establish every clause/u);
-  assert.match(source, /partial or neighboring-facet support is IRRELEVANT/u);
+  assert.match(source, /one independently adjudicable predicate/u);
+  assert.match(source, /CONTEXT and DISCOVERY_ONLY sources can never SUPPORT or CONTRADICT/u);
   assert.match(source, /alternative title is IRRELEVANT to a dated title unless the periods conflict/u);
 });

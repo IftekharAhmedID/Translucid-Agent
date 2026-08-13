@@ -168,7 +168,14 @@ function fixtureClaimBatch(body: Record<string, unknown>): Record<string, unknow
       category: employment ? "EMPLOYMENT" : "IDENTITY",
       statement: `${group.map(({ text }) => text.replace(/[.]$/u, "")).join("; ")}.`,
       materiality: employment ? "HIGH" : "MEDIUM",
-      facets: group.map((line, facetIndex) => ({ key: `${employment ? "assertion" : "identity"}_${facetIndex + 1}`, label: `${employment ? "Assertion" : "Identity"}: ${line.text.endsWith(".") ? line.text : `${line.text}.`}`, materiality: employment ? "HIGH" : "MEDIUM", lineIds: [line.id] })),
+      facets: group.map((line, facetIndex) => ({
+        key: `${employment ? "assertion" : "identity"}_${facetIndex + 1}`,
+        kind: employment ? "OTHER" : "IDENTITY",
+        label: `The submission reports ${line.text.endsWith(".") ? line.text : `${line.text}.`}`,
+        sourceFragment: line.text,
+        materiality: employment ? "HIGH" : "MEDIUM",
+        lineIds: [line.id],
+      })),
     });
   }
   return { claims, exclusions, deferredLineIds: [] };

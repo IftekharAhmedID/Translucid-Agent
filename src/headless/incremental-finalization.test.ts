@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildLineCatalog } from "./line-catalog.ts";
-import { claimBatchSchema, evidenceJudgmentSchema, invalidatedFinalizationStages, v5StageManifestSchema, validateClaimBatchRecords, validateEvidenceJudgment } from "./incremental-finalization.ts";
+import { buildClaimBundles, claimBatchSchema, evidenceJudgmentSchema, invalidatedFinalizationStages, v5StageManifestSchema, validateClaimBatchRecords, validateEvidenceJudgment } from "./incremental-finalization.ts";
 
 const catalog = buildLineCatalog({ pages: [{ page: 1, lines: [
   { line: 1, text: "Casey Morgan" },
@@ -13,10 +13,10 @@ const catalog = buildLineCatalog({ pages: [{ page: 1, lines: [
 test("claim batch validates line ownership and derives host facts", () => {
   const batch = {
     claims: [
-      { localKey: "identity", category: "IDENTITY", statement: "The résumé identifies Casey Morgan.", materiality: "HIGH", facets: [{ key: "name", label: "The person is Casey Morgan.", materiality: "HIGH", lineIds: ["P1L1"] }] },
+      { localKey: "identity", category: "IDENTITY", statement: "The résumé identifies Casey Morgan.", materiality: "HIGH", facets: [{ key: "name", kind: "IDENTITY", label: "The person is Casey Morgan.", sourceFragment: "Casey Morgan", materiality: "HIGH", lineIds: ["P1L1"] }] },
       { localKey: "employment", category: "EMPLOYMENT", statement: "Ada held a principal engineering role at Example Corp.", materiality: "HIGH", facets: [
-      { key: "title", label: "Ada held the title Principal Engineer.", materiality: "HIGH", lineIds: ["P1L2"] },
-      { key: "employer", label: "Ada worked at Example Corp.", materiality: "HIGH", lineIds: ["P1L2"] },
+      { key: "title", kind: "TITLE", label: "Ada held the title Principal Engineer.", sourceFragment: "Principal Engineer", materiality: "HIGH", lineIds: ["P1L2"] },
+      { key: "employer", kind: "ORGANIZATION", label: "Ada worked at Example Corp.", sourceFragment: "Example Corp", materiality: "HIGH", lineIds: ["P1L2"] },
     ] }],
     exclusions: [{ lineIds: ["P1L3"], reason: "BARE_SKILL" }],
     deferredLineIds: [],
@@ -32,14 +32,14 @@ test("claim batch validates line ownership and derives host facts", () => {
 test("claim validation rejects duplicate ownership and zero progress", () => {
   const invalid = { claims: [], exclusions: [], deferredLineIds: ["P1L1", "P1L2"] };
   assert.deepEqual(validateClaimBatchRecords(invalid, catalog, ["P1L1", "P1L2"]).unresolvedLineIds, ["P1L1"]);
-  const duplicate = { claims: [{ localKey: "a", category: "OTHER", statement: "Casey Morgan is identified.", materiality: "LOW", facets: [{ key: "a", label: "The person is Casey Morgan.", materiality: "LOW", lineIds: ["P1L1"] }] }], exclusions: [{ lineIds: ["P1L1"], reason: "NON_ASSERTIVE" }], deferredLineIds: [] };
+  const duplicate = { claims: [{ localKey: "a", category: "OTHER", statement: "Casey Morgan is identified.", materiality: "LOW", facets: [{ key: "a", kind: "IDENTITY", label: "The person is Casey Morgan.", sourceFragment: "Casey Morgan", materiality: "LOW", lineIds: ["P1L1"] }] }], exclusions: [{ lineIds: ["P1L1"], reason: "NON_ASSERTIVE" }], deferredLineIds: [] };
   assert.match(validateClaimBatchRecords(duplicate, catalog, ["P1L1"]).defects.join("\n"), /more than one disposition/);
 });
 
 test("claim records preserve valid disjoint siblings when one candidate is malformed", () => {
   const result = validateClaimBatchRecords({ claims: [
-    { localKey: "identity", category: "IDENTITY", statement: "The résumé identifies Casey Morgan.", materiality: "HIGH", facets: [{ key: "name", label: "The person is Casey Morgan.", materiality: "HIGH", lineIds: ["P1L1"] }] },
-    { localKey: "broken", category: "EMPLOYMENT", statement: "Broken", materiality: "URGENT", facets: [{ key: "title", label: "Ada held the Principal Engineer title.", materiality: "HIGH", lineIds: ["P1L2"] }] },
+    { localKey: "identity", category: "IDENTITY", statement: "The résumé identifies Casey Morgan.", materiality: "HIGH", facets: [{ key: "name", kind: "IDENTITY", label: "The person is Casey Morgan.", sourceFragment: "Casey Morgan", materiality: "HIGH", lineIds: ["P1L1"] }] },
+    { localKey: "broken", category: "EMPLOYMENT", statement: "Broken", materiality: "URGENT", facets: [{ key: "title", kind: "TITLE", label: "Ada held the Principal Engineer title.", sourceFragment: "Principal Engineer", materiality: "HIGH", lineIds: ["P1L2"] }] },
   ], exclusions: [{ lineIds: ["P1L3"], reason: "BARE_SKILL" }], deferredLineIds: [] }, catalog, ["P1L1", "P1L2", "P1L3"]);
   assert.deepEqual(result.claims.map(({ claimKey }) => claimKey), ["C001"]);
   assert.deepEqual(result.unresolvedLineIds, ["P1L2"]);
@@ -67,8 +67,8 @@ test("factual lines cannot be hidden in exclusions", () => {
 
 test("claim keys follow semantic line order rather than model response order", () => {
   const reversed = validateClaimBatchRecords({ claims: [
-    { localKey: "employment", category: "EMPLOYMENT", statement: "Ada held a principal engineering role at Example Corp.", materiality: "HIGH", facets: [{ key: "title", label: "Ada held the title Principal Engineer at Example Corp.", materiality: "HIGH", lineIds: ["P1L2"] }] },
-    { localKey: "identity", category: "IDENTITY", statement: "The résumé identifies Casey Morgan.", materiality: "HIGH", facets: [{ key: "name", label: "The person is Casey Morgan.", materiality: "HIGH", lineIds: ["P1L1"] }] },
+    { localKey: "employment", category: "EMPLOYMENT", statement: "Ada held a principal engineering role at Example Corp.", materiality: "HIGH", facets: [{ key: "title", kind: "TITLE", label: "Ada held the title Principal Engineer at Example Corp.", sourceFragment: "Principal Engineer", materiality: "HIGH", lineIds: ["P1L2"] }] },
+    { localKey: "identity", category: "IDENTITY", statement: "The résumé identifies Casey Morgan.", materiality: "HIGH", facets: [{ key: "name", kind: "IDENTITY", label: "The person is Casey Morgan.", sourceFragment: "Casey Morgan", materiality: "HIGH", lineIds: ["P1L1"] }] },
   ], exclusions: [{ lineIds: ["P1L3"], reason: "BARE_SKILL" }], deferredLineIds: [] }, catalog, ["P1L1", "P1L2", "P1L3"]);
 
   assert.deepEqual(reversed.claims.map(({ claimKey, localKey }) => ({ claimKey, localKey })), [
@@ -83,7 +83,7 @@ test("frozen facet line ownership is canonicalized", () => {
     category: "IDENTITY",
     statement: "The résumé identifies Casey Morgan.",
     materiality: "HIGH",
-    facets: [{ key: "name", label: "The person is Casey Morgan.", materiality: "HIGH", lineIds: ["P1L2", "P1L1"] }],
+    facets: [{ key: "name", kind: "IDENTITY", label: "The person is Casey Morgan.", sourceFragment: "Casey Morgan", materiality: "HIGH", lineIds: ["P1L2", "P1L1"] }],
   }], exclusions: [], deferredLineIds: [] }, catalog, ["P1L1", "P1L2"]);
   assert.deepEqual(result.claims[0]?.facets[0]?.lineIds, ["P1L1", "P1L2"]);
 });
@@ -94,7 +94,7 @@ test("claim records reject non-atomic facets before freezing siblings", () => {
     category: "EMPLOYMENT",
     statement: "Ada worked at Example Corp and led twelve engineers.",
     materiality: "HIGH",
-    facets: [{ key: "employment", label: "Ada worked at Example Corp.", materiality: "HIGH", lineIds: ["P1L2"] }],
+    facets: [{ key: "employment", kind: "ORGANIZATION", label: "Ada worked at Example Corp.", sourceFragment: "Example Corp", materiality: "HIGH", lineIds: ["P1L2"] }],
   }], exclusions: [], deferredLineIds: [] }, catalog, ["P1L2"]);
   assert.deepEqual(result.claims, []);
   assert.deepEqual(result.unresolvedLineIds, ["P1L2"]);
@@ -103,7 +103,7 @@ test("claim records reject non-atomic facets before freezing siblings", () => {
 
 test("claim record validation leaves an earliest deferral unresolved for the bounded repair", () => {
   const result = validateClaimBatchRecords({
-    claims: [{ localKey: "employment", category: "EMPLOYMENT", statement: "Ada held a principal engineering role.", materiality: "HIGH", facets: [{ key: "title", label: "Ada held the title Principal Engineer.", materiality: "HIGH", lineIds: ["P1L2"] }] }],
+    claims: [{ localKey: "employment", category: "EMPLOYMENT", statement: "Ada held a principal engineering role.", materiality: "HIGH", facets: [{ key: "title", kind: "TITLE", label: "Ada held the title Principal Engineer.", sourceFragment: "Principal Engineer", materiality: "HIGH", lineIds: ["P1L2"] }] }],
     exclusions: [],
     deferredLineIds: ["P1L1", "P1L3"],
   }, catalog, ["P1L1", "P1L2", "P1L3"]);
@@ -162,7 +162,7 @@ test("evidence judgment validation rejects an obvious lexical mismatch before ma
 });
 
 test("claim schema remains strict and bounded to five claims", () => {
-  assert.throws(() => claimBatchSchema.parse({ claims: Array.from({ length: 6 }, (_, index) => ({ localKey: `c${index}`, category: "OTHER", statement: "x", materiality: "LOW", facets: [{ key: "x", label: "x", materiality: "LOW", lineIds: ["P1L1"] }] })), exclusions: [], deferredLineIds: [] }), /Too big/);
+  assert.throws(() => claimBatchSchema.parse({ claims: Array.from({ length: 6 }, (_, index) => ({ localKey: `c${index}`, category: "OTHER", statement: "x", materiality: "LOW", facets: [{ key: "x", kind: "OTHER", label: "The person reports x.", sourceFragment: "Casey Morgan", materiality: "LOW", lineIds: ["P1L1"] }] })), exclusions: [], deferredLineIds: [] }), /Too big/);
 });
 
 test("stage fingerprints invalidate only the changed stage and its dependents", () => {
@@ -208,4 +208,91 @@ test("generic language section headings remain distinct from factual language as
   assert.deepEqual(heading.defects, []);
   const factual = validateClaimBatchRecords({ claims: [], exclusions: [{ lineIds: ["P1L2"], reason: "SECTION_HEADING" }], deferredLineIds: [] }, languageCatalog, ["P1L2"]);
   assert.match(factual.defects.join("\n"), /not a recognized section heading/i);
+});
+
+test("atomic facets retain one typed predicate and an exact submission fragment", () => {
+  const atomicCatalog = buildLineCatalog({ pages: [{ page: 1, lines: [
+    { line: 1, text: "Principal Engineer, Systems Unit, Example Corp, 2021–2024" },
+  ] }] });
+  const result = validateClaimBatchRecords({ claims: [{
+    localKey: "employment",
+    category: "EMPLOYMENT",
+    statement: "The résumé reports an employment record at Example Corp.",
+    materiality: "HIGH",
+    facets: [
+      { key: "employer", kind: "ORGANIZATION", label: "The person worked at Example Corp.", sourceFragment: "Example Corp", materiality: "HIGH", lineIds: ["P1L1"] },
+      { key: "title", kind: "TITLE", label: "The person held the title Principal Engineer.", sourceFragment: "Principal Engineer", materiality: "HIGH", lineIds: ["P1L1"] },
+      { key: "unit", kind: "ORG_UNIT", label: "The person worked in the Systems Unit.", sourceFragment: "Systems Unit", materiality: "MEDIUM", lineIds: ["P1L1"] },
+      { key: "interval", kind: "INTERVAL", label: "The reported interval is 2021 through 2024.", sourceFragment: "2021–2024", from: "2021", to: "2024", materiality: "HIGH", lineIds: ["P1L1"] },
+    ],
+  }], exclusions: [], deferredLineIds: [] }, atomicCatalog, ["P1L1"]);
+
+  assert.deepEqual(result.defects, []);
+  assert.deepEqual(result.claims[0]?.facets.map(({ kind, sourceFragment }) => ({ kind, sourceFragment })), [
+    { kind: "ORGANIZATION", sourceFragment: "Example Corp" },
+    { kind: "INTERVAL", sourceFragment: "2021–2024" },
+    { kind: "TITLE", sourceFragment: "Principal Engineer" },
+    { kind: "ORG_UNIT", sourceFragment: "Systems Unit" },
+  ]);
+});
+
+test("atomic facet validation rejects compound and non-exact source fragments", () => {
+  const atomicCatalog = buildLineCatalog({ pages: [{ page: 1, lines: [
+    { line: 1, text: "Principal Engineer, Example Corp, 2021–2024" },
+  ] }] });
+  const result = validateClaimBatchRecords({ claims: [{
+    localKey: "compound",
+    category: "EMPLOYMENT",
+    statement: "The résumé reports a Principal Engineer record at Example Corp from 2021 through 2024.",
+    materiality: "HIGH",
+    facets: [{
+      key: "compound",
+      kind: "OTHER",
+      label: "The person was Principal Engineer at Example Corp and worked there from 2021 through 2024.",
+      sourceFragment: "Principal Engineer at Example Corp and 2021–2024",
+      materiality: "HIGH",
+      lineIds: ["P1L1"],
+    }],
+  }], exclusions: [], deferredLineIds: [] }, atomicCatalog, ["P1L1"]);
+
+  assert.deepEqual(result.claims, []);
+  assert.match(result.defects.join("\n"), /exact submission fragment|atomic/i);
+});
+
+test("claim bundles are deterministic, bounded, and split at headings and pages", () => {
+  const bundleCatalog = buildLineCatalog({ pages: [
+    { page: 1, lines: [
+      { line: 1, text: "Experience" },
+      { line: 2, text: "Example Corp" },
+      { line: 3, text: "Principal Engineer" },
+      { line: 4, text: "Built Project Atlas" },
+      { line: 5, text: "Maintained Project Atlas" },
+      { line: 6, text: "Education" },
+      { line: 7, text: "Example University" },
+    ] },
+    { page: 2, lines: [{ line: 1, text: "Presented at Example Forum" }] },
+  ] });
+  const facet = (key: string, kind: "ORGANIZATION" | "TITLE" | "OUTPUT" | "EDUCATION" | "ACTIVITY", sourceFragment: string, lineId: string) => ({ key, kind, label: `The person reports ${sourceFragment}.`, sourceFragment, materiality: "HIGH" as const, lineIds: [lineId] });
+  const claims = [
+    { claimKey: "C001", localKey: "c1", category: "EMPLOYMENT" as const, statement: "Example Corp employment.", materiality: "HIGH" as const, facets: [facet("employer", "ORGANIZATION", "Example Corp", "P1L2")], lineIds: ["P1L2"], sourceSpan: { page: 1, text: "Example Corp" } },
+    { claimKey: "C002", localKey: "c2", category: "EMPLOYMENT" as const, statement: "Principal Engineer title.", materiality: "HIGH" as const, facets: [facet("title", "TITLE", "Principal Engineer", "P1L3"), facet("employer", "ORGANIZATION", "Example Corp", "P1L3")], lineIds: ["P1L3"], sourceSpan: { page: 1, text: "Principal Engineer" } },
+    { claimKey: "C003", localKey: "c3", category: "PROJECT" as const, statement: "Built Project Atlas.", materiality: "HIGH" as const, facets: [facet("output", "OUTPUT", "Project Atlas", "P1L4")], lineIds: ["P1L4"], sourceSpan: { page: 1, text: "Built Project Atlas" } },
+    { claimKey: "C004", localKey: "c4", category: "PROJECT" as const, statement: "Maintained Project Atlas.", materiality: "HIGH" as const, facets: [facet("output", "OUTPUT", "Project Atlas", "P1L5")], lineIds: ["P1L5"], sourceSpan: { page: 1, text: "Maintained Project Atlas" } },
+    { claimKey: "C005", localKey: "c5", category: "EDUCATION" as const, statement: "Example University education.", materiality: "HIGH" as const, facets: [facet("school", "EDUCATION", "Example University", "P1L7")], lineIds: ["P1L7"], sourceSpan: { page: 1, text: "Example University" } },
+    { claimKey: "C006", localKey: "c6", category: "EVENT" as const, statement: "Presented at Example Forum.", materiality: "HIGH" as const, facets: [facet("event", "ACTIVITY", "Example Forum", "P2L1")], lineIds: ["P2L1"], sourceSpan: { page: 2, text: "Presented at Example Forum" } },
+  ];
+  const exclusions = [
+    { lineIds: ["P1L1"], reason: "SECTION_HEADING" as const },
+    { lineIds: ["P1L6"], reason: "SECTION_HEADING" as const },
+  ];
+
+  const first = buildClaimBundles(claims, exclusions, bundleCatalog, "f".repeat(64));
+  const second = buildClaimBundles([...claims], [...exclusions], bundleCatalog, "f".repeat(64));
+  assert.deepEqual(second, first);
+  assert.deepEqual(first.bundles.map(({ bundleId, claimKeys }) => ({ bundleId, claimKeys })), [
+    { bundleId: "B001", claimKeys: ["C001", "C002", "C003", "C004"] },
+    { bundleId: "B002", claimKeys: ["C005"] },
+    { bundleId: "B003", claimKeys: ["C006"] },
+  ]);
+  assert.ok(first.bundles.every(({ claimKeys }) => claimKeys.length <= 5));
 });
