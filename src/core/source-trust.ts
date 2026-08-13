@@ -8,6 +8,10 @@ export type SourceAuthority =
   | "CONTEXT"
   | "DISCOVERY_ONLY";
 
+export const SOURCE_AUTHORITY_POLICY_VERSION = "institutional-domains-v1";
+
+export type InstitutionalAuthorityRule = "python-official" | "arm-official" | "europython-official";
+
 type SourceArtifact = {
   sourceAuthority?: SourceAuthority | string | null;
   sourceUrl?: string | null;
@@ -135,6 +139,15 @@ function hostname(value: string | null | undefined): string | undefined {
   catch { return undefined; }
 }
 
+export function institutionalAuthorityRule(value: string | null | undefined): InstitutionalAuthorityRule | undefined {
+  const host = hostname(value);
+  if (!host) return undefined;
+  if (new Set(["www.python.org", "docs.python.org", "devguide.python.org"]).has(host)) return "python-official";
+  if (host === "arm.com" || host === "www.arm.com" || host === "developer.arm.com") return "arm-official";
+  if (host === "europython.eu" || host.endsWith(".europython.eu") || host === "europython-society.org" || host.endsWith(".europython-society.org")) return "europython-official";
+  return undefined;
+}
+
 function candidateDomainNames(entities: SourceEntity[], links: SourceEntityLink[], rootCandidate: string | null | undefined): Set<string> {
   if (!rootCandidate) return new Set();
   const linked = new Set<string>();
@@ -169,6 +182,7 @@ export function effectiveSourceAuthority(input: {
   const stored = String(input.artifact.sourceAuthority ?? "CONTEXT") as SourceAuthority;
   if (stored === "DISCOVERY_ONLY") return stored;
   if (stored !== "CONTEXT") return stored;
+  if (institutionalAuthorityRule(input.artifact.sourceUrl)) return "FIRST_PARTY_INSTITUTIONAL";
   if (isVerifiedCandidateDomain(input.artifact, input.entities ?? [], input.entityLinks ?? [], input.rootCandidate)) return "SELF_REPRESENTATION";
   return "CONTEXT";
 }

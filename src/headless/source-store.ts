@@ -3,7 +3,7 @@ import { appendFile, mkdir, open, readFile, rename, stat } from "node:fs/promise
 import { dirname, join, relative } from "node:path";
 import { z } from "zod";
 
-import { deriveArtifactTrust } from "../core/source-trust.ts";
+import { effectiveSourceAuthority, deriveArtifactTrust } from "../core/source-trust.ts";
 
 const sourceSchema = z.object({
   ref: z.string().regex(/^S[1-9]\d*$/),
@@ -70,6 +70,11 @@ export type SourceExcerptResult = {
 
 export type BoundedSourceBody = { sourceRef: string; text: string; truncated: boolean };
 export type ExactQuoteCheck = { sourceRef: string; path: string; valid: boolean };
+export type StoredExcerptCandidates = {
+  candidatesByFacet: Record<string, Array<{ ref: string; sourceRef: string; path: string; offsetStart: number; offsetEnd: number; text: string }>>;
+  fingerprint: string;
+  totalCharacters: number;
+};
 
 type Manifest = z.infer<typeof manifestSchema>;
 type FlatValue = { path: string; text: string };
@@ -142,9 +147,9 @@ export class FileSourceStore {
   private excerptPending: Promise<void> = Promise.resolve();
   private readonly excerptIndex = new Map<string, { ref: string; sourceRef: string; path: string; offsetStart: number; offsetEnd: number; text: string }>();
 
-  private constructor(private readonly root: string, private manifest: Manifest) {}
+  private constructor(private readonly root: string, private manifest: Manifest, private readonly finalizationVersion: "v4" | "v5") {}
 
-  static async open(root: string): Promise<FileSourceStore> {
+  static async open(root: string, options: { finalizationVersion?: "v4" | "v5" } = {}): Promise<FileSourceStore> {
     const path = join(root, "sources", "manifest.json");
     let manifest: Manifest = { schemaVersion: 1, sources: [] };
     try { manifest = manifestSchema.parse(JSON.parse(await readFile(path, "utf8"))); }
@@ -153,8 +158,8 @@ export class FileSourceStore {
       await mkdir(join(root, "sources", "blobs"), { recursive: true });
       await atomicWrite(path, Buffer.from(JSON.stringify(manifest, null, 2)));
     }
-    const store = new FileSourceStore(root, manifest);
-    const ledgerPath = join(root, ".work", "finalization", "v4", "excerpts.json");
+    const store = new FileSourceStore(root, manifest, options.finalizationVersion ?? "v4");
+    const ledgerPath = join(root, ".work", "finalization", store.finalizationVersion, "excerpts.json");
     try {
       const rawLedger = readableExcerptLedgerSchema.parse(JSON.parse(await readFile(ledgerPath, "utf8")));
       const valid = rawLedger.excerpts.filter((excerpt) => excerpt.text.length > 0 && excerpt.offsetEnd > excerpt.offsetStart);
@@ -171,7 +176,7 @@ export class FileSourceStore {
   private persistExcerpts(): Promise<void> {
     const operation = this.excerptPending.then(async () => {
       const excerpts = [...this.excerptIndex.values()].sort((left, right) => left.ref.localeCompare(right.ref));
-      await atomicWrite(join(this.root, ".work", "finalization", "v4", "excerpts.json"), Buffer.from(JSON.stringify({ schemaVersion: 1, excerpts }, null, 2)));
+      await atomicWrite(join(this.root, ".work", "finalization", this.finalizationVersion, "excerpts.json"), Buffer.from(JSON.stringify({ schemaVersion: 1, excerpts }, null, 2)));
     });
     this.excerptPending = operation.catch(() => undefined);
     return operation;
@@ -305,6 +310,51 @@ export class FileSourceStore {
     const source = await this.get(sourceRef);
     const raw = await readFile(join(this.root, source.relativePath), "utf8");
     return { sourceRef, text: raw.slice(0, maximum), truncated: raw.length > maximum };
+  }
+
+  async findStoredExcerpts(input: {
+    statement: string;
+    facets: ReadonlyArray<{ key: string; statement: string }>;
+    researchMemos: string;
+    eligibleSourceRefs: ReadonlySet<string>;
+  }): Promise<StoredExcerptCandidates> {
+    const sources = (await this.list()).filter((source) => input.eligibleSourceRefs.has(source.ref) && !new Set(["CONTEXT", "DISCOVERY_ONLY"]).has(effectiveSourceAuthority({ artifact: source })));
+    const sourceByRef = new Map(sources.map((source) => [source.ref, source]));
+    const paragraphs = input.researchMemos.split(/\n\s*\n/gu);
+    const tokens = (text: string) => [...new Set(text.toLocaleLowerCase("en-US").split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 3 && !new Set(["with", "from", "that", "this", "have", "were", "their", "about", "into"]).has(token)))];
+    const candidatesByFacet: StoredExcerptCandidates["candidatesByFacet"] = {};
+    let remainingCharacters = 16_000;
+    for (const facet of input.facets) {
+      const facetTokens = tokens(`${input.statement} ${facet.statement}`);
+      const memoRefs = new Set(paragraphs.flatMap((paragraph) => {
+        const overlap = facetTokens.filter((token) => paragraph.toLocaleLowerCase("en-US").includes(token)).length;
+        return overlap < 2 ? [] : [...paragraph.matchAll(/\bS([1-9]\d*)\b/gu)].map((match) => `S${match[1]}`);
+      }).filter((ref) => sourceByRef.has(ref)));
+      const ranked = sources.map((source) => {
+        const metadata = `${source.title ?? ""} ${source.sourceUrl ?? ""}`.toLocaleLowerCase("en-US");
+        const score = facetTokens.filter((token) => metadata.includes(token)).length;
+        return { source, tier: memoRefs.has(source.ref) ? 1 : score >= 2 ? 2 : 3, score };
+      }).sort((left, right) => left.tier - right.tier || right.score - left.score || Number(left.source.ref.slice(1)) - Number(right.source.ref.slice(1)));
+      const facetCandidates: StoredExcerptCandidates["candidatesByFacet"][string] = [];
+      const queries = [...new Set([facet.statement, input.statement, ...facetTokens])].filter(Boolean).slice(0, 12);
+      for (const { source } of ranked) {
+        if (facetCandidates.length >= 3 || remainingCharacters <= 0) break;
+        const found = await this.excerpts({ sourceRef: source.ref, queries, maxCharacters: Math.min(2_000, remainingCharacters) });
+        for (const excerpt of found.excerpts.slice(0, 2)) {
+          if (facetCandidates.length >= 8 || remainingCharacters < excerpt.text.length) break;
+          facetCandidates.push({ ...excerpt, sourceRef: source.ref });
+          remainingCharacters -= excerpt.text.length;
+        }
+      }
+      candidatesByFacet[facet.key] = facetCandidates.sort((left, right) => {
+        const leftScore = facetTokens.filter((token) => left.text.toLocaleLowerCase("en-US").includes(token)).length;
+        const rightScore = facetTokens.filter((token) => right.text.toLocaleLowerCase("en-US").includes(token)).length;
+        return rightScore - leftScore || Number(left.sourceRef.slice(1)) - Number(right.sourceRef.slice(1)) || left.offsetStart - right.offsetStart;
+      });
+    }
+    const totalCharacters = 16_000 - remainingCharacters;
+    const fingerprint = createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.entries(candidatesByFacet).sort(([left], [right]) => left.localeCompare(right))))).digest("hex");
+    return { candidatesByFacet, fingerprint, totalCharacters };
   }
 
   async verify(): Promise<{ valid: boolean; invalidSourceRefs: string[] }> {

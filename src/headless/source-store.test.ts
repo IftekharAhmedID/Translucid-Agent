@@ -155,3 +155,42 @@ test("does not persist empty JSON leaves as excerpt records", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("finds deterministic bounded candidates from memo citations without network access", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-source-candidates-"));
+  try {
+    const store = await FileSourceStore.open(directory, { finalizationVersion: "v5" });
+    const official = await store.capture({
+      kind: "SOURCE_CONTENT",
+      provider: "public-fetch",
+      providerRoute: "web.fetch",
+      sourceUrl: "https://www.python.org/dev/core-developers/",
+      title: "Python core developers",
+      mimeType: "text/plain",
+      content: "Diego Russo was promoted to the CPython core development team.",
+      provenance: {},
+    });
+    const context = await store.capture({
+      kind: "SOURCE_CONTENT",
+      provider: "public-fetch",
+      providerRoute: "web.fetch",
+      sourceUrl: "https://blog.example.com/python",
+      title: "Python community",
+      mimeType: "text/plain",
+      content: "Diego Russo contributed a pull request.",
+      provenance: {},
+    });
+    const candidates = await store.findStoredExcerpts({
+      statement: "Diego Russo is a CPython core developer.",
+      facets: [{ key: "status", statement: "Diego Russo is a CPython core developer." }],
+      researchMemos: `Diego Russo CPython core developer official promotion record [${official.ref}]`,
+      eligibleSourceRefs: new Set([official.ref, context.ref]),
+    });
+    assert.equal(candidates.candidatesByFacet.status?.[0]?.sourceRef, official.ref);
+    assert.ok((candidates.candidatesByFacet.status ?? []).length <= 8);
+    assert.ok(candidates.totalCharacters <= 16_000);
+    assert.match(await readFile(join(directory, ".work", "finalization", "v5", "excerpts.json"), "utf8"), /schemaVersion/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

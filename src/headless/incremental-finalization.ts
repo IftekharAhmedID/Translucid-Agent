@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-import { lineCatalogSchema, lineIdSchema, lineSpan, type LineCatalog } from "./line-catalog.ts";
+import { lineIdSchema, lineSpan, type LineCatalog } from "./line-catalog.ts";
 
 const facetKey = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 const category = z.enum(["IDENTITY", "EMPLOYMENT", "PROJECT", "CONTRIBUTION", "EDUCATION", "EVENT", "PUBLICATION", "AFFILIATION", "OTHER"]);
@@ -43,12 +43,26 @@ const evidenceClaimSchema = z.object({
 
 export const evidenceBatchSchema = z.object({ claims: z.array(evidenceClaimSchema).max(5) }).strict();
 
+const evidenceCandidateJudgmentSchema = z.object({
+  excerptRef: z.string().regex(/^X[a-f0-9]{64}$/),
+  relation: z.enum(["SUPPORTS", "CONTRADICTS", "IRRELEVANT"]),
+  reason: z.string().min(1).max(2_000),
+}).strict();
+
+export const evidenceJudgmentSchema = z.object({
+  claimId: z.string().regex(/^C0*[1-9]\d*$/),
+  candidateSetHash: z.string().regex(/^[a-f0-9]{64}$/),
+  facets: z.array(z.object({ facetKey, candidates: z.array(evidenceCandidateJudgmentSchema).max(8) }).strict()).max(12),
+}).strict();
+
 export type ClaimBatch = z.infer<typeof claimBatchSchema>;
 export type EvidenceBatch = z.infer<typeof evidenceBatchSchema>;
+export type EvidenceJudgment = z.infer<typeof evidenceJudgmentSchema>;
 export type ExcerptRecord = { ref: string; sourceRef: string; path: string; offsetStart: number; offsetEnd: number; text: string };
 export type ValidatedClaim = ClaimBatch["claims"][number] & { claimKey: string; lineIds: string[]; sourceSpan: { page?: number; text: string } };
 export type ValidatedExclusion = ClaimBatch["exclusions"][number];
 export type ValidatedClaimBatch = { claims: ValidatedClaim[]; exclusions: ValidatedExclusion[]; deferredLineIds: string[] };
+export type ValidatedClaimRecords = ValidatedClaimBatch & { unresolvedLineIds: string[]; defects: string[] };
 
 function unique(values: readonly string[], label: string): void {
   if (new Set(values).size !== values.length) throw new Error(`Duplicate ${label}.`);
@@ -95,6 +109,51 @@ export function validateClaimBatch(value: unknown, catalog: LineCatalog, assigne
   return { claims, exclusions, deferredLineIds };
 }
 
+export function validateClaimBatchRecords(value: unknown, catalog: LineCatalog, assignedLineIds: readonly string[], claimKeyPrefix = "C", claimKeyStart = 0): ValidatedClaimRecords {
+  const assigned = orderedIds(catalog, assignedLineIds);
+  if (assigned.length !== new Set(assignedLineIds).size) throw new Error("Assigned line IDs contain duplicates or unknown lines.");
+  if (!value || typeof value !== "object") throw new Error("Claim batch must be an object.");
+  const raw = value as { claims?: unknown; exclusions?: unknown; deferredLineIds?: unknown };
+  const defects: string[] = [];
+  const parsedClaims = (Array.isArray(raw.claims) ? raw.claims : []).flatMap((candidate, index) => {
+    const result = claimCandidateSchema.safeParse(candidate);
+    if (result.success) return [{ index, value: result.data }];
+    const key = candidate && typeof candidate === "object" && typeof (candidate as { localKey?: unknown }).localKey === "string" ? (candidate as { localKey: string }).localKey : `claim ${index + 1}`;
+    defects.push(`${key}: ${z.prettifyError(result.error)}`);
+    return [];
+  });
+  const parsedExclusions = (Array.isArray(raw.exclusions) ? raw.exclusions : []).flatMap((candidate, index) => {
+    const result = exclusionSchema.safeParse(candidate);
+    if (result.success) return [{ index, value: result.data }];
+    defects.push(`exclusion ${index + 1}: ${z.prettifyError(result.error)}`);
+    return [];
+  });
+  const deferredResult = z.array(lineIdSchema).max(100).safeParse(raw.deferredLineIds ?? []);
+  if (!deferredResult.success) defects.push(`deferred lines: ${z.prettifyError(deferredResult.error)}`);
+  const deferred = deferredResult.success ? orderedIds(catalog, deferredResult.data) : [];
+  const owners = new Map<string, string[]>();
+  const addOwner = (lineId: string, owner: string) => owners.set(lineId, [...(owners.get(lineId) ?? []), owner]);
+  for (const { index, value: claim } of parsedClaims) for (const lineId of new Set(claim.facets.flatMap(({ lineIds }) => lineIds))) addOwner(lineId, `claim:${index}`);
+  for (const { index, value: exclusion } of parsedExclusions) for (const lineId of new Set(exclusion.lineIds)) addOwner(lineId, `exclusion:${index}`);
+  for (const lineId of deferred) addOwner(lineId, "deferred");
+  const assignedSet = new Set(assigned);
+  const invalidOwners = new Set<string>();
+  for (const [lineId, lineOwners] of owners) {
+    if (!assignedSet.has(lineId) || lineOwners.length > 1) for (const owner of lineOwners) invalidOwners.add(owner);
+    if (!assignedSet.has(lineId)) defects.push(`Line ${lineId} is outside the assigned claim window.`);
+    else if (lineOwners.length > 1) defects.push(`Line ${lineId} has more than one disposition.`);
+  }
+  const acceptedClaims = parsedClaims.filter(({ index }) => !invalidOwners.has(`claim:${index}`));
+  const claims = acceptedClaims.map(({ value: claim }, index) => {
+    const lineIds = orderedIds(catalog, claim.facets.flatMap(({ lineIds }) => lineIds));
+    return { ...claim, claimKey: `${claimKeyPrefix}${String(claimKeyStart + index + 1).padStart(3, "0")}`, lineIds, sourceSpan: lineSpan(catalog, lineIds) };
+  });
+  const exclusions = parsedExclusions.filter(({ index }) => !invalidOwners.has(`exclusion:${index}`)).map(({ value }) => ({ ...value, lineIds: orderedIds(catalog, value.lineIds) }));
+  const acceptedDeferred = deferred.filter((lineId) => !invalidOwners.has("deferred") && assignedSet.has(lineId));
+  const resolved = new Set([...claims.flatMap(({ lineIds }) => lineIds), ...exclusions.flatMap(({ lineIds }) => lineIds), ...acceptedDeferred]);
+  return { claims, exclusions, deferredLineIds: acceptedDeferred, unresolvedLineIds: assigned.filter((lineId) => !resolved.has(lineId)), defects };
+}
+
 export function validateEvidenceBatch(value: unknown, claims: ReadonlyArray<{ claimKey: string; facets: ReadonlyArray<{ key: string }> }>, excerpts: ReadonlyMap<string, ExcerptRecord>): EvidenceBatch {
   const batch = evidenceBatchSchema.parse(value);
   const claimById = new Map(claims.map((claim) => [claim.claimKey, claim]));
@@ -115,8 +174,21 @@ export function validateEvidenceBatch(value: unknown, claims: ReadonlyArray<{ cl
   return batch;
 }
 
-export function mergeLineCatalog(input: unknown): LineCatalog {
-  return lineCatalogSchema.parse(input);
+export function validateEvidenceJudgment(value: unknown, claim: { claimKey: string; facets: ReadonlyArray<{ key: string }> }, candidatesByFacet: ReadonlyMap<string, readonly ExcerptRecord[]>): EvidenceJudgment {
+  const judgment = evidenceJudgmentSchema.parse(value);
+  if (judgment.claimId !== claim.claimKey) throw new Error(`Evidence judgment references unknown claim ${judgment.claimId}.`);
+  unique(judgment.facets.map(({ facetKey: key }) => key), `evidence facet on ${judgment.claimId}`);
+  if (judgment.facets.length !== claim.facets.length || claim.facets.some(({ key }) => !judgment.facets.some(({ facetKey }) => facetKey === key))) throw new Error(`Evidence judgment facets do not exactly match claim ${claim.claimKey}.`);
+  for (const facet of judgment.facets) {
+    const assigned = candidatesByFacet.get(facet.facetKey) ?? [];
+    const expected = new Set(assigned.map(({ ref }) => ref));
+    unique(facet.candidates.map(({ excerptRef }) => excerptRef), `candidate on ${claim.claimKey}/${facet.facetKey}`);
+    const actual = new Set(facet.candidates.map(({ excerptRef }) => excerptRef));
+    const unknown = facet.candidates.find(({ excerptRef }) => !expected.has(excerptRef));
+    if (unknown) throw new Error(`Evidence judgment references unknown excerpt ${unknown.excerptRef}.`);
+    if (actual.size !== expected.size || [...expected].some((ref) => !actual.has(ref))) throw new Error(`Evidence judgment must exactly account for assigned candidates on ${claim.claimKey}/${facet.facetKey}.`);
+  }
+  return judgment;
 }
 
 export async function atomicJson(path: string, value: unknown): Promise<void> {
