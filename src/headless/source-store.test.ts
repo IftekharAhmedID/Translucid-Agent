@@ -133,3 +133,25 @@ test("detects a source blob modified after capture", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("does not persist empty JSON leaves as excerpt records", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-source-empty-excerpts-"));
+  try {
+    const store = await FileSourceStore.open(directory);
+    const source = await store.capture({
+      kind: "SOURCE_CONTENT",
+      provider: "fixture",
+      providerRoute: "fixture.web.fetch",
+      sourceUrl: "https://example.test/empty",
+      mimeType: "application/json",
+      content: { empty: "", readable: "Cambridge" },
+      provenance: {},
+    });
+    const result = await store.excerpts({ sourceRef: source.ref, queries: ["empty", "Cambridge"] });
+    assert.equal(result.excerpts.some(({ text }) => text.length === 0), false);
+    const ledger = JSON.parse(await readFile(join(directory, ".work", "finalization", "v4", "excerpts.json"), "utf8")) as { excerpts: Array<{ text: string }> };
+    assert.equal(ledger.excerpts.some(({ text }) => text.length === 0), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

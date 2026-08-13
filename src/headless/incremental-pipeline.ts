@@ -221,11 +221,25 @@ export async function runIncrementalFinalization(input: V4Input): Promise<Invest
     const unresolved = new Set(semanticLines.filter(({ id }) => !dispositions.has(id)).map(({ id }) => id));
     const window = lineWindow(catalog, unresolved);
     if (!window.length) throw new Error("Claim scheduler cannot make progress.");
-    const value = await promptJson("resume-claim-compiler", `Claim batch ${claimNumber + 1}`, CLAIM_BATCH_PROMPT_CONTRACT, {
+    const claimPayload = {
       lineWindow: window,
       acceptedClaims: claims.map((claim) => ({ claimKey: claim.claimKey, statement: claim.statement, facets: claim.facets.map(({ key, label }) => ({ key, label })) })).slice(-20),
-    }, claimBatchSchema, 0, { "source.excerpts": false, skill: false });
-    const validated = validateClaimBatch(value, catalog, window.map(({ id }) => id), "C", claimNumber);
+    };
+    let validated: ReturnType<typeof validateClaimBatch> | undefined;
+    let validationError = "";
+    for (let attempt = 0; attempt < 2 && !validated; attempt += 1) {
+      try {
+        const value = await promptJson("resume-claim-compiler", `Claim batch ${claimNumber + 1}${attempt ? " repair" : ""}`, CLAIM_BATCH_PROMPT_CONTRACT, {
+          ...claimPayload,
+          ...(validationError ? { hostValidationError: validationError, repairInstruction: "Return the same window with exactly one disposition per line and preserve accepted claim ownership." } : {}),
+        }, claimBatchSchema, 0, { "source.excerpts": false, skill: false });
+        validated = validateClaimBatch(value, catalog, window.map(({ id }) => id), "C", claimNumber);
+      } catch (error) {
+        validationError = error instanceof Error ? error.message : String(error);
+        if (attempt === 1) throw error;
+      }
+    }
+    if (!validated) throw new Error(`Claim batch ${claimNumber + 1} produced no validated record.`);
     claims.push(...validated.claims);
     exclusions.push(...validated.exclusions);
     for (const claim of validated.claims) for (const lineId of claim.lineIds) dispositions.add(lineId);
@@ -267,12 +281,32 @@ export async function runIncrementalFinalization(input: V4Input): Promise<Invest
     return records;
   };
   const linkEvidenceForClaims = async (assigned: ValidatedClaim[], title: string, allowance: number): Promise<void> => {
-    const response = await promptJson("evidence-linker", title, EVIDENCE_LINK_BATCH_PROMPT_CONTRACT, {
+    const relevantWords = new Set(assigned.flatMap((claim) => [claim.statement, ...claim.facets.map(({ label }) => label)].join(" ").toLocaleLowerCase("en-US").split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 3)));
+    const relevantExcerpts = [...excerpts.values()]
+      .map((excerpt) => ({ excerpt, score: excerpt.text.toLocaleLowerCase("en-US").split(/[^\p{L}\p{N}]+/u).filter((word) => relevantWords.has(word)).length }))
+      .sort((left, right) => right.score - left.score || left.excerpt.ref.localeCompare(right.excerpt.ref))
+      .slice(0, 40)
+      .map(({ excerpt }) => excerpt);
+    const evidencePayload = {
       claims: assigned.map((claim) => ({ claimKey: claim.claimKey, statement: claim.statement, facets: claim.facets.map(({ key, label, materiality }) => ({ key, label, materiality })) })),
-      citedSources: base.citedSources,
-      excerptCandidates: [...excerpts.values()].slice(0, 100),
-    }, evidenceBatchSchema, allowance, { "source.excerpts": true, skill: true });
-    const validated = validateEvidenceBatch(response, assigned.map((claim) => ({ claimKey: claim.claimKey, facets: claim.facets })), excerpts);
+      citedSources: base.citedSources.map((source) => ({ ref: source.ref, sourceUrl: source.sourceUrl, title: source.title, sourceAuthority: source.sourceAuthority, independenceGroup: source.independenceGroup })).filter((source) => relevantExcerpts.some((excerpt) => excerpt.sourceRef === source.ref)),
+      excerptCandidates: relevantExcerpts,
+    };
+    let validated: ReturnType<typeof validateEvidenceBatch> | undefined;
+    let validationError = "";
+    for (let attempt = 0; attempt < 2 && !validated; attempt += 1) {
+      try {
+        const response = await promptJson("evidence-linker", `${title}${attempt ? " repair" : ""}`, EVIDENCE_LINK_BATCH_PROMPT_CONTRACT, {
+          ...evidencePayload,
+          ...(validationError ? { hostValidationError: validationError, repairInstruction: "Return exactly one evidence object for each assigned claim and preserve every declared facet key." } : {}),
+        }, evidenceBatchSchema, allowance, { "source.excerpts": true, skill: true });
+        validated = validateEvidenceBatch(response, assigned.map((claim) => ({ claimKey: claim.claimKey, facets: claim.facets })), excerpts);
+      } catch (error) {
+        validationError = error instanceof Error ? error.message : String(error);
+        if (attempt === 1) throw error;
+      }
+    }
+    if (!validated) throw new Error(`${title} produced no validated evidence.`);
     for (const item of validated.claims) {
       const claim = assigned.find(({ claimKey }) => claimKey === item.claimId)!;
       explanations.set(item.claimId, item.explanation);

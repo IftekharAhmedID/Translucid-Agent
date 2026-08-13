@@ -28,18 +28,16 @@ const manifestSchema = z.object({
   sources: z.array(sourceSchema),
 }).strict();
 
-const excerptRecordSchema = z.object({
-  ref: z.string().regex(/^X[a-f0-9]{64}$/),
-  sourceRef: z.string().regex(/^S[1-9]\d*$/),
-  path: z.string().min(1),
-  offsetStart: z.number().int().nonnegative(),
-  offsetEnd: z.number().int().positive(),
-  text: z.string().min(1).max(1_000),
-}).strict();
-
-const excerptLedgerSchema = z.object({
+const readableExcerptLedgerSchema = z.object({
   schemaVersion: z.literal(1),
-  excerpts: z.array(excerptRecordSchema),
+  excerpts: z.array(z.object({
+    ref: z.string().regex(/^X[a-f0-9]{64}$/),
+    sourceRef: z.string().regex(/^S[1-9]\d*$/),
+    path: z.string().min(1),
+    offsetStart: z.number().int().nonnegative(),
+    offsetEnd: z.number().int().nonnegative(),
+    text: z.string().max(1_000),
+  }).strict()),
 }).strict();
 
 export type CapturedSourceMetadata = z.infer<typeof sourceSchema>;
@@ -158,8 +156,12 @@ export class FileSourceStore {
     const store = new FileSourceStore(root, manifest);
     const ledgerPath = join(root, ".work", "finalization", "v4", "excerpts.json");
     try {
-      const ledger = excerptLedgerSchema.parse(JSON.parse(await readFile(ledgerPath, "utf8")));
-      for (const excerpt of ledger.excerpts) store.excerptIndex.set(excerpt.ref, excerpt);
+      const rawLedger = readableExcerptLedgerSchema.parse(JSON.parse(await readFile(ledgerPath, "utf8")));
+      const valid = rawLedger.excerpts.filter((excerpt) => excerpt.text.length > 0 && excerpt.offsetEnd > excerpt.offsetStart);
+      for (const excerpt of valid) store.excerptIndex.set(excerpt.ref, excerpt);
+      if (valid.length !== rawLedger.excerpts.length) {
+        await atomicWrite(ledgerPath, Buffer.from(JSON.stringify({ schemaVersion: 1, excerpts: valid }, null, 2)));
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -250,7 +252,7 @@ export class FileSourceStore {
       const leaves = flatten(JSON.parse(raw));
       for (const query of input.queries) {
         for (const leaf of leaves) {
-          if (!`${leaf.path}\n${leaf.text}`.toLocaleLowerCase("en-US").includes(query.toLocaleLowerCase("en-US"))) continue;
+          if (!leaf.text || !`${leaf.path}\n${leaf.text}`.toLocaleLowerCase("en-US").includes(query.toLocaleLowerCase("en-US"))) continue;
           matchCount += 1;
           if (remaining <= 0 || excerpts.some((item) => item.path === leaf.path && item.text === leaf.text)) continue;
           const text = leaf.text.slice(0, Math.min(1_000, remaining));
