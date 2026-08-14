@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 
 import { estimateModelInputTokens, modelCostReservation, proxyModelCompletion } from "../gateway/model-proxy.ts";
 import { FINALIZER_MODEL_CATALOG } from "../core/model-catalog.ts";
+import { prepareFinalizerUpstreamBody } from "../core/finalizer-transport.ts";
 import type { ModelRequestTimeouts } from "../core/config.ts";
 import { toolNames } from "../providers/contracts.ts";
 import type { ProviderExecutor } from "../providers/executor.ts";
@@ -141,12 +142,15 @@ export function createHeadlessGateway(input: GatewayInput) {
         const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
         const remainingMs = input.deadlineAt - Date.now();
         if (remainingMs <= 0) throw new GatewayError(401, "Investigation deadline reached.");
-        input.onModelRequest?.({ agent, estimatedInputTokens: estimateModelInputTokens(body) });
-        await input.budget.reserveModel(modelCostReservation(body, model));
+        const chargedBody = finalizerAgents.has(agent)
+          ? prepareFinalizerUpstreamBody(body, { agent, provider: input.finalizerProvider ?? "GO", model, protocol })
+          : body;
+        input.onModelRequest?.({ agent, estimatedInputTokens: estimateModelInputTokens(chargedBody) });
+        await input.budget.reserveModel(modelCostReservation(chargedBody, model));
         await proxyModelCompletion({
           request,
           response,
-          body,
+          body: chargedBody,
           agent,
           model,
           remainingMs,
@@ -155,11 +159,10 @@ export function createHeadlessGateway(input: GatewayInput) {
           researchUpstreamUrl: input.researchUpstreamUrl ?? "https://opencode.ai/zen/v1/chat/completions",
           finalizerUpstreamUrl: input.finalizerUpstreamUrl ?? "https://opencode.ai/zen/go/v1/chat/completions",
           finalizerProvider: input.finalizerProvider ?? "GO",
-          finalizerModel: input.finalizerModel ?? "deepseek-v4-pro",
           protocol,
           finalizerAgents,
           requestTimeouts: input.modelRequestTimeouts,
-          fixtureCompletion: () => input.fixtureCompletion?.(body, agent, model) ?? Promise.resolve({ content: "Headless fixture model completed." }),
+          fixtureCompletion: () => input.fixtureCompletion?.(chargedBody, agent, model) ?? Promise.resolve({ content: "Headless fixture model completed." }),
         });
         return;
       }

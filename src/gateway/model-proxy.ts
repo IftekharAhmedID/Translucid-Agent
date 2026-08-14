@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { request as httpsRequest } from "node:https";
 
 import { DEFAULT_MODEL_REQUEST_TIMEOUTS, type ModelRequestTimeouts } from "../core/config.ts";
 import { finalizerModelDefinition } from "../core/model-catalog.ts";
@@ -57,6 +58,32 @@ export function modelRequestTimeoutMs(input: {
   return Math.max(1, Math.min(stageLimit, input.remainingMs - timeouts.safetyReserveMs));
 }
 
+async function requestUpstream(url: string, headers: Record<string, string>, body: string, signal: AbortSignal): Promise<IncomingMessage> {
+  const target = new URL(url);
+  if (target.protocol !== "https:") throw new Error("LLM upstream must use HTTPS.");
+  return await new Promise<IncomingMessage>((resolve, reject) => {
+    const request = httpsRequest(target, { method: "POST", headers, signal, agent: false, timeout: 0 }, resolve);
+    request.once("error", reject);
+    request.end(body);
+  });
+}
+
+async function readUpstreamText(upstream: IncomingMessage, maximumBytes?: number): Promise<string> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of upstream) {
+    const bytes = Buffer.from(chunk as Uint8Array);
+    const remaining = maximumBytes === undefined ? bytes.length : Math.max(0, maximumBytes - size);
+    if (remaining) chunks.push(bytes.subarray(0, remaining));
+    size += Math.min(bytes.length, remaining);
+    if (maximumBytes !== undefined && size >= maximumBytes) {
+      upstream.resume();
+      break;
+    }
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 export async function proxyModelCompletion(input: {
   request: IncomingMessage;
   response: ServerResponse;
@@ -69,7 +96,6 @@ export async function proxyModelCompletion(input: {
   researchUpstreamUrl: string;
   finalizerUpstreamUrl: string;
   finalizerProvider: "ZEN" | "GO";
-  finalizerModel: string;
   protocol?: "OPENAI_CHAT" | "ANTHROPIC_MESSAGES";
   finalizerMessagesUpstreamUrl?: string;
   finalizerAgents: Set<string>;
@@ -88,52 +114,51 @@ export async function proxyModelCompletion(input: {
   const timeout = setTimeout(() => upstreamAbort.abort(new DOMException("Model request deadline reached.", "TimeoutError")), modelRequestTimeoutMs(input));
   input.request.once("aborted", () => upstreamAbort.abort(new DOMException("Runtime request disconnected.", "AbortError")));
   input.response.once("close", () => upstreamAbort.abort(new DOMException("Runtime response disconnected.", "AbortError")));
-  let upstream: Response;
+  let upstream: IncomingMessage;
   try {
     const finalizer = input.finalizerAgents.has(input.agent);
     const protocol = input.protocol ?? "OPENAI_CHAT";
-    const body = finalizer && protocol === "OPENAI_CHAT"
-      ? prepareFinalizerUpstreamBody({ ...encoded.body, model: input.model }, { agent: input.agent, provider: input.finalizerProvider, model: input.finalizerModel })
+    const body = finalizer
+      ? prepareFinalizerUpstreamBody({ ...encoded.body, model: input.model }, { agent: input.agent, provider: input.finalizerProvider, model: input.model, protocol })
       : { ...encoded.body, model: input.model };
     const upstreamUrl = finalizer && protocol === "ANTHROPIC_MESSAGES"
       ? input.finalizerMessagesUpstreamUrl ?? input.finalizerUpstreamUrl.replace(/\/v1\/chat\/completions$/, "/v1/messages")
       : finalizer ? input.finalizerUpstreamUrl : input.researchUpstreamUrl;
-    upstream = await fetch(upstreamUrl, {
-      method: "POST",
-      headers: modelUpstreamHeaders(protocol, input.upstreamKey, typeof input.request.headers["anthropic-version"] === "string" ? input.request.headers["anthropic-version"] : undefined),
-      body: JSON.stringify(body),
-      signal: upstreamAbort.signal,
-    });
+    upstream = await requestUpstream(
+      upstreamUrl,
+      modelUpstreamHeaders(protocol, input.upstreamKey, typeof input.request.headers["anthropic-version"] === "string" ? input.request.headers["anthropic-version"] : undefined),
+      JSON.stringify(body),
+      upstreamAbort.signal,
+    );
   } catch (error) {
     clearTimeout(timeout);
     throw error;
   }
-  if (!upstream.ok) {
-    const detail = (await upstream.text()).slice(0, 2_000);
-    clearTimeout(timeout);
-    throw new Error(`LLM upstream returned HTTP ${upstream.status}: ${detail}`);
+  const status = upstream.statusCode ?? 502;
+  if (status < 200 || status >= 300) {
+    let detail = "";
+    try { detail = await readUpstreamText(upstream, 2_000); }
+    finally { clearTimeout(timeout); }
+    throw new Error(`LLM upstream returned HTTP ${status}: ${detail}`);
   }
-  input.response.writeHead(upstream.status, {
-    "content-type": upstream.headers.get("content-type") ?? "application/json",
+  const rawContentType = upstream.headers["content-type"];
+  const contentType = Array.isArray(rawContentType) ? rawContentType[0] ?? "application/json" : rawContentType ?? "application/json";
+  input.response.writeHead(status, {
+    "content-type": contentType,
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
   });
-  if (!upstream.body) { clearTimeout(timeout); return void input.response.end(); }
-  const contentType = upstream.headers.get("content-type") ?? "application/json";
   if (!contentType.includes("text/event-stream")) {
     try {
-      const payload = await upstream.text();
+      const payload = await readUpstreamText(upstream);
       input.response.end(contentType.includes("json") ? decodeJsonToolNames(payload, encoded.wireToSemantic) : payload);
     } finally { clearTimeout(timeout); }
     return;
   }
-  const reader = upstream.body.getReader();
   const names = new SseToolNameDecoder(encoded.wireToSemantic);
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const decoded = names.push(value);
+    for await (const chunk of upstream) {
+      const decoded = names.push(Buffer.from(chunk as Uint8Array));
       if (decoded && !input.response.write(decoded)) await new Promise<void>((resolve) => input.response.once("drain", resolve));
     }
     const final = names.flush();
@@ -141,6 +166,5 @@ export async function proxyModelCompletion(input: {
   } finally {
     clearTimeout(timeout);
     input.response.end();
-    reader.releaseLock();
   }
 }

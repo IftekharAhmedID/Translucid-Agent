@@ -132,6 +132,26 @@ function unwrap<T>(result: { data?: T; error?: unknown }, action: string): T {
   return result.data;
 }
 
+class FinalizerTransportError extends Error {
+  readonly cause: unknown;
+  constructor(message: string, cause: unknown) {
+    super(message);
+    this.name = "FinalizerTransportError";
+    this.cause = cause;
+  }
+}
+
+class FinalizerOutputError extends Error {
+  constructor(message: string, readonly responseText: string) {
+    super(message);
+    this.name = "FinalizerOutputError";
+  }
+}
+
+function boundedDiagnostic(value: string, maximumCharacters = 100_000): string {
+  return value.length <= maximumCharacters ? value : `${value.slice(0, maximumCharacters)}\n[truncated]`;
+}
+
 function providerFor(model: string): string {
   try { return finalizerModelDefinition(model).providerId; }
   catch { return "translucid"; }
@@ -269,7 +289,8 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
   }
   await mkdir(join(v5Root, "claims"), { recursive: true, mode: 0o700 });
   await mkdir(join(v5Root, "bundles"), { recursive: true, mode: 0o700 });
-  await mkdir(join(v5Root, "attempts"), { recursive: true, mode: 0o700 });
+  const attemptsRoot = join(root, ".work", "finalization", "attempts", "v5.1");
+  await mkdir(attemptsRoot, { recursive: true, mode: 0o700 });
   const storedCatalog = await readJsonIfPresent(join(v5Root, "line-catalog.json"), (value) => lineCatalogSchema.parse(value));
   if (storedCatalog && storedCatalog.fingerprint !== builtCatalog.fingerprint) throw new Error("Finalization line catalog changed since the V5 checkpoint was created.");
   const catalog = storedCatalog ?? builtCatalog;
@@ -306,10 +327,31 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
   const promptSession = async (agent: "evidence-compiler" | "evidence-auditor", title: string, payload: Record<string, unknown>): Promise<{ response: AssistantMessage; sessionId: string }> => {
     const model = agent === "evidence-auditor" ? input.auditorModel : input.compilerModel;
     const providerID = providerFor(model);
-    const session = unwrap(await client.session.create({ directory, parentID: parent.id, title, agent, model: { id: model, providerID, variant: "medium" } }, { signal: input.signal }), `${agent} session creation`);
-    input.registerExcerptAllowance(session.id, 0);
-    const response = unwrap(await client.session.prompt({ sessionID: session.id, directory, agent, model: { providerID, modelID: model }, variant: "medium", ...payload }, { signal: input.signal }), `${agent} prompt`);
-    return { response: response as unknown as AssistantMessage, sessionId: session.id };
+    try {
+      const session = unwrap(await client.session.create({ directory, parentID: parent.id, title, agent, model: { id: model, providerID, variant: "medium" } }, { signal: input.signal }), `${agent} session creation`);
+      input.registerExcerptAllowance(session.id, 0);
+      const response = unwrap(await client.session.prompt({ sessionID: session.id, directory, agent, model: { providerID, modelID: model }, variant: "medium", ...payload }, { signal: input.signal }), `${agent} prompt`);
+      return { response: response as unknown as AssistantMessage, sessionId: session.id };
+    } catch (error) {
+      throw new FinalizerTransportError(`${agent} request failed: ${error instanceof Error ? error.message : String(error)}`, error);
+    }
+  };
+  const beginAttempt = async (agent: "evidence-compiler" | "evidence-auditor", title: string, attempt: number, payload: unknown) => {
+    const attemptPath = join(attemptsRoot, `${Date.now()}-${randomUUID()}.json`);
+    const base = {
+      status: "STARTED" as const,
+      startedAt: new Date().toISOString(),
+      agent,
+      model: agent === "evidence-auditor" ? input.auditorModel : input.compilerModel,
+      title,
+      attempt,
+      payloadHash: digest(payload),
+    };
+    await atomicJson(attemptPath, base);
+    return { attemptPath, base };
+  };
+  const finishAttempt = async (attempt: Awaited<ReturnType<typeof beginAttempt>>, status: "VALID" | "INVALID" | "TRANSPORT_ERROR", detail: Record<string, unknown> = {}) => {
+    await atomicJson(attempt.attemptPath, { ...attempt.base, status, finishedAt: new Date().toISOString(), ...detail });
   };
   const extractWithCompletion = async <T>(
     agent: "evidence-compiler" | "evidence-auditor",
@@ -322,22 +364,30 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
       if (structuredOutputRecovery(error) !== "SAME_SESSION_COMPLETION") throw error;
       const model = agent === "evidence-auditor" ? input.auditorModel : input.compilerModel;
       const providerID = providerFor(model);
-      const continuation = unwrap(await client.session.prompt({
-        sessionID: sessionId,
-        directory,
-        agent,
-        model: { providerID, modelID: model },
-        variant: "medium",
-        tools: { "source.excerpts": false, skill: false },
-        ...finalizerPromptPayload(
-          input.finalizerProvider,
-          model,
-          "Your preceding turn completed the analysis but omitted the final answer. Do not repeat the analysis, revisit sources, or add prose. Using only the analysis already completed in this session, return the complete compact result now.",
-          schema,
-        ),
-      }, { signal: input.signal }), `${agent} same-session completion`);
+      let continuation;
+      try {
+        continuation = unwrap(await client.session.prompt({
+          sessionID: sessionId,
+          directory,
+          agent,
+          model: { providerID, modelID: model },
+          variant: "medium",
+          tools: { "source.excerpts": false, skill: false },
+          ...finalizerPromptPayload(
+            input.finalizerProvider,
+            model,
+            "Your preceding turn completed the analysis but omitted the final answer. Do not repeat the analysis, revisit sources, or add prose. Using only the analysis already completed in this session, return the complete compact result now.",
+            schema,
+          ),
+        }, { signal: input.signal }), `${agent} same-session completion`);
+      } catch (continuationError) {
+        throw new FinalizerTransportError(`${agent} same-session completion failed: ${continuationError instanceof Error ? continuationError.message : String(continuationError)}`, continuationError);
+      }
       const completedResponse = continuation as unknown as AssistantMessage;
-      return { value: extractMarkedJson(completedResponse), response: completedResponse, completionContinuation: true };
+      try { return { value: extractMarkedJson(completedResponse), response: completedResponse, completionContinuation: true }; }
+      catch (continuationParseError) {
+        throw new FinalizerOutputError(continuationParseError instanceof Error ? continuationParseError.message : String(continuationParseError), assistantText(completedResponse));
+      }
     }
   };
   let compilerAttempts: 1 | 2 = 1;
@@ -348,24 +398,32 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
     let validatorError = "";
     for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
       const requestPayload = attempt === 0 ? payload : { frozenInput: payload, repair: finalizerRepairPayload(originalResponse, validatorError) };
-      const prompted = await promptSession(agent, `${title}${attempt ? " repair" : ""}`, { tools: { "source.excerpts": false, skill: false }, ...finalizerPromptPayload(input.finalizerProvider, model, promptWithPayload(contract, requestPayload), schema) });
-      const attemptPath = join(v5Root, "attempts", `${Date.now()}-${randomUUID()}.json`);
+      const diagnostic = await beginAttempt(agent, title, attempt + 1, requestPayload);
+      let prompted;
+      try {
+        prompted = await promptSession(agent, `${title}${attempt ? " repair" : ""}`, { tools: { "source.excerpts": false, skill: false }, ...finalizerPromptPayload(input.finalizerProvider, model, promptWithPayload(contract, requestPayload), schema) });
+      } catch (error) {
+        await finishAttempt(diagnostic, "TRANSPORT_ERROR", { transportError: boundedDiagnostic(error instanceof Error ? error.message : String(error), 8_000) });
+        throw error;
+      }
       let completionContinuation = false;
       try {
         const completed = await extractWithCompletion(agent, prompted.sessionId, prompted.response, schema);
         completionContinuation = completed.completionContinuation;
         originalResponse = assistantText(completed.response);
-        await atomicJson(attemptPath, { agent, title, attempt: attempt + 1, completionContinuation, originalResponse });
         const value = validate(completed.value);
+        await finishAttempt(diagnostic, "VALID", { completionContinuation, originalResponse: boundedDiagnostic(originalResponse) });
         if (attempt) {
           if (agent === "evidence-auditor") auditorAttempts = 2;
           else compilerAttempts = 2;
         }
         return value;
       } catch (error) {
-        if (!originalResponse) originalResponse = assistantText(prompted.response);
+        if (!originalResponse) originalResponse = error instanceof FinalizerOutputError ? error.responseText : assistantText(prompted.response);
         validatorError = error instanceof Error ? error.message : String(error);
-        await atomicJson(attemptPath, { agent, title, attempt: attempt + 1, completionContinuation, originalResponse, validatorError });
+        const status = error instanceof FinalizerTransportError ? "TRANSPORT_ERROR" : "INVALID";
+        await finishAttempt(diagnostic, status, { completionContinuation, originalResponse: boundedDiagnostic(originalResponse), ...(status === "TRANSPORT_ERROR" ? { transportError: boundedDiagnostic(validatorError, 8_000) } : { validatorError: boundedDiagnostic(validatorError, 8_000) }) });
+        if (status === "TRANSPORT_ERROR") throw error;
         if (attempt === maximumAttempts - 1) throw error;
       }
     }
@@ -395,24 +453,34 @@ export async function runIncrementalFinalization(input: V5Input): Promise<Invest
       const requestPayload = attempt
         ? { ...claimWindow, repair: finalizerRepairPayload(originalResponse, validatorError) }
         : claimWindow;
-      const prompted = await promptSession("evidence-compiler", `Claim batch ${claims.length + 1}${attempt ? " repair" : ""}`, {
-        tools: { "source.excerpts": false, skill: false },
-        ...finalizerPromptPayload(input.finalizerProvider, input.compilerModel, promptWithPayload(CLAIM_BATCH_PROMPT_CONTRACT, requestPayload), claimBatchSchema),
-      });
-      const attemptPath = join(v5Root, "attempts", `${Date.now()}-${randomUUID()}.json`);
+      const title = `Claim batch ${claims.length + 1}`;
+      const diagnostic = await beginAttempt("evidence-compiler", title, attempt + 1, requestPayload);
+      let prompted;
+      try {
+        prompted = await promptSession("evidence-compiler", `${title}${attempt ? " repair" : ""}`, {
+          tools: { "source.excerpts": false, skill: false },
+          ...finalizerPromptPayload(input.finalizerProvider, input.compilerModel, promptWithPayload(CLAIM_BATCH_PROMPT_CONTRACT, requestPayload), claimBatchSchema),
+        });
+      } catch (error) {
+        await finishAttempt(diagnostic, "TRANSPORT_ERROR", { transportError: boundedDiagnostic(error instanceof Error ? error.message : String(error), 8_000) });
+        throw error;
+      }
       let completionContinuation = false;
       let validated;
       try {
         const completed = await extractWithCompletion("evidence-compiler", prompted.sessionId, prompted.response, claimBatchSchema);
         completionContinuation = completed.completionContinuation;
         originalResponse = assistantText(completed.response);
-        await atomicJson(attemptPath, { agent: "evidence-compiler", title: `Claim batch ${claims.length + 1}`, attempt: attempt + 1, completionContinuation, originalResponse });
         validated = validateClaimBatchRecords(completed.value, catalog, assignedLineIds, "C", claims.length);
+        const status = validated.defects.length || validated.unresolvedLineIds.length ? "INVALID" : "VALID";
+        await finishAttempt(diagnostic, status, { completionContinuation, originalResponse: boundedDiagnostic(originalResponse), defects: validated.defects, unresolvedLineIds: validated.unresolvedLineIds });
       }
       catch (error) {
-        if (!originalResponse) originalResponse = assistantText(prompted.response);
+        if (!originalResponse) originalResponse = error instanceof FinalizerOutputError ? error.responseText : assistantText(prompted.response);
         validatorError = error instanceof Error ? error.message : String(error);
-        await atomicJson(attemptPath, { agent: "evidence-compiler", title: `Claim batch ${claims.length + 1}`, attempt: attempt + 1, completionContinuation, originalResponse, validatorError });
+        const status = error instanceof FinalizerTransportError ? "TRANSPORT_ERROR" : "INVALID";
+        await finishAttempt(diagnostic, status, { completionContinuation, originalResponse: boundedDiagnostic(originalResponse), ...(status === "TRANSPORT_ERROR" ? { transportError: boundedDiagnostic(validatorError, 8_000) } : { validatorError: boundedDiagnostic(validatorError, 8_000) }) });
+        if (status === "TRANSPORT_ERROR") throw error;
         if (attempt === 1) throw error;
         continue;
       }

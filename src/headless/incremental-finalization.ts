@@ -250,92 +250,92 @@ function sectionHeading(text: string): boolean {
     || (value.length >= 2 && value === value.toLocaleUpperCase("en-US") && !/\d/u.test(value) && !likelyFactualAssertion(value));
 }
 
-function facetsCanShareText(left: FacetKind, right: FacetKind): boolean {
-  if (left === "OTHER" || right === "OTHER" || left === right) return false;
-  const actionKinds = new Set<FacetKind>(["ACTIVITY", "RESPONSIBILITY", "CONTRIBUTION"]);
-  return !actionKinds.has(left) || !actionKinds.has(right);
+type ClaimFacet = ClaimBatch["claims"][number]["facets"][number];
+type CatalogCoordinate = { index: number; start: number; end: number; line: LineCatalog["lines"][number] };
+type FacetOccurrence = { start: number; end: number; lineIds: string[] };
+type FacetChoice = { facet: ClaimFacet; order: number; occurrences: FacetOccurrence[] };
+
+function catalogCoordinates(catalog: LineCatalog): { text: string; byId: Map<string, CatalogCoordinate> } {
+  let cursor = 0;
+  const byId = new Map<string, CatalogCoordinate>();
+  for (const [index, line] of catalog.lines.entries()) {
+    const start = cursor;
+    const end = start + line.text.length;
+    byId.set(line.id, { index, start, end, line });
+    cursor = end + 1;
+  }
+  return { text: catalog.lines.map(({ text }) => text).join("\n"), byId };
 }
 
-function fragmentsHaveDistinctOccurrences(facets: ClaimBatch["claims"][number]["facets"], catalog: LineCatalog): boolean {
-  const choices = facets.map((facet, facetIndex) => ({
-    facet,
-    facetIndex,
-    occurrences: facet.lineIds.flatMap((lineId) => {
-      const text = catalog.lines.find(({ id }) => id === lineId)?.text ?? "";
-      const starts: number[] = [];
-      for (let start = text.indexOf(facet.sourceFragment); start >= 0; start = text.indexOf(facet.sourceFragment, start + 1)) starts.push(start);
-      return starts.map((start) => ({ lineId, start, end: start + facet.sourceFragment.length }));
-    }),
-  })).sort((left, right) => left.occurrences.length - right.occurrences.length || right.facet.sourceFragment.length - left.facet.sourceFragment.length || left.facetIndex - right.facetIndex);
-  const assigned: Array<{ facet: ClaimBatch["claims"][number]["facets"][number]; lineId: string; start: number; end: number }> = [];
+function exactFacetOccurrences(facet: ClaimFacet, catalog: LineCatalog, coordinates: ReturnType<typeof catalogCoordinates>): FacetOccurrence[] {
+  if (new Set(facet.lineIds).size !== facet.lineIds.length) throw new Error(`Facet ${facet.key} cannot repeat a frozen line ID.`);
+  const lineIds = orderedIds(catalog, facet.lineIds);
+  if (lineIds.length !== facet.lineIds.length) throw new Error(`Facet ${facet.key} references an unknown frozen line.`);
+  const selected = lineIds.map((lineId) => coordinates.byId.get(lineId)!);
+  if (selected.some(({ line }) => line.layout !== "SEMANTIC")) throw new Error(`Facet ${facet.key} may only cover semantic frozen lines.`);
+  if (selected.some(({ index }, position) => position > 0 && index !== selected[position - 1]!.index + 1)) throw new Error(`Facet ${facet.key} must cover adjacent frozen lines.`);
+  if (new Set(selected.map(({ line }) => line.origin)).size !== 1) throw new Error(`Facet ${facet.key} must remain within one frozen input origin.`);
+  if (selected[0]!.line.origin === "PDF" && new Set(selected.map(({ line }) => line.page)).size !== 1) throw new Error(`Facet ${facet.key} must remain on the same frozen page.`);
+  const spanStart = selected[0]!.start;
+  const spanEnd = selected.at(-1)!.end;
+  const span = coordinates.text.slice(spanStart, spanEnd);
+  const occurrences: FacetOccurrence[] = [];
+  for (let relativeStart = span.indexOf(facet.sourceFragment); relativeStart >= 0; relativeStart = span.indexOf(facet.sourceFragment, relativeStart + 1)) {
+    const start = spanStart + relativeStart;
+    const end = start + facet.sourceFragment.length;
+    const intersected = selected.filter((line) => start < line.end && line.start < end).map(({ line }) => line.id);
+    if (intersected.length === lineIds.length && intersected.every((lineId, index) => lineId === lineIds[index])) occurrences.push({ start, end, lineIds });
+  }
+  if (!occurrences.length) throw new Error(`Facet ${facet.key} must retain one exact submission fragment across every declared line.`);
+  return occurrences;
+}
+
+function assignFacetOccurrences(choices: readonly FacetChoice[]): Map<ClaimFacet, FacetOccurrence> | undefined {
+  const sorted = [...choices].sort((left, right) => left.occurrences.length - right.occurrences.length || right.facet.sourceFragment.length - left.facet.sourceFragment.length || left.order - right.order);
+  const assigned: Array<{ facet: ClaimFacet; occurrence: FacetOccurrence }> = [];
   const visit = (index: number): boolean => {
-    const choice = choices[index];
+    const choice = sorted[index];
     if (!choice) return true;
     for (const occurrence of choice.occurrences) {
-      const conflicts = assigned.some((other) => other.lineId === occurrence.lineId
-        && !facetsCanShareText(choice.facet.kind, other.facet.kind)
-        && occurrence.start < other.end
-        && other.start < occurrence.end);
+      const conflicts = assigned.some((other) => occurrence.start < other.occurrence.end
+        && other.occurrence.start < occurrence.end);
       if (conflicts) continue;
-      assigned.push({ facet: choice.facet, ...occurrence });
+      assigned.push({ facet: choice.facet, occurrence });
       if (visit(index + 1)) return true;
       assigned.pop();
     }
     return false;
   };
-  return visit(0);
+  return visit(0) ? new Map(assigned.map(({ facet, occurrence }) => [facet, occurrence])) : undefined;
 }
 
-function coverageSegments(text: string): string[] {
-  return text.split(/[,，;；|•●]|\s(?:→|⇒|\/)\s/gu)
-    .flatMap((value) => {
-      const trimmed = value.trim();
-      const match = /^(.*\S)\s+((?:19|20)\d{2}\s*[–—-]\s*(?:(?:19|20)\d{2}|present|current))$/iu.exec(trimmed);
-      return match ? [match[1]!, match[2]!] : [trimmed];
-    })
-    .filter((value) => normalizedAnchor(value).length >= 2);
-}
-
-function benignCommaSubfragment(facet: ClaimBatch["claims"][number]["facets"][number], segment: string): boolean {
-  if (!facet.sourceFragment.includes(segment)) return false;
-  if (new Set(["ORGANIZATION", "ORG_UNIT", "LOCATION", "OUTPUT"]).has(facet.kind)) return true;
-  // Commas inside dates and grouped numbers are punctuation, not separate predicates.
-  return /\b(?:updated|created|published|as of|on)\b[^\n,]{1,40},\s*\d{4}\b/iu.test(facet.sourceFragment)
-    || /\d,\d{3}(?:\D|$)/u.test(facet.sourceFragment);
-}
-
-function validateAtomicFacets(claimKey: string, facets: ClaimBatch["claims"][number]["facets"], catalog: LineCatalog): void {
-  const normalizedFragments = facets.map(({ sourceFragment }) => normalizedAnchor(sourceFragment));
-  unique(normalizedFragments, `source fragment on ${claimKey}`);
-  for (const facet of facets) {
-    const span = lineSpan(catalog, orderedIds(catalog, facet.lineIds));
-    if (!span.text.includes(facet.sourceFragment)) throw new Error(`Facet ${facet.key} on claim ${claimKey} must retain an exact submission fragment.`);
+function validateAtomicFacets(claimKey: string, facets: ClaimBatch["claims"][number]["facets"], catalog: LineCatalog, coordinates: ReturnType<typeof catalogCoordinates>): FacetChoice[] {
+  const choices = facets.map((facet, order) => {
     if (facet.kind !== "INTERVAL" && (facet.from !== undefined || facet.to !== undefined)) throw new Error(`Only INTERVAL facet ${facet.key} may declare normalized dates.`);
-    if (/[;；|\n]|\s(?:→|⇒|\/)\s/u.test(facet.sourceFragment) || /\b(?:and then|as well as)\b/iu.test(facet.label)) throw new Error(`Facet ${facet.key} on claim ${claimKey} must contain one atomic predicate.`);
+    if (/[;；|]|\s(?:→|⇒|\/)\s/u.test(facet.sourceFragment) || /\b(?:and then|as well as)\b/iu.test(facet.label)) throw new Error(`Facet ${facet.key} on claim ${claimKey} must contain one atomic predicate.`);
+    return { facet, order, occurrences: exactFacetOccurrences(facet, catalog, coordinates) };
+  });
+  if (!assignFacetOccurrences(choices)) throw new Error(`Overlapping source fragments on ${claimKey} reuse one submission occurrence for multiple material facts.`);
+  return choices;
+}
+
+function uncoveredLineText(coordinate: CatalogCoordinate, occurrences: readonly FacetOccurrence[]): string {
+  const covered = new Uint8Array(coordinate.line.text.length);
+  for (const occurrence of occurrences) {
+    const start = Math.max(coordinate.start, occurrence.start) - coordinate.start;
+    const end = Math.min(coordinate.end, occurrence.end) - coordinate.start;
+    for (let index = Math.max(0, start); index < Math.max(0, end); index += 1) covered[index] = 1;
   }
-  if (!fragmentsHaveDistinctOccurrences(facets, catalog)) throw new Error(`Overlapping source fragments on ${claimKey} reuse one submission occurrence for multiple material facts.`);
-  const ownedLineIds = orderedIds(catalog, facets.flatMap(({ lineIds }) => lineIds));
-  for (const lineId of ownedLineIds) {
-    const line = catalog.lines.find(({ id }) => id === lineId)!;
-    const lineFacets = facets.filter(({ lineIds }) => lineIds.includes(lineId));
-    const segments = coverageSegments(line.text);
-    for (const segment of segments) {
-      const covering = lineFacets.filter(({ kind, sourceFragment }) => segment.includes(sourceFragment)
-        || (new Set(["ORGANIZATION", "ORG_UNIT", "LOCATION", "OUTPUT"]).has(kind)
-          && (sourceFragment.match(/[,，]/gu)?.length ?? 0) <= 1
-          && sourceFragment.includes(segment))
-        || benignCommaSubfragment({ kind, sourceFragment } as ClaimBatch["claims"][number]["facets"][number], segment));
-      if (covering.length === 0) throw new Error(`Material submission fragment on ${claimKey} has no atomic facet: ${segment}`);
-      const nonIntervalText = segment
-        .replace(/(?:19|20)\d{2}\s*[–—-]\s*(?:(?:19|20)\d{2}|present|current)/iu, "")
-        .trim();
-      if (/(?:19|20)\d{2}/u.test(segment) && /\p{L}{3}/u.test(nonIntervalText)) {
-        const intervalCovered = covering.some(({ kind }) => kind === "INTERVAL");
-        const predicateCovered = covering.some(({ kind }) => kind !== "INTERVAL");
-        if (!intervalCovered || !predicateCovered) throw new Error(`Time-bearing submission fragment on ${claimKey} must separate its interval from its predicate: ${segment}`);
-      }
-    }
+  let result = "";
+  for (let index = 0; index < coordinate.line.text.length;) {
+    const codePoint = coordinate.line.text.codePointAt(index)!;
+    const character = String.fromCodePoint(codePoint);
+    const characterEnd = index + character.length;
+    const fullyCovered = covered.subarray(index, characterEnd).every((value) => value === 1);
+    result += fullyCovered || !/[\p{L}\p{N}]/u.test(character) ? " " : character;
+    index = characterEnd;
   }
+  return result.replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 
 export function validateClaimBatchRecords(value: unknown, catalog: LineCatalog, assignedLineIds: readonly string[], claimKeyPrefix = "C", claimKeyStart = 0): ValidatedClaimRecords {
@@ -345,17 +345,18 @@ export function validateClaimBatchRecords(value: unknown, catalog: LineCatalog, 
   if (!value || typeof value !== "object") throw new Error("Claim batch must be an object.");
   const raw = value as { claims?: unknown; exclusions?: unknown; deferredLineIds?: unknown };
   const defects: string[] = [];
+  const coordinates = catalogCoordinates(catalog);
   const parsedClaims = (Array.isArray(raw.claims) ? raw.claims : []).flatMap((candidate, index) => {
     const result = claimCandidateSchema.safeParse(candidate);
     if (result.success) {
       try {
         unique(result.data.facets.map(({ key }) => key), `facet key on ${result.data.localKey}`);
         assertSelfContainedFacetLabels(result.data.localKey, result.data.facets);
-        validateAtomicFacets(result.data.localKey, result.data.facets, catalog);
+        const choices = validateAtomicFacets(result.data.localKey, result.data.facets, catalog, coordinates);
         const coverage = auditClaimFacetCoverage(result.data.statement, result.data.facets);
         if (!coverage.complete) throw new Error(`Material claim clause has no facet: ${coverage.uncovered.map(({ clause }) => clause).join(" | ")}`);
         assertSafeInvestigationLanguage(result.data);
-        return [{ index, value: result.data }];
+        return [{ index, value: result.data, choices }];
       } catch (error) {
         defects.push(`${result.data.localKey}: ${error instanceof Error ? error.message : String(error)}`);
         return [];
@@ -402,25 +403,67 @@ export function validateClaimBatchRecords(value: unknown, catalog: LineCatalog, 
   const assignedSet = new Set(assigned);
   const invalidOwners = new Set<string>();
   for (const [lineId, lineOwners] of owners) {
-    if (!assignedSet.has(lineId) || lineOwners.length > 1) for (const owner of lineOwners) invalidOwners.add(owner);
+    const claimOwners = lineOwners.filter((owner) => owner.startsWith("claim:"));
+    const otherOwners = lineOwners.filter((owner) => !owner.startsWith("claim:"));
+    const multipleDispositions = otherOwners.length > 1 || (claimOwners.length > 0 && otherOwners.length > 0);
+    if (!assignedSet.has(lineId) || multipleDispositions) for (const owner of lineOwners) invalidOwners.add(owner);
     if (!assignedSet.has(lineId)) defects.push(`Line ${lineId} is outside the assigned claim window.`);
-    else if (lineOwners.length > 1) defects.push(`Line ${lineId} has more than one disposition.`);
+    else if (multipleDispositions) defects.push(`Line ${lineId} has more than one disposition.`);
+  }
+  const assignedOccurrences = new Map<ClaimFacet, FacetOccurrence>();
+  const remainingClaims = parsedClaims.filter(({ index }) => !invalidOwners.has(`claim:${index}`));
+  const pending = new Set(remainingClaims.map(({ index }) => index));
+  while (pending.size) {
+    const first = pending.values().next().value as number;
+    const componentIndexes = new Set([first]);
+    pending.delete(first);
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      const componentLines = new Set(remainingClaims.filter(({ index }) => componentIndexes.has(index)).flatMap(({ value: claim }) => claim.facets.flatMap(({ lineIds }) => lineIds)));
+      for (const candidateIndex of [...pending]) {
+        const candidate = remainingClaims.find(({ index }) => index === candidateIndex)!;
+        if (!candidate.value.facets.some(({ lineIds }) => lineIds.some((lineId) => componentLines.has(lineId)))) continue;
+        componentIndexes.add(candidateIndex);
+        pending.delete(candidateIndex);
+        expanded = true;
+      }
+    }
+    const component = remainingClaims.filter(({ index }) => componentIndexes.has(index));
+    const occurrenceMap = assignFacetOccurrences(component.flatMap(({ choices }) => choices));
+    const componentOwners = component.map(({ index }) => `claim:${index}`);
+    if (!occurrenceMap) {
+      componentOwners.forEach((owner) => invalidOwners.add(owner));
+      defects.push(`Claims ${component.map(({ value: claim }) => claim.localKey).join(", ")} have conflicting exact source ranges.`);
+      continue;
+    }
+    const componentLineIds = orderedIds(catalog, component.flatMap(({ value: claim }) => claim.facets.flatMap(({ lineIds }) => lineIds)));
+    const componentOccurrences = [...occurrenceMap.values()];
+    const uncovered = componentLineIds.flatMap((lineId) => {
+      const coordinate = coordinates.byId.get(lineId)!;
+      const text = uncoveredLineText(coordinate, componentOccurrences);
+      return text ? [{ lineId, text }] : [];
+    });
+    if (uncovered.length) {
+      componentOwners.forEach((owner) => invalidOwners.add(owner));
+      defects.push(`Claims ${component.map(({ value: claim }) => claim.localKey).join(", ")} leave uncovered material text: ${uncovered.map(({ lineId, text }) => `${lineId}=${text}`).join(" | ")}`);
+      continue;
+    }
+    for (const [facet, occurrence] of occurrenceMap) assignedOccurrences.set(facet, occurrence);
   }
   const assignedPosition = new Map(assigned.map((lineId, index) => [lineId, index]));
   const earliestPosition = (lineIds: readonly string[]) => Math.min(...lineIds.map((lineId) => assignedPosition.get(lineId) ?? Number.MAX_SAFE_INTEGER));
   const acceptedClaims = parsedClaims
     .filter(({ index }) => !invalidOwners.has(`claim:${index}`))
-    .sort((left, right) => earliestPosition(left.value.facets.flatMap(({ lineIds }) => lineIds)) - earliestPosition(right.value.facets.flatMap(({ lineIds }) => lineIds)) || lexicalCompare(left.value.localKey, right.value.localKey));
+    .sort((left, right) => Math.min(...left.value.facets.map((facet) => assignedOccurrences.get(facet)?.start ?? Number.MAX_SAFE_INTEGER)) - Math.min(...right.value.facets.map((facet) => assignedOccurrences.get(facet)?.start ?? Number.MAX_SAFE_INTEGER)) || lexicalCompare(left.value.localKey, right.value.localKey));
   const claims = acceptedClaims.map(({ value: claim }, index) => {
     const orderedFacets = claim.facets
       .map((facet) => ({ ...facet, lineIds: orderedIds(catalog, facet.lineIds) }))
       .sort((left, right) => {
-        const lineOrder = earliestPosition(left.lineIds) - earliestPosition(right.lineIds);
-        if (lineOrder) return lineOrder;
-        const leftLine = catalog.lines.find(({ id }) => left.lineIds.includes(id));
-        const rightLine = catalog.lines.find(({ id }) => right.lineIds.includes(id));
-        const fragmentOrder = (leftLine?.text.indexOf(left.sourceFragment) ?? Number.MAX_SAFE_INTEGER) - (rightLine?.text.indexOf(right.sourceFragment) ?? Number.MAX_SAFE_INTEGER);
-        return fragmentOrder || lexicalCompare(left.kind, right.kind) || lexicalCompare(left.sourceFragment, right.sourceFragment);
+        const originalLeft = claim.facets.find((facet) => facet.key === left.key)!;
+        const originalRight = claim.facets.find((facet) => facet.key === right.key)!;
+        const positionOrder = (assignedOccurrences.get(originalLeft)?.start ?? Number.MAX_SAFE_INTEGER) - (assignedOccurrences.get(originalRight)?.start ?? Number.MAX_SAFE_INTEGER);
+        return positionOrder || lexicalCompare(left.kind, right.kind) || lexicalCompare(left.sourceFragment, right.sourceFragment);
       });
     const kindCounts = new Map<string, number>();
     const facets = orderedFacets.map((facet) => {

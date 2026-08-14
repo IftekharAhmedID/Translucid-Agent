@@ -83,13 +83,13 @@ E2B also requires `E2B_API_KEY`, `E2B_TEMPLATE_ID`, and an HTTPS `E2B_GATEWAY_PU
 
 PDL has no environment contract in this development build. Its capability remains visibly `DISABLED_POLICY`, and the application never depends on it.
 
-While an active local live-provider run is attached, the focused finalizer compatibility gate can be executed without printing its short-lived credentials:
+The focused finalizer compatibility gate starts and removes its own isolated local Docker/OpenCode runtime; it does not need or reuse an investigation run:
 
 ```bash
-npm run smoke:finalizer -- <active-run-id>
+npm run smoke:finalizer -- --models all
 ```
 
-It runs the exact 20-call V5 qualification set: five claim batches, ten evidence judgments, three summaries, and two audits. Qualification requires 20/20 valid after at most one repair, at least 19 first-pass responses, no transport failures, and no gold-fixture semantic defects.
+It runs the exact 20-case V5.1 qualification set: six atomic claim batches, ten bundle-evidence judgments, and four independent audits. Qualification requires 20/20 valid after at most one repair, at least 19 first-pass responses, no transport failures, and no gold-fixture semantic defects.
 
 ## Verification
 

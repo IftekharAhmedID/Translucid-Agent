@@ -35,10 +35,13 @@ test("V5 resumes an audit only when its dependency fingerprint matches", async (
   assert.match(source, /manifest\.stages\.audit\?\.fingerprint === auditFingerprint[\s\S]*readJsonIfPresent\(join\(v5Root, "audit\.json"\)/u);
 });
 
-test("V5 persists bounded model attempts outside canonical stage records", async () => {
+test("V5.1 persists bounded pre-request diagnostics outside disposable and published stage records", async () => {
   const source = await readFile(join(process.cwd(), "src", "headless", "incremental-pipeline.ts"), "utf8");
-  assert.match(source, /mkdir\(join\(v5Root, "attempts"\)/u);
+  assert.match(source, /\.work", "finalization", "attempts", "v5\.1"/u);
+  assert.match(source, /status: "STARTED"/u);
+  assert.match(source, /"TRANSPORT_ERROR"/u);
   assert.match(source, /atomicJson\(attemptPath/u);
+  assert.doesNotMatch(source, /join\(v5Root, "attempts"\)/u);
 });
 
 test("V5 retrieval and canonicalization consume the frozen authority snapshot only", async () => {

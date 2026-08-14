@@ -23,17 +23,20 @@ export function finalizerOutputTransport(...args: ["ZEN" | "GO", string]): Final
 
 export function prepareFinalizerUpstreamBody(
   body: Record<string, unknown>,
-  input: { agent?: string; provider: "ZEN" | "GO"; model: string },
+  input: { agent?: string; provider: "ZEN" | "GO"; model: string; protocol?: "OPENAI_CHAT" | "ANTHROPIC_MESSAGES" },
 ): Record<string, unknown> {
   if (!input.agent || !finalizerAgents.has(input.agent)) return body;
-  if (JSON.stringify(body.messages ?? "").includes(FINALIZER_TEXT_MODE_MARKER)) return body;
-  if (finalizerOutputTransport(input.provider, input.model) !== "JSON_OBJECT") return body;
-  // MiMo's Go endpoint accepts the JSON-only instruction but rejects the
-  // optional OpenAI response_format object. Host-side parsing remains strict.
-  if (normalizedModel(input.model).startsWith("mimo-")) return body;
   const requestedTokens = Number(body.max_tokens ?? body.max_completion_tokens);
   const maxTokens = Number.isFinite(requestedTokens) && requestedTokens > 0
-    ? Math.max(requestedTokens, 16_384)
+    ? Math.min(requestedTokens, 16_384)
     : 16_384;
-  return { ...body, max_tokens: maxTokens, response_format: { type: "json_object" } };
+  const prepared: Record<string, unknown> = { ...body, max_tokens: maxTokens };
+  delete prepared.max_completion_tokens;
+  if (JSON.stringify(body.messages ?? "").includes(FINALIZER_TEXT_MODE_MARKER)) return prepared;
+  if (finalizerOutputTransport(input.provider, input.model) !== "JSON_OBJECT") return prepared;
+  if (input.protocol === "ANTHROPIC_MESSAGES") return prepared;
+  // MiMo's Go endpoint accepts the JSON-only instruction but rejects the
+  // optional OpenAI response_format object. Host-side parsing remains strict.
+  if (normalizedModel(input.model).startsWith("mimo-")) return prepared;
+  return { ...prepared, response_format: { type: "json_object" } };
 }

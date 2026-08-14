@@ -186,10 +186,14 @@ test("finalizer implementation hashing covers production host code and prompts b
   try {
     await mkdir(join(root, "src", "headless"), { recursive: true });
     await mkdir(join(root, "src", "core"), { recursive: true });
+    await mkdir(join(root, "src", "gateway"), { recursive: true });
     await mkdir(join(root, "runtime", "headless-opencode", "agents"), { recursive: true });
     await writeFile(join(root, "src", "headless", "pipeline.ts"), "export const version = 1;\n");
     await writeFile(join(root, "src", "headless", "pipeline.test.ts"), "test('ignored');\n");
     await writeFile(join(root, "src", "core", "evidence.ts"), "export const evidence = true;\n");
+    await writeFile(join(root, "src", "gateway", "model-proxy.ts"), "export const proxy = true;\n");
+    await writeFile(join(root, "src", "gateway", "model-tool-names.ts"), "export const tools = true;\n");
+    await writeFile(join(root, "src", "gateway", "fixture-model.ts"), "export const fixture = true;\n");
     await writeFile(join(root, "runtime", "headless-opencode", "agents", "evidence-compiler.md"), "compiler\n");
     await writeFile(join(root, "runtime", "headless-opencode", "agents", "evidence-auditor.md"), "auditor\n");
     const first = await finalizerImplementationHash(root);
@@ -197,6 +201,9 @@ test("finalizer implementation hashing covers production host code and prompts b
     assert.equal(await finalizerImplementationHash(root), first);
     await writeFile(join(root, "src", "core", "evidence.ts"), "export const evidence = false;\n");
     assert.notEqual(await finalizerImplementationHash(root), first);
+    const second = await finalizerImplementationHash(root);
+    await writeFile(join(root, "src", "gateway", "model-proxy.ts"), "export const proxy = false;\n");
+    assert.notEqual(await finalizerImplementationHash(root), second);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

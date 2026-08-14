@@ -419,6 +419,9 @@ export async function finalizerImplementationHash(root: string): Promise<string>
   const files = [
     ...await productionTypeScriptFiles(root, "src/headless"),
     ...await productionTypeScriptFiles(root, "src/core"),
+    "src/gateway/model-proxy.ts",
+    "src/gateway/model-tool-names.ts",
+    "src/gateway/fixture-model.ts",
     "runtime/headless-opencode/agents/evidence-compiler.md",
     "runtime/headless-opencode/agents/evidence-auditor.md",
   ];

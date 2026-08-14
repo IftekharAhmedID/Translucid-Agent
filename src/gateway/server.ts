@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { buildCompactionContext } from "../agent/compaction.ts";
 import { getConfig } from "../core/config.ts";
 import { PAID_GO_MODEL_SET } from "../core/model-catalog.ts";
+import { prepareFinalizerUpstreamBody } from "../core/finalizer-transport.ts";
 import { getSql } from "../db/client.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
 import { toolNames } from "../providers/contracts.ts";
@@ -15,6 +16,7 @@ import { modelCostReservation, proxyModelCompletion } from "./model-proxy.ts";
 const MAX_TOOL_BODY = 1024 * 1024;
 const MAX_MODEL_BODY = 16 * 1024 * 1024;
 const MODEL_IDS = PAID_GO_MODEL_SET;
+const finalizerAgents = new Set(["evidence-critic", "fresh-adjudicator"]);
 
 function bearer(request: IncomingMessage): string {
   const header = request.headers.authorization;
@@ -98,14 +100,17 @@ async function handleModel(request: IncomingMessage, response: ServerResponse): 
   if (!run || run.status !== "RUNNING") throw new Error("Run is not active.");
   const remaining = run.deadlineAt ? run.deadlineAt.getTime() - Date.now() : 300_000;
   if (remaining <= 0) throw new Error("Investigation deadline reached.");
-  const reservation = modelCostReservation(body, model);
+  const config = getConfig();
+  const chargedBody = finalizerAgents.has(agent)
+    ? prepareFinalizerUpstreamBody(body, { agent, provider: config.finalizerOpenCodeProvider, model, protocol: "OPENAI_CHAT" })
+    : body;
+  const reservation = modelCostReservation(chargedBody, model);
   if (reservation > 0) await consumeBudget({ runId, counter: "modelUsd", increment: reservation, ceiling: getConfig().modelBudgetUsd });
 
-  const config = getConfig();
   await proxyModelCompletion({
     request,
     response,
-    body,
+    body: chargedBody,
     agent,
     model,
     remainingMs: remaining,
@@ -114,10 +119,9 @@ async function handleModel(request: IncomingMessage, response: ServerResponse): 
     researchUpstreamUrl: config.researchOpenCodeUpstreamUrl,
     finalizerUpstreamUrl: config.finalizerOpenCodeUpstreamUrl,
     finalizerProvider: config.finalizerOpenCodeProvider,
-    finalizerModel: config.finalizerModel,
     requestTimeouts: config.modelRequestTimeouts,
-    finalizerAgents: new Set(["evidence-critic", "fresh-adjudicator"]),
-    fixtureCompletion: () => fixtureCompletion(body, investigationId, runId),
+    finalizerAgents,
+    fixtureCompletion: () => fixtureCompletion(chargedBody, investigationId, runId),
   });
 }
 
