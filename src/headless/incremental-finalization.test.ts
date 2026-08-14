@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildLineCatalog } from "./line-catalog.ts";
-import { buildClaimBundles, claimBatchSchema, evidenceJudgmentSchema, invalidatedFinalizationStages, v5StageManifestSchema, validateClaimBatchRecords, validateEvidenceJudgment } from "./incremental-finalization.ts";
+import { buildClaimBundles, bundleEvidenceJudgmentSchema, claimBatchSchema, evidenceJudgmentSchema, invalidatedFinalizationStages, mapWithConcurrency, v5StageManifestSchema, validateBundleEvidenceJudgment, validateClaimBatchRecords, validateEvidenceJudgment } from "./incremental-finalization.ts";
 
 const catalog = buildLineCatalog({ pages: [{ page: 1, lines: [
   { line: 1, text: "Casey Morgan" },
@@ -77,14 +77,33 @@ test("claim keys follow semantic line order rather than model response order", (
   ]);
 });
 
+test("facet keys are host-derived from kind and source order", () => {
+  const compile = (firstKey: string, secondKey: string, facetsReversed: boolean) => {
+    const facets = [
+      { key: firstKey, kind: "TITLE", label: "The person held the title Principal Engineer.", sourceFragment: "Principal Engineer", materiality: "HIGH", lineIds: ["P1L2"] },
+      { key: secondKey, kind: "ORGANIZATION", label: "The person worked at Example Corp.", sourceFragment: "Example Corp", materiality: "HIGH", lineIds: ["P1L2"] },
+    ];
+    return validateClaimBatchRecords({ claims: [{ localKey: "employment", category: "EMPLOYMENT", statement: "The person held the Principal Engineer title at Example Corp.", materiality: "HIGH", facets: facetsReversed ? facets.reverse() : facets }], exclusions: [], deferredLineIds: [] }, catalog, ["P1L2"]).claims[0]?.facets.map(({ key, sourceFragment }) => ({ key, sourceFragment }));
+  };
+  assert.deepEqual(compile("model_title", "model_employer", false), compile("arbitrary_a", "arbitrary_b", true));
+  assert.deepEqual(compile("x", "y", false), [
+    { key: "title", sourceFragment: "Principal Engineer" },
+    { key: "organization", sourceFragment: "Example Corp" },
+  ]);
+});
+
 test("frozen facet line ownership is canonicalized", () => {
+  const repeatedCatalog = buildLineCatalog({ pages: [{ page: 1, lines: [
+    { line: 1, text: "Casey Morgan" },
+    { line: 2, text: "Casey Morgan" },
+  ] }] });
   const result = validateClaimBatchRecords({ claims: [{
     localKey: "identity",
     category: "IDENTITY",
     statement: "The résumé identifies Casey Morgan.",
     materiality: "HIGH",
     facets: [{ key: "name", kind: "IDENTITY", label: "The person is Casey Morgan.", sourceFragment: "Casey Morgan", materiality: "HIGH", lineIds: ["P1L2", "P1L1"] }],
-  }], exclusions: [], deferredLineIds: [] }, catalog, ["P1L1", "P1L2"]);
+  }], exclusions: [], deferredLineIds: [] }, repeatedCatalog, ["P1L1", "P1L2"]);
   assert.deepEqual(result.claims[0]?.facets[0]?.lineIds, ["P1L1", "P1L2"]);
 });
 
@@ -163,6 +182,7 @@ test("evidence judgment validation rejects an obvious lexical mismatch before ma
 
 test("claim schema remains strict and bounded to five claims", () => {
   assert.throws(() => claimBatchSchema.parse({ claims: Array.from({ length: 6 }, (_, index) => ({ localKey: `c${index}`, category: "OTHER", statement: "x", materiality: "LOW", facets: [{ key: "x", kind: "OTHER", label: "The person reports x.", sourceFragment: "Casey Morgan", materiality: "LOW", lineIds: ["P1L1"] }] })), exclusions: [], deferredLineIds: [] }), /Too big/);
+  assert.throws(() => claimBatchSchema.parse({ claims: [{ localKey: "bad_time", category: "EMPLOYMENT", statement: "A reported interval.", materiality: "HIGH", facets: [{ key: "time", kind: "INTERVAL", label: "The reported interval begins in summer 2021.", sourceFragment: "Principal Engineer", from: "summer 2021", materiality: "HIGH", lineIds: ["P1L2"] }] }], exclusions: [], deferredLineIds: [] }), /Invalid string|pattern/i);
 });
 
 test("stage fingerprints invalidate only the changed stage and its dependents", () => {
@@ -172,10 +192,10 @@ test("stage fingerprints invalidate only the changed stage and its dependents", 
   assert.deepEqual(invalidatedFinalizationStages(stored, { audit: "a1" }), []);
 });
 
-test("V5 manifest accepts only stage-local checkpoint paths", () => {
-  const valid = { schemaVersion: 3, implementation: "incremental-finalizer-v5", stages: {}, files: { "claims/C001.json": "a".repeat(64), "evidence/C001.judgment.json": "b".repeat(64), "source-authority-snapshot.json": "c".repeat(64), "audit.json": "d".repeat(64) } };
+test("V5.1 manifest accepts only stage-local checkpoint paths", () => {
+  const valid = { schemaVersion: 4, implementation: "incremental-finalizer-v5.1", stages: {}, files: { "claims/C001.json": "a".repeat(64), "bundles/B001.judgment.json": "b".repeat(64), "bundles/plan.json": "c".repeat(64), "implementation.json": "d".repeat(64), "audit.json": "e".repeat(64) } };
   assert.doesNotThrow(() => v5StageManifestSchema.parse(valid));
-  assert.throws(() => v5StageManifestSchema.parse({ ...valid, files: { "evidence/../../../outside.json": "a".repeat(64) } }), /Invalid key|Invalid string/i);
+  assert.throws(() => v5StageManifestSchema.parse({ ...valid, files: { "bundles/../../../outside.json": "a".repeat(64) } }), /Invalid key|Invalid string/i);
 });
 
 test("uppercase factual lines cannot be excluded as headings", () => {
@@ -229,10 +249,10 @@ test("atomic facets retain one typed predicate and an exact submission fragment"
 
   assert.deepEqual(result.defects, []);
   assert.deepEqual(result.claims[0]?.facets.map(({ kind, sourceFragment }) => ({ kind, sourceFragment })), [
-    { kind: "ORGANIZATION", sourceFragment: "Example Corp" },
-    { kind: "INTERVAL", sourceFragment: "2021–2024" },
     { kind: "TITLE", sourceFragment: "Principal Engineer" },
     { kind: "ORG_UNIT", sourceFragment: "Systems Unit" },
+    { kind: "ORGANIZATION", sourceFragment: "Example Corp" },
+    { kind: "INTERVAL", sourceFragment: "2021–2024" },
   ]);
 });
 
@@ -257,6 +277,88 @@ test("atomic facet validation rejects compound and non-exact source fragments", 
 
   assert.deepEqual(result.claims, []);
   assert.match(result.defects.join("\n"), /exact submission fragment|atomic/i);
+});
+
+test("atomic facet validation rejects one occurrence double-counted as overlapping facts", () => {
+  const overlapCatalog = buildLineCatalog({ pages: [{ page: 1, lines: [{ line: 1, text: "Senior Engineer" }] }] });
+  const result = validateClaimBatchRecords({ claims: [{
+    localKey: "overlap",
+    category: "EMPLOYMENT",
+    statement: "The submission reports the Senior Engineer title.",
+    materiality: "HIGH",
+    facets: [
+      { key: "senior", kind: "TITLE", label: "The person held the Senior Engineer title.", sourceFragment: "Senior Engineer", materiality: "HIGH", lineIds: ["P1L1"] },
+      { key: "engineer", kind: "TITLE", label: "The person held the Engineer title.", sourceFragment: "Engineer", materiality: "HIGH", lineIds: ["P1L1"] },
+    ],
+  }], exclusions: [], deferredLineIds: [] }, overlapCatalog, ["P1L1"]);
+
+  assert.deepEqual(result.claims, []);
+  assert.match(result.defects.join("\n"), /overlapping source fragments/i);
+});
+
+test("anonymous compound, progression, multilingual, proper-noun, and negation lines compile into atomic facets", () => {
+  const cases = [
+    {
+      line: "Principal Engineer, Systems Unit, Example Corp, Austin, Texas, 2021–2024",
+      statement: "The submission reports a Principal Engineer title in the Systems Unit at Example Corp in Austin, Texas from 2021 through 2024.",
+      facets: [
+        ["title", "TITLE", "The person held the Principal Engineer title.", "Principal Engineer"],
+        ["unit", "ORG_UNIT", "The person worked in the Systems Unit.", "Systems Unit"],
+        ["employer", "ORGANIZATION", "The person worked at Example Corp.", "Example Corp"],
+        ["location", "LOCATION", "The reported location is Austin, Texas.", "Austin, Texas"],
+        ["interval", "INTERVAL", "The reported interval is 2021 through 2024.", "2021–2024", "2021", "2024"],
+      ],
+    },
+    {
+      line: "Engineer 2020–2022 → Senior Engineer 2022–2024",
+      statement: "The submission reports progression from Engineer to Senior Engineer across two intervals.",
+      facets: [
+        ["title_one", "TITLE", "The person held the Engineer title.", "Engineer"],
+        ["interval_one", "INTERVAL", "The first reported interval is 2020 through 2022.", "2020–2022", "2020", "2022"],
+        ["title_two", "TITLE", "The person held the Senior Engineer title.", "Senior Engineer"],
+        ["interval_two", "INTERVAL", "The second reported interval is 2022 through 2024.", "2022–2024", "2022", "2024"],
+      ],
+    },
+    {
+      line: "Co-Founder / Chief Scientist",
+      statement: "The submission reports the Co-Founder and Chief Scientist titles.",
+      facets: [
+        ["title_one", "TITLE", "The person held the Co-Founder title.", "Co-Founder"],
+        ["title_two", "TITLE", "The person held the Chief Scientist title.", "Chief Scientist"],
+      ],
+    },
+    {
+      line: "Research and Development, Example & Sons",
+      statement: "The submission reports work in Research and Development at Example & Sons.",
+      facets: [
+        ["unit", "ORG_UNIT", "The person worked in Research and Development.", "Research and Development"],
+        ["employer", "ORGANIZATION", "The person worked at Example & Sons.", "Example & Sons"],
+      ],
+    },
+    {
+      line: "Ingénieure principale；Unité Plateforme；Organisation Exemple；2021–2024",
+      statement: "Le dossier indique un titre d’ingénieure principale dans l’Unité Plateforme de l’Organisation Exemple de 2021 à 2024.",
+      facets: [
+        ["title", "TITLE", "La personne avait le titre Ingénieure principale.", "Ingénieure principale"],
+        ["unit", "ORG_UNIT", "La personne travaillait dans l’Unité Plateforme.", "Unité Plateforme"],
+        ["employer", "ORGANIZATION", "La personne travaillait pour Organisation Exemple.", "Organisation Exemple"],
+        ["interval", "INTERVAL", "La période indiquée va de 2021 à 2024.", "2021–2024", "2021", "2024"],
+      ],
+    },
+    {
+      line: "Did not manage Project North",
+      statement: "The submission states that the person did not manage Project North.",
+      facets: [["negated_responsibility", "RESPONSIBILITY", "The person did not manage Project North.", "Did not manage Project North"]],
+    },
+  ] as const;
+
+  for (const [index, example] of cases.entries()) {
+    const caseCatalog = buildLineCatalog({ pages: [{ page: 1, lines: [{ line: 1, text: example.line }] }] });
+    const facets = example.facets.map(([key, kind, label, sourceFragment, from, to]) => ({ key, kind, label, sourceFragment, ...(from ? { from } : {}), ...(to ? { to } : {}), materiality: "HIGH" as const, lineIds: ["P1L1"] }));
+    const result = validateClaimBatchRecords({ claims: [{ localKey: `case_${index}`, category: "EMPLOYMENT", statement: example.statement, materiality: "HIGH", facets }], exclusions: [], deferredLineIds: [] }, caseCatalog, ["P1L1"]);
+    assert.deepEqual(result.defects, [], `${example.line}: ${result.defects.join("; ")}`);
+    assert.equal(result.claims[0]?.facets.length, example.facets.length);
+  }
 });
 
 test("claim bundles are deterministic, bounded, and split at headings and pages", () => {
@@ -295,4 +397,68 @@ test("claim bundles are deterministic, bounded, and split at headings and pages"
     { bundleId: "B003", claimKeys: ["C006"] },
   ]);
   assert.ok(first.bundles.every(({ claimKeys }) => claimKeys.length <= 5));
+});
+
+test("bundle judgments account for every candidate and preserve canonical claim and facet order", () => {
+  const contextRef = `X${"7".repeat(64)}`;
+  const eligibleRef = `X${"8".repeat(64)}`;
+  const candidateSet = {
+    bundleId: "B001",
+    fingerprint: "a".repeat(64),
+    totalCharacters: 100,
+    uniqueExcerpts: 2,
+    facets: [
+      { claimKey: "C001", facetKey: "title", candidates: [{ ref: eligibleRef, sourceRef: "S1", path: "$", offsetStart: 0, offsetEnd: 45, text: "Casey Morgan held the Principal Engineer title.", sourceHash: "b".repeat(64), provider: "public-fetch", providerRoute: "web.fetch", effectiveAuthority: "FIRST_PARTY_INSTITUTIONAL", evidenceEligible: true }] },
+      { claimKey: "C002", facetKey: "project", candidates: [{ ref: contextRef, sourceRef: "S2", path: "$", offsetStart: 0, offsetEnd: 38, text: "Project Atlas is an open source project.", sourceHash: "c".repeat(64), provider: "public-fetch", providerRoute: "web.fetch", effectiveAuthority: "CONTEXT", evidenceEligible: false }] },
+    ],
+  };
+  const claims = [
+    { claimKey: "C001", facets: [{ key: "title", label: "Casey Morgan held the Principal Engineer title." }] },
+    { claimKey: "C002", facets: [{ key: "project", label: "Casey Morgan contributed to Project Atlas." }] },
+  ];
+  const reversed = {
+    bundleId: "B001",
+    candidateSetHash: candidateSet.fingerprint,
+    dispositions: [
+      { claimKey: "C002", facetKey: "project", excerptRef: contextRef, relation: "CONTEXT", reason: "The source establishes the project, not personal contribution." },
+      { claimKey: "C001", facetKey: "title", excerptRef: eligibleRef, relation: "SUPPORTS", reason: "The source states the title." },
+    ],
+  };
+
+  const validated = validateBundleEvidenceJudgment(reversed, "B001", claims, candidateSet);
+  assert.deepEqual(validated.dispositions.map(({ claimKey, facetKey, excerptRef }) => ({ claimKey, facetKey, excerptRef })), [
+    { claimKey: "C001", facetKey: "title", excerptRef: eligibleRef },
+    { claimKey: "C002", facetKey: "project", excerptRef: contextRef },
+  ]);
+  assert.doesNotThrow(() => bundleEvidenceJudgmentSchema.parse(validated));
+  assert.throws(() => validateBundleEvidenceJudgment({ ...reversed, dispositions: reversed.dispositions.slice(1) }, "B001", claims, candidateSet), /exactly account|missing/i);
+  assert.throws(() => validateBundleEvidenceJudgment({ ...reversed, dispositions: [{ ...reversed.dispositions[0], relation: "SUPPORTS" }, reversed.dispositions[1]] }, "B001", claims, candidateSet), /ineligible|context/i);
+});
+
+test("bundle judgment host gates reject wrong-person, project-existence, and non-overlapping temporal mappings", () => {
+  const candidate = (refCharacter: string, text: string) => ({ ref: `X${refCharacter.repeat(64)}`, sourceRef: "S1", path: "$", offsetStart: 0, offsetEnd: text.length, text, sourceHash: "a".repeat(64), provider: "public-fetch", providerRoute: "web.fetch", effectiveAuthority: "FIRST_PARTY_INSTITUTIONAL", evidenceEligible: true });
+  const cases = [
+    { facet: { key: "contribution", kind: "CONTRIBUTION" as const, label: "Casey Morgan contributed to Project Atlas." }, excerpt: candidate("1", "Morgan Lee contributed to Project Atlas."), error: /different person/i },
+    { facet: { key: "contribution", kind: "CONTRIBUTION" as const, label: "Casey Morgan contributed to Project Atlas." }, excerpt: candidate("2", "Project Atlas is an open source project."), error: /existence cannot establish/i },
+    { facet: { key: "interval", kind: "INTERVAL" as const, label: "Casey Morgan worked there from 2020 through 2022." }, excerpt: candidate("3", "Casey Morgan worked there from 2024 through 2025."), error: /does not overlap/i },
+  ];
+  for (const [index, example] of cases.entries()) {
+    const candidateSet = { bundleId: "B001", fingerprint: "b".repeat(64), totalCharacters: example.excerpt.text.length, uniqueExcerpts: 1, facets: [{ claimKey: "C001", facetKey: example.facet.key, candidates: [example.excerpt] }] };
+    const judgment = { bundleId: "B001", candidateSetHash: candidateSet.fingerprint, dispositions: [{ claimKey: "C001", facetKey: example.facet.key, excerptRef: example.excerpt.ref, relation: "SUPPORTS", reason: `case ${index}` }] };
+    assert.throws(() => validateBundleEvidenceJudgment(judgment, "B001", [{ claimKey: "C001", facets: [example.facet] }], candidateSet, candidateSet.fingerprint, ["Casey Morgan"]), example.error);
+  }
+});
+
+test("bounded workers preserve canonical output order regardless of completion order", async () => {
+  let active = 0;
+  let peak = 0;
+  const output = await mapWithConcurrency([40, 5, 25, 1], 2, async (delay, index) => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    active -= 1;
+    return `B${index + 1}`;
+  });
+  assert.deepEqual(output, ["B1", "B2", "B3", "B4"]);
+  assert.equal(peak, 2);
 });

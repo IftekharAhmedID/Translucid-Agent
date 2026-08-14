@@ -17,6 +17,7 @@ export { buildFinalizerContext, describeSdkError, extractTextOutput, finalizerPr
 const directory = "/workspace/case";
 
 type Input = {
+  repositoryRoot: string;
   runId: string;
   root: string;
   handle: RunHandle;

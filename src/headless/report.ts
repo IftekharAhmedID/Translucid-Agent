@@ -96,6 +96,7 @@ export async function renderInvestigationReport(result: InvestigationResult): Pr
 
   heading("Complete claim findings");
   for (const claim of claims) {
+    ensureSpace(90);
     document.addNamedDestination(`claim-${claim.id}`);
     subheading(`${claim.id} · ${claim.verdict} · ${displayStrength(claim.strength)}`);
     paragraph(`Résumé source span${claim.sourceSpan.page ? ` (page ${claim.sourceSpan.page})` : ""}: ${claim.sourceSpan.text}`);

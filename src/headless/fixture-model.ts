@@ -160,22 +160,23 @@ function fixtureClaimBatch(body: Record<string, unknown>): Record<string, unknow
     }
     semanticLines.push(line);
   }
-  for (let index = 0; index < semanticLines.length; index += 2) {
-    const group = semanticLines.slice(index, index + 2);
-    const employment = group.some(({ text }) => /engineer|worked|acme|corp|company|role/i.test(text));
+  for (const line of semanticLines) {
+    const employment = /engineer|worked|corp|company|role|employment/i.test(line.text);
+    const trimmed = line.text.trim().replace(/[.]$/u, "");
+    const title = employment ? trimmed.match(/^(?:[^:]+:\s*)?(.+?)\s+at\s+/iu)?.[1]?.trim() : undefined;
+    const organization = employment ? trimmed.match(/\sat\s+(.+?)(?=\s+from\b|[.,;]|$)/iu)?.[1]?.trim() : undefined;
+    const interval = employment ? trimmed.match(/\b(?:from\s+)?((?:19|20)\d{2})\s+(?:through|to|[-–—])\s+((?:19|20)\d{2})\b/iu) : undefined;
+    const facets = employment ? [
+      ...(title ? [{ key: "title", kind: "TITLE", label: `The submission reports the title ${title}.`, sourceFragment: title, materiality: "HIGH" as const, lineIds: [line.id] }] : []),
+      ...(organization ? [{ key: "organization", kind: "ORGANIZATION", label: `The submission reports employment at ${organization}.`, sourceFragment: organization, materiality: "HIGH" as const, lineIds: [line.id] }] : []),
+      ...(interval ? [{ key: "interval", kind: "INTERVAL", label: `The submission reports the interval ${interval[1]} through ${interval[2]}.`, sourceFragment: interval[0], from: interval[1], to: interval[2], materiality: "HIGH" as const, lineIds: [line.id] }] : []),
+    ] : [{ key: "identity", kind: "IDENTITY", label: `The submission identifies ${trimmed}.`, sourceFragment: trimmed, materiality: "MEDIUM" as const, lineIds: [line.id] }];
     claims.push({
-      localKey: group[0]!.id.toLowerCase(),
+      localKey: line.id.toLowerCase(),
       category: employment ? "EMPLOYMENT" : "IDENTITY",
-      statement: `${group.map(({ text }) => text.replace(/[.]$/u, "")).join("; ")}.`,
+      statement: `The submission reports ${trimmed}.`,
       materiality: employment ? "HIGH" : "MEDIUM",
-      facets: group.map((line, facetIndex) => ({
-        key: `${employment ? "assertion" : "identity"}_${facetIndex + 1}`,
-        kind: employment ? "OTHER" : "IDENTITY",
-        label: `The submission reports ${line.text.endsWith(".") ? line.text : `${line.text}.`}`,
-        sourceFragment: line.text,
-        materiality: employment ? "HIGH" : "MEDIUM",
-        lineIds: [line.id],
-      })),
+      facets: facets.length ? facets : [{ key: "assertion", kind: "OTHER", label: `The submission reports ${trimmed}.`, sourceFragment: trimmed, materiality: "HIGH", lineIds: [line.id] }],
     });
   }
   return { claims, exclusions, deferredLineIds: [] };
@@ -183,23 +184,24 @@ function fixtureClaimBatch(body: Record<string, unknown>): Record<string, unknow
 
 function fixtureEvidenceJudgment(body: Record<string, unknown>): Record<string, unknown> {
   const payload = promptPayload(body) as {
-    claim?: { claimId: string; facets: Array<{ key: string; statement: string }> };
+    bundleId?: string;
     candidateSetHash?: string;
-    candidatesByFacet?: Record<string, Array<{ ref: string; text: string }>>;
+    claims?: Array<{ claimKey: string; facets: Array<{ key: string; statement: string }> }>;
+    candidates?: Array<{ claimKey: string; facetKey: string; candidates: Array<{ ref: string; text: string; evidenceEligible: boolean }> }>;
   };
+  const statementByFacet = new Map((payload.claims ?? []).flatMap((claim) => claim.facets.map((facet) => [`${claim.claimKey}\0${facet.key}`, facet.statement])));
   return {
-    claimId: payload.claim?.claimId ?? "C001",
+    bundleId: payload.bundleId ?? "B001",
     candidateSetHash: payload.candidateSetHash ?? "a".repeat(64),
-    facets: (payload.claim?.facets ?? []).map(({ key, statement }) => ({
-      facetKey: key,
-      candidates: (payload.candidatesByFacet?.[key] ?? []).map(({ ref, text }) => {
+    dispositions: (payload.candidates ?? []).flatMap(({ claimKey, facetKey, candidates }) => {
+      const statement = statementByFacet.get(`${claimKey}\0${facetKey}`) ?? "";
+      return candidates.map(({ ref, text, evidenceEligible }) => {
         const words = new Set(statement.toLocaleLowerCase("en-US").split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 3));
         const overlap = [...words].filter((word) => text.toLocaleLowerCase("en-US").includes(word)).length;
-        return overlap >= 2
-          ? { excerptRef: ref, relation: "SUPPORTS", reason: "The deterministic synthetic source directly establishes this facet." }
-          : { excerptRef: ref, relation: "IRRELEVANT", reason: "The candidate does not establish this specific facet." };
-      }),
-    })),
+        const relation = overlap < 2 ? "IRRELEVANT" : evidenceEligible ? "SUPPORTS" : "CONTEXT";
+        return { claimKey, facetKey, excerptRef: ref, relation, reason: relation === "SUPPORTS" ? "The deterministic synthetic source directly establishes this facet." : relation === "CONTEXT" ? "The context-only source is relevant but cannot establish this facet." : "The candidate does not establish this specific facet." };
+      });
+    }),
   };
 }
 

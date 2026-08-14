@@ -9,7 +9,7 @@ import { dossierFingerprint, parseEvidenceDossier, type DossierInventory } from 
 import { dossierFingerprint as packetDossierFingerprint, packetDossierToDraft, type PacketDossier } from "./packet-dossier.ts";
 
 export const RESEARCH_CONTRACT_VERSION = "headless-research-v2";
-export const FINALIZER_IMPLEMENTATION_VERSION = "incremental-finalizer-v5";
+export const FINALIZER_IMPLEMENTATION_VERSION = "incremental-finalizer-v5.1";
 export const RESULT_SCHEMA_VERSION = "1.1";
 export const HANDOFF_MANIFEST_PATH = ".work/finalization/handoff-manifest.json";
 export const DOSSIER_PATH = ".work/finalization/evidence-dossier.md";
@@ -402,4 +402,25 @@ export async function archivePriorFailure(root: string, now = new Date()): Promi
 export async function hashBundle(root: string, relativePaths: string[], virtualValues: Record<string, string> = {}): Promise<string> {
   const files = Object.fromEntries(await Promise.all([...new Set(relativePaths)].sort().map(async (path) => [path, await fileDigest(inside(root, path))])));
   return digest(canonicalJson({ files, virtualValues }));
+}
+
+async function productionTypeScriptFiles(root: string, relativeDirectory: string): Promise<string[]> {
+  const directory = inside(root, relativeDirectory);
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = await Promise.all(entries.map(async (entry) => {
+    const relativePath = `${relativeDirectory}/${entry.name}`;
+    if (entry.isDirectory()) return productionTypeScriptFiles(root, relativePath);
+    return entry.isFile() && /\.tsx?$/u.test(entry.name) && !/\.(?:test|spec)\.tsx?$/u.test(entry.name) ? [relativePath] : [];
+  }));
+  return files.flat();
+}
+
+export async function finalizerImplementationHash(root: string): Promise<string> {
+  const files = [
+    ...await productionTypeScriptFiles(root, "src/headless"),
+    ...await productionTypeScriptFiles(root, "src/core"),
+    "runtime/headless-opencode/agents/evidence-compiler.md",
+    "runtime/headless-opencode/agents/evidence-auditor.md",
+  ];
+  return hashBundle(root, files);
 }

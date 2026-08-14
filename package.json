@@ -22,6 +22,7 @@
     "attach:legacy": "node --env-file-if-exists=.env --import tsx scripts/attach-local.ts",
     "smoke:finalizer": "node --env-file-if-exists=.env --import tsx scripts/finalizer-smoke.ts",
     "finalizer-smoke": "npm run smoke:finalizer --",
+    "acceptance:v5": "node --import tsx src/headless/acceptance-v5.ts",
     "db:migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",
     "runtime:manifest": "node --env-file-if-exists=.env --import tsx scripts/runtime-manifest.ts",
     "e2b:build-template": "node --env-file-if-exists=.env --import tsx scripts/build-e2b-template.ts",

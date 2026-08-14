@@ -112,3 +112,31 @@ test("renders unresolved null strength as a dash", async () => {
   assert.match(text, /UNRESOLVED · —/);
   assert.doesNotMatch(text, /UNRESOLVED · (?:null|WEAK)/);
 });
+
+test("keeps each claim heading with the start of its finding", async () => {
+  const crowded = structuredClone(result);
+  crowded.summary.limitations = Array.from({ length: 7 }, (_, index) => `Bounded limitation ${index + 1}: ${"context remains unresolved. ".repeat(3)}`);
+  crowded.claims.push({
+    id: "C2",
+    category: "EMPLOYMENT",
+    statement: "A second reported professional interval remains unresolved.",
+    materiality: "HIGH",
+    sourceSpan: { page: 2, text: "Second claim source span marker" },
+    verdict: "UNRESOLVED",
+    strength: null,
+    explanation: "No eligible immutable source resolved this finding.",
+    facets: [{ key: "interval", label: "The second reported interval is unresolved.", materiality: "HIGH", status: "UNRESOLVED", strength: null, evidenceIds: [], note: "No eligible evidence." }],
+  });
+  crowded.audit.statistics.claims = 2;
+  crowded.audit.statistics.facets = 2;
+
+  const bytes = await renderInvestigationReport(crowded);
+  const pdf = await getDocument({ data: new Uint8Array(bytes), disableFontFace: true, useSystemFonts: false }).promise;
+  const pages: string[] = [];
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const content = await (await pdf.getPage(pageNumber)).getTextContent();
+    pages.push(content.items.flatMap((item) => "str" in item ? [item.str] : []).join(" "));
+  }
+  const findingPage = pages.find((page) => page.includes("C2 · UNRESOLVED · —"));
+  assert.match(findingPage ?? "", /Second claim source span marker/);
+});

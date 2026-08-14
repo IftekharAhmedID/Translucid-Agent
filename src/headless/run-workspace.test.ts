@@ -169,6 +169,20 @@ test("opens an existing run without changing its immutable input", async () => {
   }
 });
 
+test("refuses to resume a run whose preserved input bytes changed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-open-run-tamper-"));
+  try {
+    const submission = join(directory, "submission.txt");
+    await writeFile(submission, "Synthetic Candidate worked at Acme Labs.");
+    const created = await createRunWorkspace({ outputDirectory: directory, submissionPath: submission, classification: "SYNTHETIC", runtime: "LOCAL", runId: "tampered-run" });
+    await writeFile(join(created.root, "input", "submission.original.txt"), "modified");
+
+    await assert.rejects(openRunWorkspace(created.root), /preserved input hash differs/i);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("seals a failure record with bounded diagnostics", async () => {
   const directory = await mkdtemp(join(tmpdir(), "translucid-run-failure-"));
   try {

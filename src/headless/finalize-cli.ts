@@ -162,6 +162,7 @@ async function main(): Promise<void> {
       deadlineAt: deadlineAt.toISOString(),
     });
     const result = await runFinalizationPipeline({
+      repositoryRoot: process.cwd(),
       runId: workspace.runId,
       root: workspace.root,
       handle,

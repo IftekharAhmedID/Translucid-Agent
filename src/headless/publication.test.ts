@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
+import { publishFinalizationProvenance } from "./incremental-pipeline.ts";
 
 for (const file of ["cli.ts", "finalize-cli.ts"]) {
   test(`${file} verifies the temporary PDF and publishes result.json last`, async () => {
@@ -20,10 +23,11 @@ for (const file of ["cli.ts", "finalize-cli.ts"]) {
   });
 }
 
-test("V5 summary input is limited to frozen claim and evidence records", async () => {
+test("V5.1 summaries are deterministic host output", async () => {
   const source = await readFile(join(process.cwd(), "src", "headless", "incremental-pipeline.ts"), "utf8");
-  const summary = source.slice(source.indexOf("const compileSummary"), source.indexOf("const summaryConfiguration"));
-  assert.doesNotMatch(summary, /input:\s*parsedInput/u);
+  assert.match(source, /buildDeterministicSummaryTimeline\(claims, evidence/u);
+  assert.match(source, /rejectedCitations: assembled\.rejectedCandidateCount/u);
+  assert.doesNotMatch(source, /SUMMARY_TIMELINE_PROMPT_CONTRACT/u);
 });
 
 test("V5 resumes an audit only when its dependency fingerprint matches", async () => {
@@ -64,11 +68,13 @@ test("V5 claim repair retains the bounded assigned-line window", async () => {
   assert.match(source, /\{ \.\.\.claimWindow, repair: finalizerRepairPayload\(originalResponse, validatorError\) \}/u);
 });
 
-test("V5 evidence retrieval fingerprints deduplicated candidate refs", async () => {
+test("V5.1 evidence retrieval scans the immutable corpus and fingerprints bundle packets", async () => {
   const pipeline = await readFile(new URL("incremental-pipeline.ts", import.meta.url), "utf8");
   const store = await readFile(new URL("source-store.ts", import.meta.url), "utf8");
-  assert.match(pipeline, /memo-first-bounded-v4-deduplicated/u);
-  assert.match(store, /selectedRefs\.has\(excerpt\.ref\)/u);
+  assert.match(pipeline, /whole-corpus-bundle-v1/u);
+  assert.match(pipeline, /findBundleExcerpts/u);
+  assert.match(store, /const unique = new Map/u);
+  assert.match(store, /unique\.has\(candidate\.ref\)/u);
 });
 
 test("V5.1 evidence contract requires atomic facets and preserves context-only candidates", async () => {
@@ -76,4 +82,21 @@ test("V5.1 evidence contract requires atomic facets and preserves context-only c
   assert.match(source, /one independently adjudicable predicate/u);
   assert.match(source, /CONTEXT and DISCOVERY_ONLY sources can never SUPPORT or CONTRADICT/u);
   assert.match(source, /alternative title is IRRELEVANT to a dated title unless the periods conflict/u);
+});
+
+test("finalization provenance replaces stale stage files", async () => {
+  const root = await mkdtemp(join(tmpdir(), "translucid-provenance-"));
+  try {
+    await mkdir(join(root, ".work", "finalization", "v5"), { recursive: true });
+    await mkdir(join(root, "provenance", "finalization"), { recursive: true });
+    await writeFile(join(root, ".work", "finalization", "v5", "manifest.json"), "current");
+    await writeFile(join(root, "provenance", "finalization", "stale.json"), "stale");
+
+    await publishFinalizationProvenance(root);
+
+    assert.deepEqual(await readdir(join(root, "provenance", "finalization")), ["manifest.json"]);
+    assert.equal(await readFile(join(root, "provenance", "finalization", "manifest.json"), "utf8"), "current");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -167,6 +167,121 @@ export type InvestigationResult = {
   };
 };
 
+type DeterministicClaim = {
+  claimKey: string;
+  category: InvestigationDraft["claims"][number]["category"];
+  statement: string;
+  facets: ReadonlyArray<{
+    key: string;
+    kind: string;
+    materiality: "HIGH" | "MEDIUM" | "LOW";
+    from?: string;
+    to?: string;
+  }>;
+};
+
+type DeterministicEvidence = Pick<InvestigationDraft["evidence"][number], "key" | "claimKey" | "facetKeys" | "relation" | "sourceRef">;
+
+function counted(total: number, singular: string): string {
+  return `${total} ${singular}${total === 1 ? "" : "s"}`;
+}
+
+export function buildDeterministicSummaryTimeline(
+  claims: readonly DeterministicClaim[],
+  evidence: readonly DeterministicEvidence[],
+  options: {
+    contextDispositionCount?: number;
+    rejectedCandidateCount?: number;
+    warnings?: readonly string[];
+    authorityBySourceRef?: ReadonlyMap<string, SourceAuthority>;
+  } = {},
+): Pick<InvestigationDraft, "summary" | "timeline"> {
+  const evidenceByClaim = new Map(claims.map(({ claimKey }) => [claimKey, evidence.filter((item) => item.claimKey === claimKey)]));
+  const facetStatus = (claimKey: string, facetKeyValue: string) => {
+    const relations = (evidenceByClaim.get(claimKey) ?? []).filter(({ facetKeys }) => facetKeys.includes(facetKeyValue)).map(({ relation }) => relation);
+    return relations.includes("CONTRADICTS") ? "CONTRADICTED" as const : relations.includes("SUPPORTS") ? "SUPPORTED" as const : "UNRESOLVED" as const;
+  };
+  const verdicts = new Map(claims.map((claim) => {
+    const statuses = claim.facets.map((facet) => ({ materiality: facet.materiality, status: facetStatus(claim.claimKey, facet.key) }));
+    const value = statuses.some(({ materiality: level, status }) => status === "CONTRADICTED" && level !== "LOW")
+      ? "CONTRADICTED" as const
+      : statuses.every(({ status }) => status === "SUPPORTED")
+        ? "CORROBORATED" as const
+        : statuses.every(({ status }) => status === "UNRESOLVED")
+          ? "UNRESOLVED" as const
+          : statuses.some(({ status }) => status === "SUPPORTED")
+            ? "PARTIALLY_CORROBORATED" as const
+            : "CONTRADICTED" as const;
+    return [claim.claimKey, value];
+  }));
+  const count = (value: "CORROBORATED" | "PARTIALLY_CORROBORATED" | "CONTRADICTED" | "UNRESOLVED") => [...verdicts.values()].filter((verdictValue) => verdictValue === value).length;
+  const identityClaims = claims.filter(({ category }) => category === "IDENTITY");
+  const identityFacets = identityClaims.flatMap((claim) => claim.facets.map((facet) => ({ claimKey: claim.claimKey, facet })));
+  const identitySupported = identityFacets.filter(({ claimKey, facet }) => facetStatus(claimKey, facet.key) === "SUPPORTED").length;
+  const identityEvidence = evidence.filter(({ claimKey }) => identityClaims.some((claim) => claim.claimKey === claimKey)).map(({ key }) => key);
+  const identityStatus = identityFacets.length > 0 && identitySupported === identityFacets.length ? "RESOLVED" as const : identitySupported > 0 ? "PARTIAL" as const : "AMBIGUOUS" as const;
+  const strongestEvidenceByClaim = claims.flatMap((claim) => {
+    const supporting = (evidenceByClaim.get(claim.claimKey) ?? []).filter(({ relation }) => relation === "SUPPORTS");
+    const evidenceKeys = [...new Set(supporting.map(({ key }) => key))];
+    const facetKeys = [...new Set(supporting.flatMap(({ facetKeys }) => facetKeys))];
+    return evidenceKeys.length ? [{ claimKey: claim.claimKey, facetKeys, evidenceKeys }] : [];
+  });
+  const materialInconsistencies = claims.flatMap((claim) => {
+    const contradicting = (evidenceByClaim.get(claim.claimKey) ?? []).filter(({ relation }) => relation === "CONTRADICTS");
+    return contradicting.length ? [{ claimKey: claim.claimKey, text: "Accepted evidence contradicts one or more reported facets.", evidenceKeys: [...new Set(contradicting.map(({ key }) => key))] }] : [];
+  });
+  const unresolvedMaterial = claims.flatMap((claim) => claim.facets.map((facet) => ({ claimKey: claim.claimKey, facet }))).filter(({ claimKey, facet }) => facet.materiality !== "LOW" && facetStatus(claimKey, facet.key) === "UNRESOLVED").length;
+  const selfOnlyClaims = claims.filter((claim) => {
+    const supporting = (evidenceByClaim.get(claim.claimKey) ?? []).filter(({ relation }) => relation === "SUPPORTS");
+    return supporting.length > 0 && supporting.every(({ sourceRef }) => options.authorityBySourceRef?.get(sourceRef) === "SELF_REPRESENTATION");
+  }).length;
+  const limitations = [
+    ...(unresolvedMaterial ? [`${counted(unresolvedMaterial, "material facet")} ${unresolvedMaterial === 1 ? "remains" : "remain"} unresolved.`] : []),
+    ...(options.contextDispositionCount ? [`${counted(options.contextDispositionCount, "relevant candidate")} ${options.contextDispositionCount === 1 ? "was" : "were"} context-only under the frozen authority snapshot and excluded from evidence.`] : []),
+    ...(selfOnlyClaims ? [`${counted(selfOnlyClaims, "finding")} ${selfOnlyClaims === 1 ? "has" : "have"} supporting evidence but no qualifying independent source.`] : []),
+    ...(options.rejectedCandidateCount ? [`${counted(options.rejectedCandidateCount, "candidate citation")} ${options.rejectedCandidateCount === 1 ? "was" : "were"} rejected by deterministic validation or adjudication.`] : []),
+    ...new Set(options.warnings ?? []),
+  ];
+  const timelineClaims = claims.filter((claim) => claim.facets.some(({ kind }) => kind === "INTERVAL"));
+  const timeline = timelineClaims.flatMap((claim) => claim.facets.filter(({ kind }) => kind === "INTERVAL").map((interval) => {
+    const claimEvidence = evidenceByClaim.get(claim.claimKey) ?? [];
+    const intervalEvidence = claimEvidence.filter(({ facetKeys }) => facetKeys.includes(interval.key));
+    const support = intervalEvidence.filter(({ relation }) => relation === "SUPPORTS");
+    const selfOnly = support.length > 0 && support.every(({ sourceRef }) => options.authorityBySourceRef?.get(sourceRef) === "SELF_REPRESENTATION");
+    const prefix = intervalEvidence.some(({ relation }) => relation === "CONTRADICTS")
+      ? "Conflicting reported claim"
+      : support.length
+        ? selfOnly ? "Supported self-report" : "Corroborated reported claim"
+        : "Reported — not independently corroborated";
+    return {
+      label: `${prefix}: ${claim.statement}`,
+      ...(interval.from ? { validFrom: interval.from } : {}),
+      ...(interval.to ? { validTo: interval.to } : {}),
+      claimKeys: [claim.claimKey],
+      evidenceKeys: [...new Set(intervalEvidence.map(({ key }) => key))],
+    };
+  }));
+  const timelineClaimKeys = timelineClaims.map(({ claimKey }) => claimKey);
+  const timelineEvidenceKeys = [...new Set(timeline.flatMap(({ evidenceKeys }) => evidenceKeys))];
+  return {
+    summary: {
+      professionalIdentity: {
+        status: identityStatus,
+        text: `Accepted evidence resolves ${identitySupported} of ${counted(identityFacets.length, "identity facet")} across ${counted(identityClaims.length, "reported identity claim")}.`,
+        claimKeys: identityClaims.map(({ claimKey }) => claimKey),
+        evidenceKeys: [...new Set(identityEvidence)],
+      },
+      professionalTimelineSummary: `Finding disposition: ${count("CORROBORATED")} corroborated, ${count("PARTIALLY_CORROBORATED")} partially corroborated, ${count("CONTRADICTED")} contradicted, and ${count("UNRESOLVED")} unresolved.`,
+      timelineClaimKeys,
+      timelineEvidenceKeys,
+      strongestEvidenceByClaim,
+      materialInconsistencies,
+      limitations,
+    },
+    timeline,
+  };
+}
+
 export function assertPublishableResult(result: InvestigationResult): void {
   if (result.run.classification !== "PUBLIC_PROFESSIONAL") return;
   for (const source of result.sources) {
@@ -184,7 +299,6 @@ type ResultContext = {
   run: Omit<InvestigationResult["run"], "status">;
   sourceStore: FileSourceStore;
   authoritySnapshot: SourceAuthoritySnapshot;
-  judgmentReasonsByClaim?: ReadonlyMap<string, readonly string[]>;
   compilerAttempts: 1 | 2;
   auditorAttempts: 1 | 2;
   warnings?: string[];
@@ -253,12 +367,11 @@ function mapKnown(values: string[], mapping: Map<string, string>, label: string)
 function claimExplanation(
   facets: InvestigationResult["claims"][number]["facets"],
   evidence: Array<{ sourceAuthority: Exclude<SourceAuthority, "CONTEXT" | "DISCOVERY_ONLY"> }>,
-  reasons: readonly string[],
 ): string {
   const dispositions = facets.map(({ key, status, strength }) => `${key} ${status} (${strength ?? "NONE"})`).join("; ");
   const authorities = [...new Set(evidence.map(({ sourceAuthority }) => sourceAuthority))].sort().join(", ") || "NONE";
-  const judgments = [...new Set(reasons.map((reason) => reason.trim()).filter(Boolean))].join(" ") || "No eligible immutable evidence resolved the remaining facets.";
-  return `Facet disposition: ${dispositions}. Evidence authority: ${authorities}. Judgment: ${judgments}`;
+  const count = (status: "SUPPORTED" | "CONTRADICTED" | "UNRESOLVED") => counted(facets.filter((facet) => facet.status === status).length, "facet");
+  return `Facet disposition: ${dispositions}. Evidence authority: ${authorities}. Judgment: Accepted evidence supports ${count("SUPPORTED")}, contradicts ${count("CONTRADICTED")}, and leaves ${count("UNRESOLVED")} unresolved.`;
 }
 
 export async function canonicalizeInvestigationResult(value: unknown, context: ResultContext): Promise<InvestigationResult> {
@@ -352,7 +465,12 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
         : expected === "CONTRADICTED"
           ? matching.filter((item) => item.relation === "CONTRADICTS")
           : [];
-      return { ...facet, status: expected, strength: statusEvidence.length ? evidenceStrength(statusEvidence) : null, evidenceIds: matching.map((item) => evidenceIds.get(item.key)!) };
+      const note = expected === "SUPPORTED"
+        ? "Accepted evidence supports this facet."
+        : expected === "CONTRADICTED"
+          ? "Accepted evidence contradicts this facet."
+          : "No eligible accepted evidence resolves this facet.";
+      return { ...facet, status: expected, note, strength: statusEvidence.length ? evidenceStrength(statusEvidence) : null, evidenceIds: matching.map((item) => evidenceIds.get(item.key)!) };
     });
     return {
       id: claimIds.get(claim.key)!,
@@ -362,7 +480,7 @@ export async function canonicalizeInvestigationResult(value: unknown, context: R
       sourceSpan: claim.sourceSpan,
       verdict: verdict(facets),
       strength: materialFloorStrength(facets),
-      explanation: claimExplanation(facets, claimEvidence, context.judgmentReasonsByClaim?.get(claim.key) ?? []),
+      explanation: claimExplanation(facets, claimEvidence),
       facets,
     };
   });

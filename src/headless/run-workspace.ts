@@ -36,6 +36,11 @@ const existingManifestSchema = z.object({
   runtime: z.enum(["LOCAL", "E2B"]),
   startedAt: z.string().min(1),
   inputSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  inputs: z.array(z.object({
+    kind: z.string().min(1),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    relativePath: z.string().min(1),
+  }).loose()).min(1).max(2),
 }).loose();
 
 export async function removeRunDiagnostics(root: string): Promise<void> {
@@ -143,6 +148,14 @@ export async function openRunWorkspace(rootPath: string): Promise<ExistingRunWor
   const root = resolve(rootPath);
   const manifest = existingManifestSchema.parse(JSON.parse(await readFile(join(root, "input", "manifest.json"), "utf8")));
   if (safeRunId(manifest.runId) !== basename(root)) throw new Error("Run directory name does not match its immutable input manifest.");
+  const actualInputs = await Promise.all(manifest.inputs.map(async (input) => {
+    const absolute = resolve(root, input.relativePath);
+    if (!absolute.startsWith(`${root}/`)) throw new Error(`Input path escapes the run: ${input.relativePath}.`);
+    const actualSha256 = sha256(await readFile(absolute));
+    if (actualSha256 !== input.sha256) throw new Error(`Preserved input hash differs for ${input.relativePath}.`);
+    return { kind: input.kind, sha256: actualSha256 };
+  }));
+  if (inputDigest(actualInputs) !== manifest.inputSha256) throw new Error("Preserved aggregate input hash differs from the immutable input manifest.");
   await readFile(join(root, "input", "document.json"));
   const sourceStore = await FileSourceStore.open(root);
   return {

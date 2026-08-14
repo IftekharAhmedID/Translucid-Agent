@@ -42,6 +42,7 @@ const auditSchema = z.object({
 export type DossierArtifact = { text: string; inventory: DossierInventory };
 
 export type FinalizationPipelineInput = {
+  repositoryRoot: string;
   runId: string;
   root: string;
   handle: RunHandle;

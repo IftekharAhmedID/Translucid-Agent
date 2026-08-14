@@ -10,6 +10,7 @@ import {
   FINALIZER_IMPLEMENTATION_VERSION,
   archivePriorFailure,
   collectResearchArtifactHashes,
+  finalizerImplementationHash,
   loadValidDossierCheckpoint,
   openPersistentRunBudget,
   RESEARCH_CONTRACT_VERSION,
@@ -175,6 +176,27 @@ test("research checkpoints require a matching specialist citation sidecar when a
     await assert.rejects(() => collectResearchArtifactHashes(root), /citation register/i);
     await writeFile(memoPath, `${memo}mutated`);
     await assert.rejects(() => collectResearchArtifactHashes(root), /hash mismatch/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("finalizer implementation hashing covers production host code and prompts but ignores tests", async () => {
+  const root = await mkdtemp(join(tmpdir(), "translucid-finalizer-hash-"));
+  try {
+    await mkdir(join(root, "src", "headless"), { recursive: true });
+    await mkdir(join(root, "src", "core"), { recursive: true });
+    await mkdir(join(root, "runtime", "headless-opencode", "agents"), { recursive: true });
+    await writeFile(join(root, "src", "headless", "pipeline.ts"), "export const version = 1;\n");
+    await writeFile(join(root, "src", "headless", "pipeline.test.ts"), "test('ignored');\n");
+    await writeFile(join(root, "src", "core", "evidence.ts"), "export const evidence = true;\n");
+    await writeFile(join(root, "runtime", "headless-opencode", "agents", "evidence-compiler.md"), "compiler\n");
+    await writeFile(join(root, "runtime", "headless-opencode", "agents", "evidence-auditor.md"), "auditor\n");
+    const first = await finalizerImplementationHash(root);
+    await writeFile(join(root, "src", "headless", "pipeline.test.ts"), "test('still ignored');\n");
+    assert.equal(await finalizerImplementationHash(root), first);
+    await writeFile(join(root, "src", "core", "evidence.ts"), "export const evidence = false;\n");
+    assert.notEqual(await finalizerImplementationHash(root), first);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

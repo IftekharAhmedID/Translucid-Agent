@@ -217,3 +217,87 @@ test("memo-tier candidates are globally ranked by excerpt overlap before source 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("bundle retrieval searches the whole immutable corpus without promoting context authority", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-bundle-candidates-"));
+  try {
+    const store = await FileSourceStore.open(directory, { finalizationVersion: "v5" });
+    const irrelevant = await store.capture({
+      kind: "SOURCE_CONTENT",
+      provider: "public-fetch",
+      providerRoute: "web.fetch",
+      sourceUrl: "https://records.organization.test/unrelated",
+      title: "Unrelated directory",
+      mimeType: "text/plain",
+      content: "A different person joined a different organization.",
+      provenance: {},
+    });
+    const context = await store.capture({
+      kind: "SOURCE_CONTENT",
+      provider: "public-fetch",
+      providerRoute: "web.fetch",
+      sourceUrl: "https://community.publisher.test/atlas",
+      title: "Project Atlas maintainers",
+      mimeType: "text/plain",
+      content: "Casey Morgan is listed as a Project Atlas maintainer.",
+      provenance: {},
+    });
+    const authorityBySourceRef = new Map([
+      [irrelevant.ref, { sourceHash: irrelevant.sha256, effectiveAuthority: "FIRST_PARTY_INSTITUTIONAL" as const }],
+      [context.ref, { sourceHash: context.sha256, effectiveAuthority: "CONTEXT" as const }],
+    ]);
+
+    const candidates = await store.findBundleExcerpts({
+      bundleId: "B001",
+      claims: [{
+        claimKey: "C001",
+        statement: "Casey Morgan maintains Project Atlas.",
+        facets: [{ key: "status", kind: "AFFILIATION", statement: "Casey Morgan is a Project Atlas maintainer.", sourceFragment: "Project Atlas maintainer" }],
+      }],
+      researchMemos: `Incorrect memo pointer [${irrelevant.ref}]`,
+      authorityBySourceRef,
+    });
+
+    const status = candidates.facets[0]!;
+    assert.equal(status.claimKey, "C001");
+    assert.equal(status.facetKey, "status");
+    assert.equal(status.candidates[0]?.sourceRef, context.ref);
+    assert.equal(status.candidates[0]?.effectiveAuthority, "CONTEXT");
+    assert.equal(status.candidates[0]?.evidenceEligible, false);
+    assert.equal(status.candidates[0]?.sourceHash, context.sha256);
+    assert.equal(status.candidates[0]?.sourceUrl, "https://community.publisher.test/atlas");
+    assert.ok(status.candidates.length <= 6);
+    assert.ok(candidates.totalCharacters <= 30_000);
+    assert.ok(candidates.uniqueExcerpts <= 30);
+    assert.deepEqual(await store.findBundleExcerpts({
+      bundleId: "B001",
+      claims: [{
+        claimKey: "C001",
+        statement: "Casey Morgan maintains Project Atlas.",
+        facets: [{ key: "status", kind: "AFFILIATION", statement: "Casey Morgan is a Project Atlas maintainer.", sourceFragment: "Project Atlas maintainer" }],
+      }],
+      researchMemos: `Incorrect memo pointer [${irrelevant.ref}]`,
+      authorityBySourceRef,
+    }), candidates);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("bundle retrieval fails closed when the frozen authority snapshot omits or mismatches a source", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-bundle-authority-"));
+  try {
+    const store = await FileSourceStore.open(directory, { finalizationVersion: "v5" });
+    const source = await store.capture({ kind: "SOURCE_CONTENT", provider: "public-fetch", providerRoute: "web.fetch", sourceUrl: "https://records.organization.test/atlas", mimeType: "text/plain", content: "Casey Morgan maintains Project Atlas.", provenance: {} });
+    const request = {
+      bundleId: "B001",
+      claims: [{ claimKey: "C001", statement: "Casey Morgan maintains Project Atlas.", facets: [{ key: "status", kind: "AFFILIATION", statement: "Casey Morgan maintains Project Atlas.", sourceFragment: "Project Atlas" }] }],
+      researchMemos: "",
+    } as const;
+
+    await assert.rejects(store.findBundleExcerpts({ ...request, authorityBySourceRef: new Map() }), /missing.*frozen authority/i);
+    await assert.rejects(store.findBundleExcerpts({ ...request, authorityBySourceRef: new Map([[source.ref, { sourceHash: "f".repeat(64), effectiveAuthority: "DIRECT_WORK" as const }]]) }), /hash.*frozen authority/i);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

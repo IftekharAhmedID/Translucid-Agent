@@ -28,7 +28,7 @@ Judge exactly the supplied frozen claim bundle. For every facet, return exactly 
 
 export const V5_AUDITOR_PROMPT_CONTRACT = `MODE: INCREMENTAL_AUDIT
 
-Audit only semantic failure classes in the supplied frozen V5 ledger: wrong person or claim, neighboring-facet leakage, authority overstatement, missed input assertion, timeline mistake, missed contradiction, false progression contradiction, or summary text unsupported by accepted IDs. Do not audit JSON syntax, hashes, paths, or quote exactness because the host already proved them. Report a repairable EVIDENCE or SUMMARY defect only when it can be corrected without changing frozen claim line ownership. A split, merge, omission, or systemic defect is non-repairable CLAIM or AUDIT scope. Do not research or call tools.`;
+Audit only semantic failure classes in the supplied frozen V5.1 ledger: wrong person or claim, neighboring-facet leakage, authority overstatement, missed input assertion, timeline mistake, missed contradiction, false progression contradiction, or summary text unsupported by accepted IDs. Do not audit JSON syntax, hashes, paths, or quote exactness because the host already proved them. An EVIDENCE defect is repairable only when every affected relation belongs to one bundle; include that exact bundleId. Deterministic assembly defects use SUMMARY and no bundleId. Ambiguous, multi-bundle, split, merge, omission, or systemic defects are non-repairable CLAIM or AUDIT scope. Do not research or call tools.`;
 
 export function researchPrompt(deadline: string): string {
   return `${RESEARCH_PROMPT_CONTRACT} The research deadline is ${deadline}.`;

@@ -75,6 +75,30 @@ export type StoredExcerptCandidates = {
   totalCharacters: number;
 };
 
+export type BundleExcerptCandidate = {
+  ref: string;
+  sourceRef: string;
+  path: string;
+  offsetStart: number;
+  offsetEnd: number;
+  text: string;
+  sourceHash: string;
+  sourceUrl?: string;
+  title?: string;
+  provider: string;
+  providerRoute: string;
+  effectiveAuthority: string;
+  evidenceEligible: boolean;
+};
+
+export type BundleExcerptCandidates = {
+  bundleId: string;
+  facets: Array<{ claimKey: string; facetKey: string; candidates: BundleExcerptCandidate[] }>;
+  fingerprint: string;
+  totalCharacters: number;
+  uniqueExcerpts: number;
+};
+
 type Manifest = z.infer<typeof manifestSchema>;
 type FlatValue = { path: string; text: string };
 
@@ -139,6 +163,17 @@ function boundedWindow(text: string, query: string, maximum: number): { text: st
 
 function excerptRef(sourceRef: string, path: string, offsetStart: number, offsetEnd: number, text: string): string {
   return `X${createHash("sha256").update([sourceRef, path, offsetStart, offsetEnd, text].join("\0")).digest("hex")}`;
+}
+
+const retrievalIgnored = new Set(["about", "after", "also", "been", "company", "from", "have", "into", "organization", "project", "reported", "reports", "résumé", "that", "their", "these", "this", "through", "with", "work"]);
+const retrievalActions = new Set(["authored", "built", "contributed", "created", "developed", "directed", "engineered", "joined", "led", "maintained", "managed", "presented", "published", "served", "worked"]);
+
+function retrievalTokens(value: string): string[] {
+  return [...new Set(value.toLocaleLowerCase("en-US").normalize("NFKC").split(/[^\p{L}\p{N}+#.-]+/u).filter((token) => token.length >= 3 && !retrievalIgnored.has(token)))];
+}
+
+function normalizedPhrase(value: string): string {
+  return value.toLocaleLowerCase("en-US").normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 
 export class FileSourceStore {
@@ -363,6 +398,132 @@ export class FileSourceStore {
     const totalCharacters = 16_000 - remainingCharacters;
     const fingerprint = createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.entries(candidatesByFacet).sort(([left], [right]) => left.localeCompare(right))))).digest("hex");
     return { candidatesByFacet, fingerprint, totalCharacters };
+  }
+
+  async findBundleExcerpts(input: {
+    bundleId: string;
+    claims: ReadonlyArray<{
+      claimKey: string;
+      statement: string;
+      facets: ReadonlyArray<{ key: string; kind: string; statement: string; sourceFragment: string }>;
+    }>;
+    researchMemos: string;
+    authorityBySourceRef: ReadonlyMap<string, { sourceHash: string; effectiveAuthority: string }>;
+  }): Promise<BundleExcerptCandidates> {
+    const sources = await this.list();
+    for (const source of sources) {
+      const frozen = input.authorityBySourceRef.get(source.ref);
+      if (!frozen) throw new Error(`Source ${source.ref} is missing from the frozen authority snapshot.`);
+      if (frozen.sourceHash !== source.sha256) throw new Error(`Source ${source.ref} hash does not match the frozen authority snapshot.`);
+    }
+
+    const sourceValues = new Map<string, { raw: string; values: FlatValue[] }>();
+    for (const source of sources) {
+      const raw = await readFile(join(this.root, source.relativePath), "utf8");
+      sourceValues.set(source.ref, { raw, values: source.mimeType.includes("json") ? flatten(JSON.parse(raw)) : [{ path: "$", text: raw }] });
+    }
+    const paragraphs = input.researchMemos.split(/\n\s*\n/gu);
+    const rankedFacets = input.claims.flatMap((claim) => claim.facets.map((facet) => {
+      const tokens = retrievalTokens(`${claim.statement} ${facet.statement} ${facet.sourceFragment}`);
+      const dates = new Set(tokens.filter((token) => /^(?:19|20)\d{2}$/u.test(token)));
+      const actions = new Set(tokens.filter((token) => retrievalActions.has(token)));
+      const anchors = new Set(tokens.filter((token) => !dates.has(token) && !actions.has(token)));
+      const queries = [...new Set([facet.sourceFragment, facet.statement, claim.statement, ...tokens])].filter(Boolean).sort((left, right) => right.length - left.length).slice(0, 12);
+      const candidates: Array<{ candidate: BundleExcerptCandidate; score: readonly [number, number, number, number, number] }> = [];
+      for (const source of sources) {
+        const frozen = input.authorityBySourceRef.get(source.ref)!;
+        const memoBoost = paragraphs.some((paragraph) => paragraph.includes(`[${source.ref}]`) && tokens.some((token) => paragraph.toLocaleLowerCase("en-US").includes(token))) ? 1 : 0;
+        const stored = sourceValues.get(source.ref)!;
+        const sourceCandidates = new Map<string, { candidate: BundleExcerptCandidate; score: readonly [number, number, number, number, number] }>();
+        for (const value of stored.values) {
+          if (!value.text) continue;
+          for (const query of queries) {
+            const window = boundedWindow(value.text, query, 1_000);
+            if (!window || !window.text) continue;
+            const rawOffset = value.path === "$" ? window.offsetStart : stored.raw.indexOf(window.text);
+            const offsetStart = Math.max(0, rawOffset);
+            const offsetEnd = offsetStart + window.text.length;
+            const ref = excerptRef(source.ref, value.path, offsetStart, offsetEnd, window.text);
+            const quotePhrase = normalizedPhrase(window.text);
+            const quoteTokens = new Set(retrievalTokens(window.text));
+            const exactPhrase = [facet.sourceFragment, facet.statement].some((phrase) => {
+              const normalized = normalizedPhrase(phrase);
+              return normalized.length >= 4 && quotePhrase.includes(normalized);
+            }) ? 1 : 0;
+            const anchorOverlap = [...anchors].filter((token) => quoteTokens.has(token)).length;
+            const dateOverlap = [...dates].filter((token) => quoteTokens.has(token)).length;
+            const actionOverlap = [...actions].filter((token) => quoteTokens.has(token)).length;
+            const candidate: BundleExcerptCandidate = {
+              ref,
+              sourceRef: source.ref,
+              path: value.path,
+              offsetStart,
+              offsetEnd,
+              text: window.text,
+              sourceHash: source.sha256,
+              ...(source.sourceUrl ? { sourceUrl: source.sourceUrl } : {}),
+              ...(source.title ? { title: source.title } : {}),
+              provider: source.provider,
+              providerRoute: source.providerRoute,
+              effectiveAuthority: frozen.effectiveAuthority,
+              evidenceEligible: frozen.effectiveAuthority !== "CONTEXT" && frozen.effectiveAuthority !== "DISCOVERY_ONLY",
+            };
+            const scored = { candidate, score: [exactPhrase, anchorOverlap, dateOverlap, actionOverlap, memoBoost] as const };
+            const previous = sourceCandidates.get(ref);
+            if (!previous || scored.score.some((value, index) => value > previous.score[index]!)) sourceCandidates.set(ref, scored);
+          }
+        }
+        candidates.push(...[...sourceCandidates.values()].sort((left, right) => {
+          for (let index = 0; index < left.score.length; index += 1) if (left.score[index] !== right.score[index]) return right.score[index]! - left.score[index]!;
+          return left.candidate.offsetStart - right.candidate.offsetStart;
+        }).slice(0, 2));
+      }
+      candidates.sort((left, right) => {
+        for (let index = 0; index < left.score.length; index += 1) if (left.score[index] !== right.score[index]) return right.score[index]! - left.score[index]!;
+        return Number(left.candidate.sourceRef.slice(1)) - Number(right.candidate.sourceRef.slice(1)) || left.candidate.path.localeCompare(right.candidate.path) || left.candidate.offsetStart - right.candidate.offsetStart;
+      });
+      return { claimKey: claim.claimKey, facetKey: facet.key, candidates: candidates.map(({ candidate }) => candidate) };
+    }));
+
+    const selected = rankedFacets.map(({ claimKey, facetKey }) => ({ claimKey, facetKey, candidates: [] as BundleExcerptCandidate[] }));
+    const queues = rankedFacets.map(({ candidates }) => [...candidates]);
+    const unique = new Map<string, BundleExcerptCandidate>();
+    const assignments = new Map<string, number>();
+    let totalCharacters = 0;
+    let progress = true;
+    while (progress) {
+      progress = false;
+      for (let index = 0; index < queues.length; index += 1) {
+        if (selected[index]!.candidates.length >= 6) continue;
+        const queue = queues[index]!;
+        while (queue.length) {
+          const candidate = queue.shift()!;
+          if ((assignments.get(candidate.ref) ?? 0) >= 3) continue;
+          const isNew = !unique.has(candidate.ref);
+          if (isNew && (unique.size >= 30 || totalCharacters + candidate.text.length > 30_000)) continue;
+          selected[index]!.candidates.push(candidate);
+          assignments.set(candidate.ref, (assignments.get(candidate.ref) ?? 0) + 1);
+          if (isNew) {
+            unique.set(candidate.ref, candidate);
+            totalCharacters += candidate.text.length;
+          }
+          progress = true;
+          break;
+        }
+      }
+    }
+    const previousExcerptCount = this.excerptIndex.size;
+    for (const candidate of unique.values()) this.excerptIndex.set(candidate.ref, {
+      ref: candidate.ref,
+      sourceRef: candidate.sourceRef,
+      path: candidate.path,
+      offsetStart: candidate.offsetStart,
+      offsetEnd: candidate.offsetEnd,
+      text: candidate.text,
+    });
+    if (this.excerptIndex.size !== previousExcerptCount) await this.persistExcerpts();
+    const fingerprint = createHash("sha256").update(JSON.stringify({ bundleId: input.bundleId, facets: selected })).digest("hex");
+    return { bundleId: input.bundleId, facets: selected, fingerprint, totalCharacters, uniqueExcerpts: unique.size };
   }
 
   async verify(): Promise<{ valid: boolean; invalidSourceRefs: string[] }> {

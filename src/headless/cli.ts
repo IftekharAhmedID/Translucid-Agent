@@ -181,6 +181,7 @@ async function main(): Promise<void> {
     }
     const controller = new HeadlessInvestigationController();
     const output = await controller.run({
+      repositoryRoot: process.cwd(),
       runId,
       root: workspace.root,
       handle,

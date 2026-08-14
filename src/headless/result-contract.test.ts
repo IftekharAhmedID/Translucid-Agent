@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { finalizeWithSingleRepair } from "./finalize.ts";
-import { assertPublishableResult, canonicalizeInvestigationResult, investigationDraftSchema, type InvestigationDraft, type InvestigationResult } from "./result-contract.ts";
+import { assertPublishableResult, buildDeterministicSummaryTimeline, canonicalizeInvestigationResult, investigationDraftSchema, type InvestigationDraft, type InvestigationResult } from "./result-contract.ts";
 import { loadSourceAuthority } from "./source-authority.ts";
 import { FileSourceStore } from "./source-store.ts";
 
@@ -108,7 +108,6 @@ test("canonicalizes semantic keys and derives facet outcomes, trust, timeline st
     const { store, sourceRef } = await directWorkStore(directory);
     const result = await canonicalizeInvestigationResult(draft(sourceRef), {
       ...await resultContext(directory, store),
-      judgmentReasonsByClaim: new Map([["employment", ["Exact role and employer fields match the reported facets."]]]),
       rejectedCitations: 0,
       providerCalls: 2,
       cacheHits: 1,
@@ -119,12 +118,13 @@ test("canonicalizes semantic keys and derives facet outcomes, trust, timeline st
     assert.equal(result.claims[0]?.strength, "STRONG");
     assert.match(result.claims[0]?.explanation ?? "", /employer_team SUPPORTED \(STRONG\).*title SUPPORTED \(STRONG\)/);
     assert.match(result.claims[0]?.explanation ?? "", /DIRECT_WORK/);
-    assert.match(result.claims[0]?.explanation ?? "", /Exact role and employer fields match/);
+    assert.match(result.claims[0]?.explanation ?? "", /Accepted evidence supports 2 facets, contradicts 0 facets, and leaves 0 facets unresolved/);
+    assert.doesNotMatch(result.claims[0]?.explanation ?? "", /Direct repository records|source names|source states/u);
     assert.notEqual(result.claims[0]?.explanation, draft(sourceRef).claims[0]?.explanation);
     assert.equal(result.schemaVersion, "1.1");
-    assert.deepEqual(result.claims[0]?.facets.map(({ evidenceIds, strength }) => ({ evidenceIds, strength })), [
-      { evidenceIds: ["E1"], strength: "STRONG" },
-      { evidenceIds: ["E2"], strength: "STRONG" },
+    assert.deepEqual(result.claims[0]?.facets.map(({ evidenceIds, strength, note }) => ({ evidenceIds, strength, note })), [
+      { evidenceIds: ["E1"], strength: "STRONG", note: "Accepted evidence supports this facet." },
+      { evidenceIds: ["E2"], strength: "STRONG", note: "Accepted evidence supports this facet." },
     ]);
     assert.deepEqual(result.evidence.map(({ id, claimId, sourceAuthority, attestationGroup }) => ({ id, claimId, sourceAuthority, attestationGroup })), [
       { id: "E1", claimId: "C1", sourceAuthority: "DIRECT_WORK", attestationGroup: "github-repository:example/toolchain" },
@@ -237,6 +237,7 @@ test("a direct contradiction remains CONTRADICTED with STRONG evidence", async (
     const result = await canonicalizeInvestigationResult(contradicted, await resultContext(directory, store));
     assert.equal(result.claims[0]?.verdict, "CONTRADICTED");
     assert.equal(result.claims[0]?.strength, "STRONG");
+    assert.match(result.claims[0]?.explanation ?? "", /supports 1 facet, contradicts 1 facet, and leaves 0 facets unresolved/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -277,7 +278,7 @@ test("contradicted facet strength uses only contradiction evidence", async () =>
         status: "CONTRADICTED",
         strength: "WEAK",
         evidenceIds: ["E2", "E3"],
-        note: "The source states the title.",
+        note: "Accepted evidence contradicts this facet.",
       },
     );
   } finally {
@@ -449,4 +450,68 @@ test("rejects a material claim clause that has no declared facet", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("deterministic summary labels unresolved timeline assertions without laundering them", () => {
+  const claims = [
+    {
+      claimKey: "C001",
+      category: "IDENTITY" as const,
+      statement: "The résumé identifies Casey Morgan.",
+      facets: [{ key: "name", kind: "IDENTITY", materiality: "HIGH" as const }],
+    },
+    {
+      claimKey: "C002",
+      category: "EMPLOYMENT" as const,
+      statement: "Casey Morgan reports working at Example Corp from 2021 through 2024.",
+      facets: [
+        { key: "employer", kind: "ORGANIZATION", materiality: "HIGH" as const },
+        { key: "interval", kind: "INTERVAL", materiality: "HIGH" as const, from: "2021", to: "2024" },
+      ],
+    },
+  ];
+  const deterministic = buildDeterministicSummaryTimeline(claims, [], { contextDispositionCount: 2, rejectedCandidateCount: 1 });
+
+  assert.match(deterministic.summary.professionalIdentity.text, /0 of 1 identity facet across 1 reported identity claim/i);
+  assert.match(deterministic.summary.professionalTimelineSummary, /2 unresolved/i);
+  assert.deepEqual(deterministic.summary.strongestEvidenceByClaim, []);
+  assert.match(deterministic.timeline[0]?.label ?? "", /^Reported — not independently corroborated:/u);
+  assert.equal(deterministic.timeline[0]?.validFrom, "2021");
+  assert.equal(deterministic.timeline[0]?.validTo, "2024");
+  assert.equal(deterministic.timeline[0]?.evidenceKeys.length, 0);
+  assert.ok(deterministic.summary.limitations.includes("3 material facets remain unresolved."));
+  assert.ok(deterministic.summary.limitations.includes("1 candidate citation was rejected by deterministic validation or adjudication."));
+  assert.ok(deterministic.summary.limitations.some((item) => /context-only under the frozen authority/i.test(item)));
+
+  const singular = buildDeterministicSummaryTimeline(claims, [
+    { key: "E001", claimKey: "C001", facetKeys: ["name"], relation: "SUPPORTS", sourceRef: "S1" },
+    { key: "E002", claimKey: "C002", facetKeys: ["employer"], relation: "SUPPORTS", sourceRef: "S1" },
+  ]);
+  assert.ok(singular.summary.limitations.includes("1 material facet remains unresolved."));
+});
+
+test("timeline corroboration requires evidence for the interval facet itself", () => {
+  const claims = [{
+    claimKey: "C001",
+    category: "EMPLOYMENT" as const,
+    statement: "The submission reports work at Example Corp from 2021 through 2024.",
+    facets: [
+      { key: "employer", kind: "ORGANIZATION", materiality: "HIGH" as const },
+      { key: "interval", kind: "INTERVAL", materiality: "HIGH" as const, from: "2021", to: "2024" },
+    ],
+  }];
+  const evidence = [{ key: "E001", claimKey: "C001", facetKeys: ["employer"], relation: "SUPPORTS" as const, sourceRef: "S1" }];
+
+  const deterministic = buildDeterministicSummaryTimeline(claims, evidence, { authorityBySourceRef: new Map([["S1", "INDEPENDENT_PROFESSIONAL"]]) });
+
+  assert.match(deterministic.timeline[0]?.label ?? "", /^Reported — not independently corroborated:/u);
+  assert.deepEqual(deterministic.timeline[0]?.evidenceKeys, []);
+  assert.deepEqual(deterministic.summary.timelineEvidenceKeys, []);
+});
+
+test("deterministic summary verdict counts match canonical low-materiality contradiction rules", () => {
+  const claims = [{ claimKey: "C001", category: "OTHER" as const, statement: "A reported low-materiality detail.", facets: [{ key: "detail", kind: "OTHER", materiality: "LOW" as const }] }];
+  const evidence = [{ key: "E001", claimKey: "C001", facetKeys: ["detail"], relation: "CONTRADICTS" as const, sourceRef: "S1" }];
+  const deterministic = buildDeterministicSummaryTimeline(claims, evidence);
+  assert.match(deterministic.summary.professionalTimelineSummary, /1 contradicted/i);
 });
