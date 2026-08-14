@@ -246,7 +246,7 @@ function sectionHeading(text: string): boolean {
   const hasDottedLeader = /(?:\s*\.){3,}\s*$/u.test(trimmed);
   const value = trimmed.replace(/(?:\s*\.){3,}\s*$/u, "").replace(/:$/u, "").trim();
   if (hasDottedLeader && value.split(/\s+/u).length <= 6 && !/\d/u.test(value) && !/\b(?:worked|works|built|created|led|managed|published|contributed|maintained|served)\b/iu.test(value)) return true;
-  return /^(?:profile|professional summary|summary|experience|employment|employment history|work experience|education|skills|technical skills|languages|projects|publications|certifications|awards|affiliations|volunteering|contact)$/iu.test(value)
+  return /^(?:profile|professional summary|summary|experience|career experience|professional experience|employment|employment history|work experience|work history|career history|education|skills|technical skills|languages|projects|publications|certifications|awards|affiliations|volunteering|contact)$/iu.test(value)
     || (value.length >= 2 && value === value.toLocaleUpperCase("en-US") && !/\d/u.test(value) && !likelyFactualAssertion(value));
 }
 
@@ -286,6 +286,24 @@ function fragmentsHaveDistinctOccurrences(facets: ClaimBatch["claims"][number]["
   return visit(0);
 }
 
+function coverageSegments(text: string): string[] {
+  return text.split(/[,，;；|•●]|\s(?:→|⇒|\/)\s/gu)
+    .flatMap((value) => {
+      const trimmed = value.trim();
+      const match = /^(.*\S)\s+((?:19|20)\d{2}\s*[–—-]\s*(?:(?:19|20)\d{2}|present|current))$/iu.exec(trimmed);
+      return match ? [match[1]!, match[2]!] : [trimmed];
+    })
+    .filter((value) => normalizedAnchor(value).length >= 2);
+}
+
+function benignCommaSubfragment(facet: ClaimBatch["claims"][number]["facets"][number], segment: string): boolean {
+  if (!facet.sourceFragment.includes(segment)) return false;
+  if (new Set(["ORGANIZATION", "ORG_UNIT", "LOCATION", "OUTPUT"]).has(facet.kind)) return true;
+  // Commas inside dates and grouped numbers are punctuation, not separate predicates.
+  return /\b(?:updated|created|published|as of|on)\b[^\n,]{1,40},\s*\d{4}\b/iu.test(facet.sourceFragment)
+    || /\d,\d{3}(?:\D|$)/u.test(facet.sourceFragment);
+}
+
 function validateAtomicFacets(claimKey: string, facets: ClaimBatch["claims"][number]["facets"], catalog: LineCatalog): void {
   const normalizedFragments = facets.map(({ sourceFragment }) => normalizedAnchor(sourceFragment));
   unique(normalizedFragments, `source fragment on ${claimKey}`);
@@ -300,14 +318,18 @@ function validateAtomicFacets(claimKey: string, facets: ClaimBatch["claims"][num
   for (const lineId of ownedLineIds) {
     const line = catalog.lines.find(({ id }) => id === lineId)!;
     const lineFacets = facets.filter(({ lineIds }) => lineIds.includes(lineId));
-    const segments = line.text.split(/[,，;；|•●]|\s(?:→|⇒|\/)\s/gu).map((value) => value.trim()).filter((value) => normalizedAnchor(value).length >= 2);
+    const segments = coverageSegments(line.text);
     for (const segment of segments) {
       const covering = lineFacets.filter(({ kind, sourceFragment }) => segment.includes(sourceFragment)
         || (new Set(["ORGANIZATION", "ORG_UNIT", "LOCATION", "OUTPUT"]).has(kind)
           && (sourceFragment.match(/[,，]/gu)?.length ?? 0) <= 1
-          && sourceFragment.includes(segment)));
+          && sourceFragment.includes(segment))
+        || benignCommaSubfragment({ kind, sourceFragment } as ClaimBatch["claims"][number]["facets"][number], segment));
       if (covering.length === 0) throw new Error(`Material submission fragment on ${claimKey} has no atomic facet: ${segment}`);
-      if (/(?:19|20)\d{2}/u.test(segment) && /\p{L}{3}/u.test(segment)) {
+      const nonIntervalText = segment
+        .replace(/(?:19|20)\d{2}\s*[–—-]\s*(?:(?:19|20)\d{2}|present|current)/iu, "")
+        .trim();
+      if (/(?:19|20)\d{2}/u.test(segment) && /\p{L}{3}/u.test(nonIntervalText)) {
         const intervalCovered = covering.some(({ kind }) => kind === "INTERVAL");
         const predicateCovered = covering.some(({ kind }) => kind !== "INTERVAL");
         if (!intervalCovered || !predicateCovered) throw new Error(`Time-bearing submission fragment on ${claimKey} must separate its interval from its predicate: ${segment}`);

@@ -230,6 +230,18 @@ test("generic language section headings remain distinct from factual language as
   assert.match(factual.defects.join("\n"), /not a recognized section heading/i);
 });
 
+test("recognizes common career section headings", () => {
+  const headingCatalog = buildLineCatalog({ pages: [{ page: 1, lines: [
+    { line: 1, text: "Career Experience" },
+    { line: 2, text: "Professional Experience" },
+  ] }] });
+  const result = validateClaimBatchRecords({ claims: [], exclusions: [
+    { lineIds: ["P1L1"], reason: "SECTION_HEADING" },
+    { lineIds: ["P1L2"], reason: "SECTION_HEADING" },
+  ], deferredLineIds: [] }, headingCatalog, ["P1L1", "P1L2"]);
+  assert.deepEqual(result.defects, []);
+});
+
 test("atomic facets retain one typed predicate and an exact submission fragment", () => {
   const atomicCatalog = buildLineCatalog({ pages: [{ page: 1, lines: [
     { line: 1, text: "Principal Engineer, Systems Unit, Example Corp, 2021–2024" },
@@ -359,6 +371,44 @@ test("anonymous compound, progression, multilingual, proper-noun, and negation l
     assert.deepEqual(result.defects, [], `${example.line}: ${result.defects.join("; ")}`);
     assert.equal(result.claims[0]?.facets.length, example.facets.length);
   }
+});
+
+test("atomic coverage preserves comma-bearing dates, locations, and grouped numbers", () => {
+  const metadataCatalog = buildLineCatalog({ pages: [{ page: 1, lines: [
+    { line: 1, text: "Updated on February 23, 2026" },
+    { line: 2, text: "CE-SW Runtimes, Arm Ltd., Cambridge, UK 2023–present" },
+    { line: 3, text: "an internal community of more than 1,400 Python developers" },
+  ] }] });
+  const result = validateClaimBatchRecords({ claims: [
+    {
+      localKey: "metadata",
+      category: "OTHER",
+      statement: "The profile was updated on February 23, 2026.",
+      materiality: "LOW",
+      facets: [{ key: "updated", kind: "OTHER", label: "The profile was updated on February 23, 2026.", sourceFragment: "Updated on February 23, 2026", materiality: "LOW", lineIds: ["P1L1"] }],
+    },
+    {
+      localKey: "employment",
+      category: "EMPLOYMENT",
+      statement: "The person worked in CE-SW Runtimes at Arm Ltd. in Cambridge, UK from 2023 to the present.",
+      materiality: "HIGH",
+      facets: [
+        { key: "unit", kind: "ORG_UNIT", label: "The person worked in CE-SW Runtimes.", sourceFragment: "CE-SW Runtimes", materiality: "HIGH", lineIds: ["P1L2"] },
+        { key: "organization", kind: "ORGANIZATION", label: "The person worked at Arm Ltd.", sourceFragment: "Arm Ltd.", materiality: "HIGH", lineIds: ["P1L2"] },
+        { key: "location", kind: "LOCATION", label: "The reported location is Cambridge, UK.", sourceFragment: "Cambridge, UK", materiality: "HIGH", lineIds: ["P1L2"] },
+        { key: "interval", kind: "INTERVAL", label: "The reported interval is 2023 to the present.", sourceFragment: "2023–present", materiality: "HIGH", lineIds: ["P1L2"] },
+      ],
+    },
+    {
+      localKey: "community",
+      category: "AFFILIATION",
+      statement: "The community includes more than 1,400 Python developers.",
+      materiality: "MEDIUM",
+      facets: [{ key: "community", kind: "AFFILIATION", label: "The community includes more than 1,400 Python developers.", sourceFragment: "an internal community of more than 1,400 Python developers", materiality: "MEDIUM", lineIds: ["P1L3"] }],
+    },
+  ], exclusions: [], deferredLineIds: [] }, metadataCatalog, ["P1L1", "P1L2", "P1L3"]);
+  assert.deepEqual(result.defects, []);
+  assert.equal(result.claims.length, 3);
 });
 
 test("claim bundles are deterministic, bounded, and split at headings and pages", () => {
