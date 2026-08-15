@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { E2BRuntime } from "../runtime/e2b.ts";
 import { getPinnedLocalManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
@@ -56,6 +57,13 @@ async function closeServer(server: ReturnType<typeof createHeadlessGateway>["ser
   await new Promise<void>((done) => server.close(() => done()));
 }
 
+function attachTui(handle: RunHandle, password: string, sessionId: string): ChildProcess {
+  return spawn(resolve("node_modules", ".bin", "opencode"), ["attach", handle.openCodeUrl, "--session", sessionId], {
+    env: { ...process.env, OPENCODE_SERVER_PASSWORD: password },
+    stdio: "inherit",
+  });
+}
+
 async function runtimeFor(workspace: ExistingRunWorkspace): Promise<InvestigatorRuntime> {
   if (workspace.runtime === "LOCAL") return new LocalDockerRuntime();
   if (!process.env.E2B_API_KEY || !process.env.E2B_TEMPLATE_ID) throw new Error("E2B publishing requires E2B_API_KEY and E2B_TEMPLATE_ID.");
@@ -78,6 +86,7 @@ async function main(): Promise<void> {
   if (await exists(resultPath)) throw new Error("A successful result.json already exists; publishing will not overwrite it.");
 
   const workspace = await openRunWorkspace(options.runDirectory);
+  if (options.watch && workspace.runtime !== "LOCAL") throw new Error("--watch requires the local Docker runtime; E2B recovery has no TUI access.");
   const snapshot = await verifyResearchSnapshot(workspace.root);
   if (snapshot.runtime !== workspace.runtime) throw new Error("Research snapshot runtime differs from the immutable input manifest.");
   const integrity = await workspace.sourceStore.verify();
@@ -113,7 +122,9 @@ async function main(): Promise<void> {
   gateway.setPhase("PUBLISHING");
   let runtime: InvestigatorRuntime | undefined;
   let handle: RunHandle | undefined;
+  let watchProcess: ChildProcess | undefined;
   let publisherManifestHash: string | undefined;
+  const password = randomBytes(24).toString("base64url");
   const abort = new AbortController();
   const abortHandler = () => abort.abort(new DOMException("Publishing cancelled by signal.", "AbortError"));
   process.once("SIGINT", abortHandler);
@@ -132,7 +143,7 @@ async function main(): Promise<void> {
       caseDirectory: workspace.root,
       gatewayUrl,
       caseToken: gateway.token,
-      openCodePassword: randomBytes(24).toString("base64url"),
+      openCodePassword: password,
       expectedManifestHash: await getPinnedLocalManifestHash(),
       timeoutMs: RUN_TIMEOUT_MS,
       mode: "headless",
@@ -140,7 +151,19 @@ async function main(): Promise<void> {
       allowStaleCaseManifest: true,
     });
     publisherManifestHash = handle.manifestHash;
-    const output = await runPublishingRecovery({ handle, model: snapshot.researchModel, deadlineAt, signal: abort.signal, reportStore });
+    const output = await runPublishingRecovery({
+      handle,
+      model: snapshot.researchModel,
+      deadlineAt,
+      signal: abort.signal,
+      reportStore,
+      onSessionStarted: (sessionId) => {
+        if (options.watch && handle?.kind === "LOCAL") {
+          process.stderr.write(`Publishing session ${sessionId} is visible in the attached TUI.\n`);
+          watchProcess = attachTui(handle, password, sessionId);
+        }
+      },
+    });
     const requestStatsAfter = await workspace.sourceStore.requestStats();
     if (JSON.stringify(requestStatsAfter) !== JSON.stringify(requestStatsBefore)) throw new Error("Publishing changed provider request statistics; research replay is forbidden.");
     await rm(reportTemporaryPath, { force: true });
@@ -183,6 +206,7 @@ async function main(): Promise<void> {
     process.removeListener("SIGINT", abortHandler);
     process.removeListener("SIGTERM", abortHandler);
     if (runtime && handle) await runtime.stop(handle).catch(() => undefined);
+    if (watchProcess && !watchProcess.killed) watchProcess.kill("SIGTERM");
     gateway.cancel();
     await closeServer(gateway.server);
     await rm(reportTemporaryPath, { force: true }).catch(() => undefined);
