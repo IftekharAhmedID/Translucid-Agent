@@ -7,6 +7,11 @@ import { tool } from "@opencode-ai/plugin";
 import { completedTaskMemo } from "./task-memo.ts";
 
 const z = tool.schema;
+const includeDomains = z.array(z.string().trim().min(1).max(500).regex(/^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/)).min(1).max(10)
+  .transform((values) => [...new Set(values.map((value) => {
+    const slash = value.indexOf("/");
+    return slash < 0 ? value.toLocaleLowerCase("en-US") : `${value.slice(0, slash).toLocaleLowerCase("en-US")}${value.slice(slash)}`;
+  }))].sort());
 const gatewayUrl = process.env.CASE_GATEWAY_URL;
 const token = process.env.CASE_TOKEN;
 const runId = process.env.RUN_ID;
@@ -117,7 +122,7 @@ const plugin: Plugin = async () => {
   }
 
   const tools = {
-    "web.search": gatewayTool("web.search", "Discover public sources with targeted highlights. Returned S references identify immutable captures.", { query: z.string().min(2).max(1000), mode: z.enum(["fast", "auto"]).default("fast"), highlightQuery: z.string().min(2).max(1000).optional(), resultLimit: z.number().int().min(1).max(10).default(5) }),
+    "web.search": gatewayTool("web.search", "Discover public sources with targeted highlights. Returned S references identify immutable captures.", { query: z.string().min(2).max(1000), mode: z.enum(["fast", "auto"]).default("fast"), highlightQuery: z.string().min(2).max(1000).optional(), resultLimit: z.number().int().min(1).max(10).default(5), includeDomains: includeDomains.optional() }),
     "web.fetch": gatewayTool("web.fetch", "Capture one public page as an immutable source.", { url: z.string().url() }),
     "professional.profile": gatewayTool("professional.profile", "Retrieve one full professional profile with one conditional fallback for a missing material field.", { username: z.string().min(2).max(200), requiredMaterialField: z.enum(["IDENTITY", "CURRENT_POSITION", "EMPLOYMENT_HISTORY", "EDUCATION"]).default("IDENTITY") }),
     "professional.activity": gatewayTool("professional.activity", "Escalation-only retrieval for material activity, chronology, ownership, or leadership gaps.", { username: z.string().min(2).max(200) }),

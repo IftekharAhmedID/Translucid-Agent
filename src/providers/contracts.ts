@@ -31,11 +31,20 @@ const contextSchema = z.object({
 
 const searchText = z.string().trim().min(2).max(1_000);
 const httpUrl = z.url().refine((value) => ["http:", "https:"].includes(new URL(value).protocol));
+const searchDomainPattern = /^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/;
+const includeDomainsSchema = z.array(z.string().trim().min(1).max(500).regex(searchDomainPattern))
+  .min(1)
+  .max(10)
+  .transform((values) => [...new Set(values.map((value) => {
+    const slash = value.indexOf("/");
+    return slash < 0 ? value.toLocaleLowerCase("en-US") : `${value.slice(0, slash).toLocaleLowerCase("en-US")}${value.slice(slash)}`;
+  }))].sort());
 const webSearchSchema = contextSchema.extend({
   query: searchText,
   mode: z.enum(["fast", "auto"]).default("fast"),
   highlightQuery: searchText.optional(),
   resultLimit: z.number().int().min(1).max(10).default(5),
+  includeDomains: includeDomainsSchema.optional(),
 }).transform((value) => ({ ...value, highlightQuery: value.highlightQuery ?? value.query }));
 
 const headlessSchemas = {
@@ -44,6 +53,7 @@ const headlessSchemas = {
     mode: z.enum(["fast", "auto"]).default("fast"),
     highlightQuery: searchText.optional(),
     resultLimit: z.number().int().min(1).max(10).default(5),
+    includeDomains: includeDomainsSchema.optional(),
   }).strict().transform((value) => ({ ...value, highlightQuery: value.highlightQuery ?? value.query })),
   "web.fetch": z.object({ url: httpUrl }).strict(),
   "professional.profile": z.object({ username: z.string().trim().min(2).max(200), requiredMaterialField: professionalMaterialFieldSchema.default("IDENTITY") }).strict(),

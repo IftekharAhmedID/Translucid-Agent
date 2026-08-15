@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import type { ProviderCallBackend } from "../providers/backend.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
 import { MemoryRunBudget } from "./budget.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
@@ -34,4 +35,30 @@ test("runs provider adapters headlessly without database or research-state argum
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("forwards normalized includeDomains to the Exa search request only when supplied", async () => {
+  const networkArguments: Array<Record<string, unknown>> = [];
+  const backend: ProviderCallBackend = async (input) => {
+    networkArguments.push(input.networkArguments);
+    return {
+      provider: "exa",
+      providerRoute: "exa.search",
+      data: { results: [] },
+      sourceUrl: "https://api.exa.ai/search",
+      costUsd: 0,
+      costSource: "FREE_PUBLIC",
+      artifactIds: [],
+      evidenceEligibleArtifactIds: [],
+      reused: false,
+    };
+  };
+  const executor = new ProviderExecutor({ PROVIDER_MODE: "live", EXA_API_KEY: "test-key" }, backend);
+  const context = { runId: "run-headless", agent: "web-records-researcher", sessionId: "session-headless" };
+
+  await executor.executeHeadless({ tool: "web.search", arguments: { query: "Exact Candidate Name", includeDomains: ["Rowan.Example.EDU", "*.example.edu"] } }, context);
+  await executor.executeHeadless({ tool: "web.search", arguments: { query: "Exact Candidate Name without filter" } }, context);
+
+  assert.deepEqual(networkArguments[0]?.includeDomains, ["*.example.edu", "rowan.example.edu"]);
+  assert.equal("includeDomains" in networkArguments[1]!, false);
 });

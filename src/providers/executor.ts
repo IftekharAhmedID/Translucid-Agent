@@ -319,6 +319,7 @@ export class ProviderExecutor {
       query: request.arguments.query,
       type: request.arguments.mode,
       numResults: request.arguments.resultLimit,
+      ...(request.arguments.includeDomains ? { includeDomains: request.arguments.includeDomains } : {}),
       contents: {
         highlights: { query: request.arguments.highlightQuery, maxCharacters: 4_000 },
       },

@@ -36,3 +36,9 @@ test("GraphQL content is preserved except outer whitespace while variables are s
   const second = providerRequestFingerprint("github.graphql", { query: "query X { viewer { login } }", variables: { a: 1, b: 2 } });
   assert.equal(first, second);
 });
+
+test("domain-restricted searches have distinct provider fingerprints", () => {
+  const unrestricted = providerRequestFingerprint("exa.search", { query: "Exact Candidate Name" });
+  const restricted = providerRequestFingerprint("exa.search", { query: "Exact Candidate Name", includeDomains: ["example.edu"] });
+  assert.notEqual(unrestricted, restricted);
+});
