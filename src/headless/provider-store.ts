@@ -67,7 +67,7 @@ export function createFileProviderBackend(options: Options): ProviderCallBackend
       if (reserved > 0) await options.budget.recordProvider(reserved);
       const result = await input.run(AbortSignal.timeout(providerDeadlineMs(input.providerRoute, options.deadlineAt)), () => undefined);
       if (result.costUsd > reserved) await options.budget.recordProvider(result.costUsd - reserved);
-      const artifactInputs = result.artifacts ?? [{
+      const artifactInputs = input.captureArtifacts === false ? [] : result.artifacts ?? [{
         kind: "PROVIDER_RESPONSE",
         sourceUrl: result.sourceUrl,
         content: result.data,

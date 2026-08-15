@@ -101,7 +101,7 @@ async function main(): Promise<void> {
       runId,
     });
     const expectedManifestHash = await getPinnedLocalManifestHash();
-    const researchModel = process.env.RESEARCH_MODEL ?? "deepseek-v4-flash";
+    const researchModel = process.env.RESEARCH_MODEL ?? "gpt-5.6-luna";
     const budget = new MemoryRunBudget(headlessBudgetCeilings(), { onChange: () => undefined });
     const reportStore = await ReportStore.open(workspace.root, {
       runId,
@@ -112,6 +112,7 @@ async function main(): Promise<void> {
       sourceStore: workspace.sourceStore,
     });
     const providerExecutor = new ProviderExecutor(providerEnvironment(options.providerMode), createFileProviderBackend({ sourceStore: workspace.sourceStore, budget, deadlineAt: deadlineAt.getTime() }));
+    await providerExecutor.preflight({ runId, agent: "headless-preflight", sessionId: "headless-preflight" });
     const researchProvider = process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
     const fixture = createHeadlessFixtureCompletion();
     gateway = createHeadlessGateway({
@@ -167,6 +168,7 @@ async function main(): Promise<void> {
       runtime: options.runtime,
       researchModel,
       reportStore,
+      assertResearchReadyForPublishing: () => providerExecutor.assertReadyForPublication(),
       beginPublishing: () => gateway!.setPhase("PUBLISHING"),
       onLeadStarted: async (sessionId) => {
         process.stderr.write(`Run ${runId}: lead session ${sessionId} is visible${options.watch ? " in the attached TUI" : ` with npm run attach -- ${runId}`}.\n`);

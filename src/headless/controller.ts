@@ -121,6 +121,7 @@ type Input = {
   runtime: "LOCAL" | "E2B";
   researchModel: string;
   reportStore: ReportStore;
+  assertResearchReadyForPublishing: () => void;
   beginPublishing: () => void;
   onLeadStarted?: (sessionId: string) => void | Promise<void>;
   onProgress?: (message: string) => void;
@@ -300,6 +301,7 @@ export class HeadlessInvestigationController {
       }
       if (leadMemo) await writeFile(join(memoDirectory, `lead-${safeFile(lead.id)}.md`), leadMemo, { mode: 0o600 });
       await writeResearchSnapshot(input.root, { runtime: input.runtime, researchModel: input.researchModel });
+      input.assertResearchReadyForPublishing();
       input.beginPublishing();
       input.onProgress?.(`Research handoff is durable; lead session ${leadId} entered publishing.`);
       await driveReportPublishing({

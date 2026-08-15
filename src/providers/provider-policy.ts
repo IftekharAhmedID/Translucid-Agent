@@ -2,6 +2,8 @@ const routeTimeouts: Array<[prefix: string, milliseconds: number]> = [
   ["brightdata.", 60_000],
   ["linkdapi.", 30_000],
   ["github.clone", 90_000],
+  ["exa.search.deep-reasoning", 60_000],
+  ["exa.search.deep", 30_000],
   ["exa.", 20_000],
   ["github.", 20_000],
   ["wayback.", 20_000],

@@ -5,6 +5,8 @@ import { providerDeadlineMs, providerTimeoutMs } from "./provider-policy.ts";
 
 test("provider routes have explicit deadlines including sixty seconds for Bright Data", () => {
   assert.equal(providerTimeoutMs("exa.search"), 20_000);
+  assert.equal(providerTimeoutMs("exa.search.deep"), 30_000);
+  assert.equal(providerTimeoutMs("exa.search.deep-reasoning"), 60_000);
   assert.equal(providerTimeoutMs("linkdapi.profile"), 30_000);
   assert.equal(providerTimeoutMs("brightdata.linkedin-profile"), 60_000);
   assert.equal(providerTimeoutMs("github.rest"), 20_000);

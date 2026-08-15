@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import type { ProviderCallBackend } from "../providers/backend.ts";
-import { ProviderExecutor } from "../providers/executor.ts";
+import { ProviderExecutor, ProviderHttpError, readProviderResponse } from "../providers/executor.ts";
 import { MemoryRunBudget } from "./budget.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
 import { FileSourceStore } from "./source-store.ts";
@@ -61,4 +61,59 @@ test("forwards normalized includeDomains to the Exa search request only when sup
 
   assert.deepEqual(networkArguments[0]?.includeDomains, ["*.example.edu", "rowan.example.edu"]);
   assert.equal("includeDomains" in networkArguments[1]!, false);
+});
+
+test("defaults Exa search to auto and preserves explicit deep modes", async () => {
+  const networkArguments: Array<Record<string, unknown>> = [];
+  const backend: ProviderCallBackend = async (input) => {
+    networkArguments.push(input.networkArguments);
+    return {
+      provider: "exa",
+      providerRoute: input.providerRoute,
+      data: { results: [] },
+      sourceUrl: "https://api.exa.ai/search",
+      costUsd: 0,
+      costSource: "FREE_PUBLIC",
+      artifactIds: [],
+      evidenceEligibleArtifactIds: [],
+      reused: false,
+    };
+  };
+  const executor = new ProviderExecutor({ PROVIDER_MODE: "live", EXA_API_KEY: "test-key" }, backend);
+  const context = { runId: "run-headless", agent: "web-records-researcher", sessionId: "session-headless" };
+
+  await executor.executeHeadless({ tool: "web.search", arguments: { query: "default mode" } }, context);
+  await executor.executeHeadless({ tool: "web.search", arguments: { query: "deep mode", mode: "deep" } }, context);
+  await executor.executeHeadless({ tool: "web.search", arguments: { query: "reasoning mode", mode: "deep-reasoning" } }, context);
+
+  assert.equal(networkArguments[0]?.type, "auto");
+  assert.equal(networkArguments[1]?.type, "deep");
+  assert.equal(networkArguments[2]?.type, "deep-reasoning");
+});
+
+test("preserves Exa request identifiers, tags, and bounded error detail", async () => {
+  await assert.rejects(
+    readProviderResponse(new Response(JSON.stringify({ requestId: "req_123", tag: "NO_CREDITS", error: "credits exhausted" }), {
+      status: 402,
+      headers: { "content-type": "application/json", "x-request-id": "header_req" },
+    })),
+    (error: unknown) => {
+      assert.ok(error instanceof ProviderHttpError);
+      assert.equal(error.status, 402);
+      assert.equal(error.requestId, "header_req");
+      assert.equal(error.tag, "NO_CREDITS");
+      assert.match(error.message, /credits exhausted/);
+      return true;
+    },
+  );
+});
+
+test("fails the live readiness probe closed on terminal Exa errors", async () => {
+  const backend: ProviderCallBackend = async () => {
+    throw new ProviderHttpError({ status: 402, requestId: "req_credits", tag: "NO_CREDITS", detail: "credits exhausted" });
+  };
+  const executor = new ProviderExecutor({ PROVIDER_MODE: "live", EXA_API_KEY: "test-key" }, backend);
+  await assert.rejects(executor.preflight({ runId: "run", agent: "preflight", sessionId: "preflight" }), /credits exhausted/);
+  assert.equal(executor.terminalProviderFailure?.status, 402);
+  assert.throws(() => executor.assertReadyForPublication(), /Provider readiness failed/);
 });

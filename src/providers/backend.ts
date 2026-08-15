@@ -45,6 +45,7 @@ export type ProviderCallInput = {
   countCeiling: number;
   providerBudgetUsd: number;
   knownCost?: Pick<ProviderNetworkResult, "costUsd" | "costSource">;
+  captureArtifacts?: boolean;
   run: (signal: AbortSignal, onAttempt: (attempt: number) => void) => Promise<ProviderNetworkResult>;
 };
 

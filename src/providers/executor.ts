@@ -40,6 +40,36 @@ export type HeadlessToolResult = {
   cache: "HIT" | "MISS";
 };
 
+export class ProviderHttpError extends Error {
+  readonly status: number;
+  readonly requestId?: string;
+  readonly tag?: string;
+  readonly retryAfter?: string;
+  readonly detail?: string;
+
+  constructor(input: { status: number; requestId?: string; tag?: string; retryAfter?: string; detail?: string }) {
+    const suffix = [input.tag && `tag=${input.tag}`, input.requestId && `requestId=${input.requestId}`, input.detail && `detail=${input.detail}`]
+      .filter(Boolean)
+      .join(" ");
+    super(`Provider returned HTTP ${input.status}${suffix ? ` (${suffix})` : ""}.`);
+    this.name = "ProviderHttpError";
+    this.status = input.status;
+    this.requestId = input.requestId;
+    this.tag = input.tag;
+    this.retryAfter = input.retryAfter;
+    this.detail = input.detail;
+  }
+}
+
+export type TerminalProviderFailure = {
+  provider: string;
+  route: string;
+  status: number;
+  requestId?: string;
+  tag?: string;
+  message: string;
+};
+
 const defaultToolCeilings: Record<ToolName, number> = {
   "web.search": 1_000,
   "web.fetch": 2_000,
@@ -118,13 +148,32 @@ function nonNegativeNumber(value: string | undefined, fallback: number): number 
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-async function readResponse(response: Response): Promise<unknown> {
+function responseErrorFields(value: unknown): { requestId?: string; tag?: string; detail?: string } {
+  if (!value || typeof value !== "object") return { detail: typeof value === "string" ? value.slice(0, 4_000) : undefined };
+  const body = value as Record<string, unknown>;
+  const error = body.error;
+  const detail = typeof error === "string" ? error : error && typeof error === "object" ? JSON.stringify(error) : JSON.stringify(value);
+  return {
+    requestId: typeof body.requestId === "string" ? body.requestId : typeof body.request_id === "string" ? body.request_id : undefined,
+    tag: typeof body.tag === "string" ? body.tag : undefined,
+    detail: detail?.slice(0, 4_000),
+  };
+}
+
+export async function readProviderResponse(response: Response): Promise<unknown> {
   const text = await response.text();
   if (Buffer.byteLength(text) > 5 * 1024 * 1024) throw new Error("Provider response exceeds capture limit.");
   if (!response.ok) {
-    const error = new Error(`Provider returned HTTP ${response.status}.`);
-    Object.assign(error, { status: response.status, retryAfter: response.headers.get("retry-after") });
-    throw error;
+    let payload: unknown;
+    try { payload = JSON.parse(text) as unknown; } catch { payload = text; }
+    const fields = responseErrorFields(payload);
+    throw new ProviderHttpError({
+      status: response.status,
+      requestId: response.headers.get("x-request-id") ?? response.headers.get("request-id") ?? fields.requestId,
+      tag: fields.tag,
+      retryAfter: response.headers.get("retry-after") ?? undefined,
+      detail: fields.detail,
+    });
   }
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("json")) {
@@ -134,8 +183,17 @@ async function readResponse(response: Response): Promise<unknown> {
   return { text };
 }
 
+const terminalProviderStatuses = new Set([401, 402, 403]);
+
+function terminalFailure(error: unknown, provider: string, route: string): TerminalProviderFailure | undefined {
+  const errorProvider = (error as { provider?: unknown })?.provider;
+  if (typeof errorProvider === "string" && errorProvider !== provider) return undefined;
+  if (!(error instanceof ProviderHttpError) || !terminalProviderStatuses.has(error.status)) return undefined;
+  return { provider, route, status: error.status, requestId: error.requestId, tag: error.tag, message: error.message };
+}
+
 async function apiFetch(url: string, init: RequestInit, onAttempt?: (attempt: number) => void): Promise<unknown> {
-  return readResponse(await fetchWithRetry(url, init, 3, onAttempt));
+  return readProviderResponse(await fetchWithRetry(url, init, 3, onAttempt));
 }
 
 function authHeaders(value: string | undefined, scheme = "Bearer"): Record<string, string> {
@@ -178,6 +236,16 @@ function nonEmpty(value: unknown): boolean {
   return Boolean(value && typeof value === "object" && Object.keys(value as Record<string, unknown>).length > 0);
 }
 
+function exaContentsUsable(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const contents = (value as Record<string, unknown>).contents;
+  if (!Array.isArray(contents) || contents.length === 0) return false;
+  const first = contents[0];
+  if (!first || typeof first !== "object") return false;
+  const record = first as Record<string, unknown>;
+  return nonEmpty(record.text) || nonEmpty(record.highlights) || nonEmpty(record.title);
+}
+
 export function profileHasMaterialField(profile: Record<string, unknown>, field: ProfessionalMaterialField): boolean {
   if (field === "IDENTITY") return [profile.fullName, profile.name, profile.username, profile.publicIdentifier].some(nonEmpty);
   if (field === "CURRENT_POSITION") return [profile.currentPositions, profile.currentPosition, profile.position, profile.headline].some(nonEmpty);
@@ -203,6 +271,7 @@ export class ProviderExecutor {
   private readonly registry;
   private readonly pools: Map<ToolName, Semaphore>;
   private readonly brightDataPool: Semaphore;
+  private terminalFailure?: TerminalProviderFailure;
 
   constructor(private readonly environment: Environment = process.env, private readonly callBackend: ProviderCallBackend) {
     this.registry = buildCapabilityRegistry(environment);
@@ -212,6 +281,44 @@ export class ProviderExecutor {
 
   get capabilityRegistry() {
     return this.registry;
+  }
+
+  get terminalProviderFailure(): TerminalProviderFailure | undefined {
+    return this.terminalFailure;
+  }
+
+  assertReadyForPublication(): void {
+    if (this.terminalFailure) throw new Error(`Provider readiness failed: ${this.terminalFailure.message}`);
+  }
+
+  async preflight(context: ProviderExecutionContext): Promise<void> {
+    if (this.environment.PROVIDER_MODE !== "live" || !this.environment.EXA_API_KEY) return;
+    try {
+      await this.executeProviderCall({
+        context,
+        capability: "WEB_SEARCH",
+        semanticTool: "web.search",
+        provider: "exa",
+        providerRoute: "exa.preflight",
+        networkArguments: { query: "Translucid Exa readiness", type: "auto", numResults: 1 },
+        countCeiling: 1,
+        providerBudgetUsd: nonNegativeNumber(this.environment.PROVIDER_BUDGET_USD, 10),
+        captureArtifacts: false,
+        run: async (signal, onAttempt) => {
+          const data = await apiFetch("https://api.exa.ai/search", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-api-key": this.required("EXA_API_KEY") },
+            body: JSON.stringify({ query: "Translucid Exa readiness", type: "auto", numResults: 1 }),
+            signal,
+          }, onAttempt);
+          return { data, sourceUrl: "https://api.exa.ai/search", ...this.exaCost(data), artifacts: [] };
+        },
+      });
+    } catch (error) {
+      const failure = terminalFailure(error, "exa", "exa.preflight");
+      if (failure) this.terminalFailure = failure;
+      throw error;
+    }
   }
 
   async executeHeadless(raw: unknown, context: ProviderExecutionContext): Promise<HeadlessToolResult> {
@@ -256,8 +363,12 @@ export class ProviderExecutor {
       };
     } catch (error) {
       const responseStatus = typeof (error as { status?: unknown })?.status === "number" ? Number((error as { status: number }).status) : undefined;
+      const failure = terminalFailure(error, request.tool.startsWith("web.") ? "exa" : "provider", request.tool);
+      if (failure) this.terminalFailure ??= failure;
       const status = error instanceof Error && error.message.startsWith("Budget exhausted") ? "BUDGET_EXHAUSTED"
-        : responseStatus === 429 ? "RATE_LIMITED" : "ERROR";
+        : responseStatus === 402 ? "BUDGET_EXHAUSTED"
+          : responseStatus === 401 || responseStatus === 403 ? "CAPABILITY_UNAVAILABLE"
+            : responseStatus === 429 ? "RATE_LIMITED" : "ERROR";
       return {
         status,
         capability,
@@ -349,12 +460,30 @@ export class ProviderExecutor {
     if (this.environment.EXA_API_KEY) {
       return this.call(request, context, capability, "exa", "exa.contents", { urls: [url], text: true, highlights: true }, async (signal, onAttempt) => {
         const data = await apiFetch("https://api.exa.ai/contents", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.environment.EXA_API_KEY! }, body: JSON.stringify({ urls: [url], text: true, highlights: true }), signal }, onAttempt);
-        return { data, sourceUrl: url, ...this.exaCost(data), artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: data, provenance: { captureMethod: "EXA_CONTENTS" } }] };
+        if (exaContentsUsable(data)) return { data, sourceUrl: url, ...this.exaCost(data), artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: data, provenance: { captureMethod: "EXA_CONTENTS" } }] };
+        let fallback: unknown;
+        let directStatus: number;
+        try {
+          const direct = await safePublicFetch(url, { headers: { "user-agent": this.publicUserAgent() }, signal });
+          directStatus = direct.status;
+          fallback = await readProviderResponse(direct);
+        } catch (error) {
+          if (error && typeof error === "object") Object.assign(error, { provider: "public-fetch" });
+          throw error;
+        }
+        return {
+          data: fallback,
+          sourceUrl: url,
+          costUsd: this.exaCost(data).costUsd,
+          costSource: this.exaCost(data).costSource,
+          status: directStatus!,
+          artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: fallback, status: directStatus!, provenance: { captureMethod: "DIRECT_PUBLIC_FALLBACK", exaContents: "UNUSABLE" } }],
+        };
       });
     }
     return this.call(request, context, capability, "public-fetch", "public-fetch", { url }, async (signal) => {
       const response = await safePublicFetch(url, { headers: { "user-agent": this.publicUserAgent() }, signal });
-      const data = await readResponse(response);
+      const data = await readProviderResponse(response);
       return { data, sourceUrl: url, status: response.status, costUsd: 0, costSource: "FREE_PUBLIC", artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: data, status: response.status }] };
     });
   }
