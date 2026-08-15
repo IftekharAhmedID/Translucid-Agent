@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { describeSdkError, driveReportPublishing, publishingPrompt, recoveryPublishingPrompt, readCompletedResearchMemos, waitForResearchIdle } from "./controller.ts";
+import { classifyInvestigationFailure, describeSdkError, driveReportPublishing, publishingPrompt, recoveryPublishingPrompt, readCompletedResearchMemos, ResearchHandoffError, waitForResearchIdle } from "./controller.ts";
 
 test("publishing prompt assigns report semantics to the lead and structure to the backend", () => {
   const prompt = recoveryPublishingPrompt();
@@ -52,22 +52,46 @@ test("fails closed after the bounded publishing continuations", async () => {
   assert.equal(launches, 3);
 });
 
-test("reads completed specialist memos and reports missing snapshots", async () => {
+test("fails the handoff for every launched child session without exactly one accepted memo", async () => {
   const root = await mkdtemp(join(tmpdir(), "translucid-memos-"));
   try {
     const memoDirectory = join(root, ".work", "memos");
     await mkdir(memoDirectory, { recursive: true });
-    await writeFile(join(memoDirectory, "professional-researcher-child-1.md"), "Session: child-1\n\nCompleted finding [S1].\n");
-    const result = await readCompletedResearchMemos(memoDirectory, [
+    await writeFile(join(memoDirectory, "professional-researcher-child-1.md"), "# professional-researcher memo\n\nSession: child-1\n\nCompleted finding [S1].\n");
+    const children = [
       { id: "child-1", agent: "professional-researcher" },
-      { id: "child-2", agent: "github-researcher" },
-    ]);
-    assert.equal(result.memos.length, 1);
-    assert.deepEqual(result.completedSessionIds, new Set(["child-1"]));
-    assert.match(result.warnings.join("\n"), /github-researcher.*child-2.*no completed memo/i);
+      { id: "child-2", agent: "professional-researcher" },
+      { id: "vision-1", agent: "document-vision" },
+    ];
+    await assert.rejects(readCompletedResearchMemos(memoDirectory, children), (error: unknown) => {
+      assert.ok(error instanceof ResearchHandoffError);
+      assert.equal(error.code, "RESEARCH_HANDOFF_FAILED");
+      assert.equal(error.phase, "RESEARCH_HANDOFF");
+      assert.deepEqual(error.failures, [{ sessionId: "child-2", role: "professional-researcher", acceptedMemoCount: 0 }]);
+      return true;
+    });
+
+    await writeFile(join(memoDirectory, "professional-researcher-child-2.md"), "# professional-researcher memo\n\nSession: child-2\n\nSearch completed with no credible public evidence.\n");
+    const result = await readCompletedResearchMemos(memoDirectory, children);
+    assert.equal(result.memos.length, 2);
+    assert.deepEqual(result.completedSessionIds, new Set(["child-1", "child-2"]));
+
+    await writeFile(join(memoDirectory, "duplicate-child-2.md"), "# professional-researcher memo\n\nSession: child-2\n\nDuplicate handoff.\n");
+    await assert.rejects(readCompletedResearchMemos(memoDirectory, children), (error: unknown) => {
+      assert.ok(error instanceof ResearchHandoffError);
+      assert.deepEqual(error.failures, [{ sessionId: "child-2", role: "professional-researcher", acceptedMemoCount: 2 }]);
+      return true;
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("typed research handoff failures override generic investigation failure classification", () => {
+  const error = new ResearchHandoffError([{ sessionId: "child-2", role: "github-researcher", acceptedMemoCount: 0 }]);
+  assert.deepEqual(classifyInvestigationFailure(error, false, true), { code: "RESEARCH_HANDOFF_FAILED", phase: "RESEARCH_HANDOFF" });
+  assert.deepEqual(classifyInvestigationFailure(error, true, true), { code: "RESEARCH_HANDOFF_FAILED", phase: "RESEARCH_HANDOFF" });
+  assert.deepEqual(classifyInvestigationFailure(new Error("provider failed"), false, true), { code: "INVESTIGATION_FAILED", phase: "INVESTIGATION" });
 });
 
 test("waits for an asynchronously prompted session to become idle", async () => {

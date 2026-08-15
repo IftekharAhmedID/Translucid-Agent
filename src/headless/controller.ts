@@ -142,20 +142,50 @@ function safeFile(value: string): string {
 }
 
 type ChildMemoSession = Pick<Session, "id" | "agent">;
+const materialSpecialistRoles = new Set(["professional-researcher", "github-researcher", "web-records-researcher", "social-researcher"]);
+
+export type ResearchHandoffFailure = { sessionId: string; role: string; acceptedMemoCount: number };
+
+export class ResearchHandoffError extends Error {
+  readonly code = "RESEARCH_HANDOFF_FAILED";
+  readonly phase = "RESEARCH_HANDOFF";
+
+  constructor(readonly failures: ResearchHandoffFailure[], message?: string) {
+    super(message ?? `Research handoff is incomplete: ${failures.map(({ role, sessionId, acceptedMemoCount }) => `${role} child ${sessionId} has ${acceptedMemoCount} accepted memos`).join("; ")}.`);
+    this.name = "ResearchHandoffError";
+  }
+}
+
+export function classifyInvestigationFailure(error: Error, aborted: boolean, runtimeStarted: boolean): { code: string; phase: string } {
+  if (error instanceof ResearchHandoffError) return { code: error.code, phase: error.phase };
+  return aborted
+    ? { code: "CANCELLED_OR_TIMED_OUT", phase: runtimeStarted ? "INVESTIGATION" : "STARTUP" }
+    : { code: "INVESTIGATION_FAILED", phase: runtimeStarted ? "INVESTIGATION" : "STARTUP" };
+}
 
 export async function readCompletedResearchMemos(memoDirectory: string, children: ChildMemoSession[]): Promise<{
   memos: string[];
   completedSessionIds: Set<string>;
-  warnings: string[];
 }> {
   const files = await readdir(memoDirectory).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error));
-  const memos = await Promise.all(files.filter((file) => file.endsWith(".md") && !file.startsWith("lead-")).sort().map((file) => readFile(join(memoDirectory, file), "utf8")));
-  if (memos.length === 0) throw new Error("No specialist memo completed; refusing to compile partial reasoning.");
-  const completedSessionIds = new Set(memos.flatMap((memo) => memo.match(/^Session:\s*(\S+)\s*$/m)?.[1] ?? []));
-  const warnings = children
-    .filter((child) => !completedSessionIds.has(child.id))
-    .map((child) => `${child.agent ?? "unknown-researcher"} child ${child.id} returned no completed memo; its assigned scope remains unresolved.`);
-  return { memos, completedSessionIds, warnings };
+  const records = await Promise.all(files.filter((file) => file.endsWith(".md") && !file.startsWith("lead-")).sort().map(async (file) => {
+    const memo = await readFile(join(memoDirectory, file), "utf8");
+    return {
+      memo,
+      role: memo.match(/^#\s+(\S+)\s+memo\s*$/m)?.[1],
+      sessionId: memo.match(/^Session:\s*(\S+)\s*$/m)?.[1],
+    };
+  }));
+  const materialChildren = children.filter((child) => child.agent && materialSpecialistRoles.has(child.agent));
+  if (materialChildren.length === 0) throw new ResearchHandoffError([], "No material specialist child was launched; refusing to publish an uninvestigated report.");
+  const failures = materialChildren.flatMap((child) => {
+    const acceptedMemoCount = records.filter((record) => record.sessionId === child.id && record.role === child.agent).length;
+    return acceptedMemoCount === 1 ? [] : [{ sessionId: child.id, role: child.agent!, acceptedMemoCount }];
+  });
+  if (failures.length) throw new ResearchHandoffError(failures);
+  const completedSessionIds = new Set(materialChildren.map(({ id }) => id));
+  const memos = records.filter(({ sessionId }) => sessionId && completedSessionIds.has(sessionId)).map(({ memo }) => memo);
+  return { memos, completedSessionIds };
 }
 
 export async function waitForResearchIdle(input: {
@@ -264,7 +294,6 @@ export class HeadlessInvestigationController {
       const memoDirectory = join(input.root, ".work", "memos");
       await mkdir(memoDirectory, { recursive: true });
       const handoff = await readCompletedResearchMemos(memoDirectory, children);
-      warnings.push(...handoff.warnings);
       const childSessions = children.map((child) => ({ id: child.id, role: child.agent ?? "unknown-researcher", compactions: compactions.get(child.id) ?? 0 }));
       if (!leadMemo) {
         warnings.push("Lead consolidation was unavailable; compilation used completed specialist memo snapshots only.");

@@ -10,7 +10,7 @@ import { getPinnedLocalManifestHash, LocalDockerRuntime } from "../runtime/local
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
 import { headlessBudgetCeilings, MemoryRunBudget } from "./budget.ts";
 import { parseInvestigationArguments } from "./cli-options.ts";
-import { HeadlessInvestigationController } from "./controller.ts";
+import { classifyInvestigationFailure, HeadlessInvestigationController, ResearchHandoffError } from "./controller.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 import { createHeadlessGateway } from "./gateway.ts";
 import { persistResearchMemo } from "./recovery.ts";
@@ -195,14 +195,19 @@ async function main(): Promise<void> {
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error("Unknown headless investigation failure.");
     if (workspace) {
+      const failure = classifyInvestigationFailure(error, abort.signal.aborted, Boolean(handle));
       await mkdir(join(workspace.root, "diagnostics"), { recursive: true });
       await sealRunFailure(workspace.root, {
         runId,
-        code: abort.signal.aborted ? "CANCELLED_OR_TIMED_OUT" : "INVESTIGATION_FAILED",
+        code: failure.code,
         message: error.message,
-        phase: handle ? "INVESTIGATION" : "STARTUP",
+        phase: failure.phase,
         cancelled: abort.signal.aborted,
-        diagnostics: { ...(handle?.kind === "E2B" ? { sandboxId: handle.id } : {}), ...(handle?.kind === "LOCAL" ? { sessionId: handle.id } : {}) },
+        diagnostics: {
+          ...(handle?.kind === "E2B" ? { sandboxId: handle.id } : {}),
+          ...(handle?.kind === "LOCAL" ? { sessionId: handle.id } : {}),
+          ...(error instanceof ResearchHandoffError ? { researchHandoff: JSON.stringify(error.failures) } : {}),
+        },
       }).catch(() => undefined);
     }
     process.stderr.write(`Run ${runId} failed: ${error.message}\n`);
