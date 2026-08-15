@@ -2,7 +2,7 @@
 description: Researches one explicitly justified public social-profile question.
 mode: subagent
 model: translucid/deepseek-v4-flash
-variant: medium
+variant: xhigh
 steps: 32
 permission:
   "*": deny

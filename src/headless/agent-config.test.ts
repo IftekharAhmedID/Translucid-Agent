@@ -7,11 +7,13 @@ const root = join(process.cwd(), "runtime", "headless-opencode");
 
 test("lead exposes native report tools while specialists keep research tools", async () => {
   const lead = await readFile(join(root, "agents", "lead-researcher.md"), "utf8");
+  assert.match(lead, /^variant: xhigh$/m);
   for (const name of ["report.summary.set", "report.finding.upsert", "report.finding.remove", "report.progress.get", "report.finalize"]) assert.match(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
   assert.match(lead, /source\.excerpts: allow/);
   assert.doesNotMatch(lead, /\b(?:web\.search|professional\.profile|github\.rest|social\.profile): allow/);
   for (const file of ["professional-researcher.md", "github-researcher.md", "web-records-researcher.md", "social-researcher.md"]) {
     const source = await readFile(join(root, "agents", file), "utf8");
+    assert.match(source, /^variant: xhigh$/m);
     assert.doesNotMatch(source, /\btask:\s*allow/);
     assert.match(source, /source\.excerpts: allow/);
   }
@@ -24,6 +26,7 @@ test("headless runtime loads one plugin and keeps shell/edit tools disabled", as
   assert.equal(config.tools.edit, false);
   assert.equal(config.tools.write, false);
   assert.ok(config.provider.translucid.options.timeout >= 360_000);
+  assert.deepEqual(config.provider.translucid.models["deepseek-v4-flash"].variants, { xhigh: { reasoningEffort: "xhigh" } });
   const plugin = await readFile(join(root, "plugin", "translucid.ts"), "utf8");
   assert.doesNotMatch(plugin, /claim\.create|research\.context|artifact\.lookup|evidence\.capture/);
   assert.doesNotMatch(plugin, /internal\/sources\/index/);

@@ -81,7 +81,7 @@ export async function runPublishingRecovery(input: {
     directory,
     title: "Headless report publishing recovery",
     agent: "lead-researcher",
-    model: { id: input.model, providerID: "translucid", variant: "medium" },
+    model: { id: input.model, providerID: "translucid", variant: "xhigh" },
   }, { signal: input.signal }), "publishing recovery session creation");
   await input.onSessionStarted?.(session.id);
   await driveReportPublishing({
@@ -92,7 +92,7 @@ export async function runPublishingRecovery(input: {
         directory,
         agent: "lead-researcher",
         model: { providerID: "translucid", modelID: input.model },
-        variant: "medium",
+        variant: "xhigh",
         parts: [{ type: "text", text: prompt }],
       }, { signal: input.signal });
       if (launched.error) throw new Error(`publishing recovery prompt failed: ${describeSdkError(launched.error)}`);
@@ -247,7 +247,7 @@ export class HeadlessInvestigationController {
 
     let lead: Session | undefined;
     try {
-      lead = unwrap(await client.session.create({ directory, title: "Headless lead research", agent: "lead-researcher", model: { id: input.researchModel, providerID: "translucid", variant: "medium" } }, { signal: input.signal }), "lead session creation");
+      lead = unwrap(await client.session.create({ directory, title: "Headless lead research", agent: "lead-researcher", model: { id: input.researchModel, providerID: "translucid", variant: "xhigh" } }, { signal: input.signal }), "lead session creation");
       const leadId = lead.id;
       await input.onLeadStarted?.(leadId);
       input.onProgress?.(`Lead research session ${leadId} started.`);
@@ -264,7 +264,7 @@ export class HeadlessInvestigationController {
           directory,
           agent: "lead-researcher",
           model: { providerID: "translucid", modelID: input.researchModel },
-          variant: "medium",
+          variant: "xhigh",
           parts: [{ type: "text", text: researchPrompt(new Date(researchDeadline).toISOString()) }],
         }, { signal: researchAbort.signal });
         if (launch.error) throw new Error(`lead research prompt failed: ${describeSdkError(launch.error)}`);
@@ -309,7 +309,7 @@ export class HeadlessInvestigationController {
             directory,
             agent: "lead-researcher",
             model: { providerID: "translucid", modelID: input.researchModel },
-            variant: "medium",
+            variant: "xhigh",
             parts: [{ type: "text", text: prompt }],
           }, { signal: input.signal });
           if (launched.error) throw new Error(`lead publishing prompt failed: ${describeSdkError(launched.error)}`);

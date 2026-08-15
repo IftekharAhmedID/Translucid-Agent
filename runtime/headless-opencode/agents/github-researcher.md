@@ -2,7 +2,7 @@
 description: Researches public GitHub identity and contribution records.
 mode: subagent
 model: translucid/deepseek-v4-flash
-variant: medium
+variant: xhigh
 steps: 64
 permission:
   "*": deny

@@ -2,7 +2,7 @@
 description: Audits the input and coordinates bounded natural-language research.
 mode: primary
 model: translucid/deepseek-v4-flash
-variant: medium
+variant: xhigh
 steps: 48
 permission:
   "*": deny

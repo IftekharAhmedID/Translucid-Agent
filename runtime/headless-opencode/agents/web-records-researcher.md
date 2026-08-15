@@ -2,7 +2,7 @@
 description: Researches public projects, events, publications, institutions, packages, and records.
 mode: subagent
 model: translucid/deepseek-v4-flash
-variant: medium
+variant: xhigh
 steps: 64
 permission:
   "*": deny
