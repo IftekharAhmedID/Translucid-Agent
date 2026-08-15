@@ -26,6 +26,7 @@ test("headless runtime loads one plugin and keeps shell/edit tools disabled", as
   assert.equal(config.tools.edit, false);
   assert.equal(config.tools.write, false);
   assert.ok(config.provider.translucid.options.timeout >= 360_000);
+  assert.deepEqual(config.provider.translucid.models["gpt-5.6-luna"].variants, { xhigh: { reasoningEffort: "xhigh" } });
   assert.deepEqual(config.provider.translucid.models["deepseek-v4-flash"].variants, { xhigh: { reasoningEffort: "xhigh" } });
   const plugin = await readFile(join(root, "plugin", "translucid.ts"), "utf8");
   assert.doesNotMatch(plugin, /claim\.create|research\.context|artifact\.lookup|evidence\.capture/);

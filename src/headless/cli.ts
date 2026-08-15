@@ -22,6 +22,7 @@ import { attachOpenCodeTui } from "./visible-tui.ts";
 
 const RUN_TIMEOUT_MS = 60 * 60_000;
 const PUBLISHING_RESERVE_MS = 12 * 60_000;
+const SPECIALIST_MODEL = "deepseek-v4-flash";
 
 async function atomicWrite(path: string, bytes: Uint8Array | string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -117,7 +118,7 @@ async function main(): Promise<void> {
       runId,
       deadlineAt: deadlineAt.getTime(),
       allowedTools: new Set([...toolNames, "source.excerpts", "research.memo.persist", ...reportToolNames]),
-      allowedModels: new Set([researchModel]),
+      allowedModels: new Set([researchModel, SPECIALIST_MODEL]),
       agentTools: agentToolAllowlist(),
       reportStore,
       persistResearchMemo: (value) => persistResearchMemo(workspace!.root, value),
