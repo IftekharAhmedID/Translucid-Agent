@@ -70,7 +70,7 @@ const plugin: Plugin = async () => {
   let targetedChildren = 0;
   let targetedStarted = false;
 
-  async function execute(name: string, args: unknown, context: { sessionID: string; agent: string; abort: AbortSignal }) {
+  async function execute(name: string, args: unknown, context: { sessionID: string; agent: string; callID?: string; abort: AbortSignal }) {
     const response = await fetch(`${configuredGatewayUrl}/internal/tools/execute`, {
       method: "POST",
       headers: {
@@ -79,7 +79,7 @@ const plugin: Plugin = async () => {
         "x-run-id": configuredRunId,
         "x-opencode-agent": context.agent,
       },
-      body: JSON.stringify({ tool: name, arguments: args, operational: { sessionId: context.sessionID, agent: context.agent } }),
+      body: JSON.stringify({ tool: name, arguments: args, operational: { sessionId: context.sessionID, agent: context.agent, callId: context.callID } }),
       signal: context.abort,
     });
     const body = await response.text();
@@ -122,6 +122,30 @@ const plugin: Plugin = async () => {
         domainExcerpt: z.object({ path: z.string().min(1).max(2_000), exactQuote: z.string().min(1).max(4_000) }),
       })).min(1).max(4),
     }),
+    "report.summary.set": gatewayTool("report.summary.set", "Set or replace the single concise investigation summary after research is complete.", {
+      summary: z.string().trim().min(1).max(50000),
+    }),
+    "report.finding.upsert": gatewayTool("report.finding.upsert", "Create or repair one coherent résumé finding. Reusing findingId updates it without creating a duplicate.", {
+      findingId: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/),
+      section: z.string().trim().min(1).max(200),
+      claim: z.string().trim().min(1).max(6000),
+      anchor: z.object({
+        kind: z.literal("PDF_TEXT"),
+        page: z.number().int().positive(),
+        lineStart: z.number().int().positive(),
+        lineEnd: z.number().int().positive(),
+        exact: z.string().trim().min(1).max(6000),
+      }),
+      evidence: z.string().trim().min(1).max(12000),
+      notes: z.string().max(6000).optional(),
+      status: z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2)]),
+      sourceRefs: z.array(z.string().regex(/^S[1-9]\d*$/)).max(200),
+    }),
+    "report.finding.remove": gatewayTool("report.finding.remove", "Remove one mistaken or superseded finding before finalization.", {
+      findingId: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/),
+    }),
+    "report.progress.get": gatewayTool("report.progress.get", "Read the durable report summary, ordered findings, revision, and state before continuing or finalizing.", {}),
+    "report.finalize": gatewayTool("report.finalize", "Lock the report after reviewing résumé coverage. This is irreversible for the current run.", {}),
   };
 
   return {

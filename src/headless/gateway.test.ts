@@ -1,14 +1,111 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { MemoryRunBudget } from "./budget.ts";
 import { createHeadlessGateway } from "./gateway.ts";
+import { ReportStore } from "./report-store.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
 import { FileSourceStore } from "./source-store.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
+
+test("allows only the lead to publish structured findings during the publishing phase", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-report-gateway-"));
+  try {
+    await mkdir(join(directory, "input"), { recursive: true });
+    await writeFile(join(directory, "input", "document.json"), JSON.stringify({
+      pages: [{ page: 1, lines: [{ line: 1, text: "Principal Software Engineer" }] }],
+    }));
+    const sourceStore = await FileSourceStore.open(directory);
+    const source = await sourceStore.capture({
+      kind: "SOURCE_CONTENT",
+      provider: "fixture",
+      providerRoute: "fixture.source",
+      sourceUrl: "https://example.com/profile",
+      mimeType: "text/plain",
+      content: "Principal Software Engineer",
+      provenance: {},
+    });
+    const reportStore = await ReportStore.open(directory, {
+      runId: "run-report",
+      inputSha256: "a".repeat(64),
+      startedAt: "2026-08-14T00:00:00.000Z",
+      runtime: "LOCAL",
+      model: "research-model",
+      sourceStore,
+    });
+    const budget = new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 300, repositoryClones: 3, socialProfiles: 1 });
+    const reportTools = ["report.summary.set", "report.finding.upsert", "report.finding.remove", "report.progress.get", "report.finalize"];
+    const gateway = createHeadlessGateway({
+      runId: "run-report",
+      deadlineAt: Date.now() + 60_000,
+      allowedTools: new Set([...reportTools, "web.search"]),
+      allowedModels: new Set(),
+      agentTools: new Map([
+        ["lead-researcher", new Set([...reportTools, "web.search"])],
+        ["web-records-researcher", new Set()],
+      ]),
+      reportStore,
+      sourceStore,
+      budget,
+      providerMode: "fixture",
+    });
+    await new Promise<void>((resolve) => gateway.server.listen(0, "127.0.0.1", resolve));
+    const address = gateway.server.address();
+    if (!address || typeof address === "string") throw new Error("Gateway did not bind a TCP port.");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const headers = {
+      authorization: `Bearer ${gateway.token}`,
+      "content-type": "application/json",
+      "x-run-id": "run-report",
+      "x-opencode-agent": "lead-researcher",
+    };
+    const execute = (tool: string, args: unknown, requestHeaders = headers) => fetch(`${origin}/internal/tools/execute`, {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify({ tool, arguments: args, operational: { agent: requestHeaders["x-opencode-agent"], sessionId: "lead-session", callId: "call-1" } }),
+    });
+
+    assert.equal((await execute("report.summary.set", { summary: "Summary" })).status, 403);
+    gateway.setPhase("PUBLISHING");
+    assert.equal((await execute("web.search", { query: "must not run" })).status, 403);
+    assert.equal((await execute("report.summary.set", { summary: "Summary" }, { ...headers, "x-opencode-agent": "web-records-researcher" })).status, 403);
+    assert.equal((await execute("report.summary.set", { summary: "Summary" })).status, 200);
+
+    const invalid = await execute("report.finding.upsert", {
+      findingId: "F001",
+      section: "Career",
+      claim: "Current role",
+      anchor: { kind: "PDF_TEXT", page: 1, lineStart: 1, lineEnd: 1, exact: "Wrong text" },
+      evidence: "Consistent public evidence.",
+      status: 2,
+      sourceRefs: [source.ref],
+    });
+    assert.equal(invalid.status, 422);
+    assert.deepEqual(await invalid.json(), { error: { code: "INVALID_ANCHOR", field: "anchor.exact", message: "anchor.exact was not found in the specified résumé page and line range." } });
+
+    assert.equal((await execute("report.finding.upsert", {
+      findingId: "F001",
+      section: "Career",
+      claim: "Current role",
+      anchor: { kind: "PDF_TEXT", page: 1, lineStart: 1, lineEnd: 1, exact: "Principal Software Engineer" },
+      evidence: "Consistent public evidence.",
+      status: 2,
+      sourceRefs: [source.ref],
+    })).status, 200);
+    const progress = await execute("report.progress.get", {});
+    assert.equal(progress.status, 200);
+    assert.equal((await progress.json() as { findings: unknown[] }).findings.length, 1);
+    assert.equal((await execute("report.finalize", {})).status, 200);
+
+    gateway.cancel();
+    await new Promise<void>((resolve, reject) => gateway.server.close((error) => error ? reject(error) : resolve()));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("authorizes one run-scoped token and exposes only headless tools", async () => {
   const directory = await mkdtemp(join(tmpdir(), "translucid-headless-gateway-"));

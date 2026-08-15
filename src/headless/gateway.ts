@@ -9,6 +9,7 @@ import { toolNames } from "../providers/contracts.ts";
 import type { ProviderExecutor } from "../providers/executor.ts";
 import type { MemoryRunBudget } from "./budget.ts";
 import { SessionExcerptAllowances } from "./excerpt-allowance.ts";
+import { reportToolNames, ReportStoreError, type ReportStore } from "./report-store.ts";
 import type { FileSourceStore } from "./source-store.ts";
 
 const MAX_TOOL_BODY = 1024 * 1024;
@@ -54,6 +55,7 @@ type GatewayInput = {
   budget: MemoryRunBudget;
   providerMode: "fixture" | "live";
   agentTools?: Map<string, Set<string>>;
+  reportStore?: ReportStore;
   officialDomainRegistration?: (value: unknown) => Promise<unknown>;
   researchUpstreamUrl?: string;
   finalizerUpstreamUrl?: string;
@@ -68,7 +70,9 @@ export function createHeadlessGateway(input: GatewayInput) {
   const token = randomBytes(32).toString("base64url");
   const tokenDigest = digest(token);
   const excerptAllowances = new SessionExcerptAllowances();
+  const reportTools = new Set<string>(reportToolNames);
   let active = true;
+  let phase: "RESEARCHING" | "PUBLISHING" = "RESEARCHING";
 
   const authorize = (request: IncomingMessage, kind: "tool" | "model", name: string): void => {
     const header = request.headers.authorization;
@@ -85,6 +89,10 @@ export function createHeadlessGateway(input: GatewayInput) {
       const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
       if (!input.agentTools.get(agent)?.has(name)) throw new GatewayError(403, `Agent ${agent} cannot use ${name}.`);
     }
+    if (kind === "tool") {
+      if (phase === "RESEARCHING" && reportTools.has(name)) throw new GatewayError(403, "Report tools are unavailable until publishing begins.");
+      if (phase === "PUBLISHING" && !reportTools.has(name) && name !== "source.excerpts") throw new GatewayError(403, `Publishing phase denies ${name}.`);
+    }
   };
 
   const server = createServer(async (request, response) => {
@@ -94,6 +102,14 @@ export function createHeadlessGateway(input: GatewayInput) {
         const body = await readJson(request, MAX_TOOL_BODY);
         const name = typeof body.tool === "string" ? body.tool : "";
         authorize(request, "tool", name);
+        if (reportTools.has(name)) {
+          if (!input.reportStore) throw new GatewayError(403, "Report publishing is unavailable in this run.");
+          if (name === "report.summary.set") return json(response, 200, await input.reportStore.setSummary(body.arguments));
+          if (name === "report.finding.upsert") return json(response, 200, await input.reportStore.upsertFinding(body.arguments));
+          if (name === "report.finding.remove") return json(response, 200, await input.reportStore.removeFinding(body.arguments));
+          if (name === "report.progress.get") return json(response, 200, await input.reportStore.progress());
+          if (name === "report.finalize") return json(response, 200, await input.reportStore.finalize());
+        }
         if (name === "source.excerpts") {
           const args = body.arguments && typeof body.arguments === "object" ? body.arguments as Record<string, unknown> : {};
           const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
@@ -172,6 +188,9 @@ export function createHeadlessGateway(input: GatewayInput) {
         if (!response.destroyed) response.destroy();
         return;
       }
+      if (error instanceof ReportStoreError) {
+        return json(response, 422, { error: { code: error.code, ...(error.field ? { field: error.field } : {}), message: error.message } });
+      }
       const status = error instanceof GatewayError ? error.status : 400;
       json(response, status, { error: { code: "GATEWAY_REJECTED", message: error instanceof Error ? error.message : "Gateway rejected request." } });
     }
@@ -181,6 +200,7 @@ export function createHeadlessGateway(input: GatewayInput) {
     server,
     token,
     registerExcerptAllowance: (sessionId: string, characters: number) => excerptAllowances.register(sessionId, characters),
+    setPhase: (value: "RESEARCHING" | "PUBLISHING") => { phase = value; },
     cancel: () => { active = false; },
   };
 }

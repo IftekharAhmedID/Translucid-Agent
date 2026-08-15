@@ -21,10 +21,12 @@ test("headless agents expose no database or state-machine tools", async () => {
   }
 });
 
-test("lead has native delegation but no provider tools, while specialists cannot delegate", async () => {
+test("lead has native delegation and report publishing tools but no provider tools, while specialists cannot delegate", async () => {
   const lead = await readFile(join(root, "agents", "lead-researcher.md"), "utf8");
   assert.match(lead, /task:\n/);
-  assert.match(lead, /official_domain\.register: allow/);
+  for (const name of ["report.summary.set", "report.finding.upsert", "report.finding.remove", "report.progress.get", "report.finalize"]) {
+    assert.match(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
+  }
   assert.doesNotMatch(lead, /\b(?:web\.search|professional\.profile|github\.rest|social\.profile): allow/);
   for (const file of ["professional-researcher.md", "github-researcher.md", "web-records-researcher.md", "social-researcher.md"]) {
     const source = await readFile(join(root, "agents", file), "utf8");
@@ -113,7 +115,7 @@ test("every headless agent uses OpenCode's native steps limit as an emergency ci
     ["github-researcher.md", 64],
     ["web-records-researcher.md", 64],
     ["social-researcher.md", 32],
-    ["evidence-compiler.md", 32],
+    ["evidence-compiler.md", 64],
     ["evidence-auditor.md", 16],
     ["document-vision.md", 8],
   ]);

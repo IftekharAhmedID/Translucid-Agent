@@ -46,6 +46,19 @@ test("compaction context is bounded and contains only the session's encountered 
   }
 });
 
+test("exposes the five native lean report tools", async () => {
+  const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
+  const hooks = await plugin({} as Parameters<typeof plugin>[0]);
+  const names = Object.keys(hooks.tool ?? {}).filter((name) => name.startsWith("report.")).sort();
+  assert.deepEqual(names, [
+    "report.finalize",
+    "report.finding.remove",
+    "report.finding.upsert",
+    "report.progress.get",
+    "report.summary.set",
+  ]);
+});
+
 test("specialist tasks are forced to complete before their memo handoff", async () => {
   const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
   const hooks = await plugin({} as Parameters<typeof plugin>[0]);

@@ -6,6 +6,14 @@ import { z } from "zod";
 
 import type { FileSourceStore } from "./source-store.ts";
 
+export const reportToolNames = [
+  "report.summary.set",
+  "report.finding.upsert",
+  "report.finding.remove",
+  "report.progress.get",
+  "report.finalize",
+] as const;
+
 const sourceRefSchema = z.string().regex(/^S[1-9]\d*$/);
 const findingStatusSchema = z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2)]);
 
@@ -86,6 +94,8 @@ export type ReportMutationResult = {
   revision: number;
   findingCount: number;
 };
+
+export type ReportToolName = (typeof reportToolNames)[number];
 
 export class ReportStoreError extends Error {
   constructor(readonly code: string, message: string, readonly field?: string) {
