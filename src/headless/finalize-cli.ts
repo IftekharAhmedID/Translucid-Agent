@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess } from "node:child_process";
 import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
@@ -15,6 +15,7 @@ import { verifyResearchSnapshot } from "./recovery.ts";
 import { renderLeanReport, verifyInvestigationReport } from "./report.ts";
 import { reportToolNames, ReportStore } from "./report-store.ts";
 import { openRunWorkspace, removeRunDiagnostics, sealRunFailure, type ExistingRunWorkspace } from "./run-workspace.ts";
+import { attachOpenCodeTui } from "./visible-tui.ts";
 
 const RUN_TIMEOUT_MS = 60 * 60_000;
 
@@ -55,13 +56,6 @@ async function listen(server: ReturnType<typeof createHeadlessGateway>["server"]
 async function closeServer(server: ReturnType<typeof createHeadlessGateway>["server"]): Promise<void> {
   if (!server.listening) return;
   await new Promise<void>((done) => server.close(() => done()));
-}
-
-function attachTui(handle: RunHandle, password: string, sessionId: string): ChildProcess {
-  return spawn(resolve("node_modules", ".bin", "opencode"), ["attach", handle.openCodeUrl, "--session", sessionId], {
-    env: { ...process.env, OPENCODE_SERVER_PASSWORD: password },
-    stdio: "inherit",
-  });
 }
 
 async function runtimeFor(workspace: ExistingRunWorkspace): Promise<InvestigatorRuntime> {
@@ -160,7 +154,7 @@ async function main(): Promise<void> {
       onSessionStarted: (sessionId) => {
         if (options.watch && handle?.kind === "LOCAL") {
           process.stderr.write(`Publishing session ${sessionId} is visible in the attached TUI.\n`);
-          watchProcess = attachTui(handle, password, sessionId);
+          watchProcess = attachOpenCodeTui(handle, password, sessionId);
         }
       },
     });
@@ -185,9 +179,9 @@ async function main(): Promise<void> {
       publisherManifestHash,
       sourceRefs: [...new Set(output.result.findings.flatMap(({ sources }) => sources.map(({ sourceRef }) => sourceRef)))].sort(),
     }, null, 2)}\n`);
+    await rename(reportTemporaryPath, reportPath);
     await reportStore.markPublished();
     if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
-    await rename(reportTemporaryPath, reportPath);
     await atomicWrite(resultPath, `${JSON.stringify(output.result, null, 2)}\n`);
     process.stdout.write(`${JSON.stringify({ runId: workspace.runId, result: resultPath, report: reportPath, researchReplayed: false, findings: output.result.findings.length }, null, 2)}\n`);
   } catch (caught) {

@@ -12,7 +12,7 @@ export type RuntimeStartInput = {
   openCodePassword: string;
   expectedManifestHash?: string;
   timeoutMs: number;
-  mode?: "legacy" | "headless";
+  mode?: "headless";
   deadlineAt?: string;
   allowStaleCaseManifest?: boolean;
 };

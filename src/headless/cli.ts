@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess } from "node:child_process";
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
@@ -8,18 +8,17 @@ import { ProviderExecutor } from "../providers/executor.ts";
 import { E2BRuntime } from "../runtime/e2b.ts";
 import { getPinnedLocalManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
-import { openPersistentRunBudget } from "./checkpoint.ts";
-import { headlessBudgetCeilings } from "./budget.ts";
+import { headlessBudgetCeilings, MemoryRunBudget } from "./budget.ts";
 import { parseInvestigationArguments } from "./cli-options.ts";
 import { HeadlessInvestigationController } from "./controller.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 import { createHeadlessGateway } from "./gateway.ts";
 import { persistResearchMemo } from "./recovery.ts";
-import { registerOfficialDomainProposal } from "./source-authority.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
 import { reportToolNames, ReportStore } from "./report-store.ts";
 import { renderLeanReport, verifyInvestigationReport } from "./report.ts";
 import { createRunWorkspace, removeRunDiagnostics, sealRunFailure, type RunWorkspace } from "./run-workspace.ts";
+import { attachOpenCodeTui } from "./visible-tui.ts";
 
 const RUN_TIMEOUT_MS = 60 * 60_000;
 const PUBLISHING_RESERVE_MS = 12 * 60_000;
@@ -49,7 +48,7 @@ function providerEnvironment(mode: "fixture" | "live"): Record<string, string | 
 
 function agentToolAllowlist(): Map<string, Set<string>> {
   return new Map([
-    ["lead-researcher", new Set(["source.excerpts", "official_domain.register", ...reportToolNames])],
+    ["lead-researcher", new Set(["source.excerpts", ...reportToolNames])],
     ["professional-researcher", new Set(["professional.profile", "professional.activity", "web.search", "web.fetch", "archives.search", "source.excerpts", "research.memo.persist"])],
     ["github-researcher", new Set(["github.graphql", "github.rest", "github.clone", "web.fetch", "source.excerpts", "research.memo.persist"])],
     ["web-records-researcher", new Set(["web.search", "web.fetch", "archives.search", "public_records.search", "scholarly.search", "packages.inspect", "security_records.search", "source.excerpts", "research.memo.persist"])],
@@ -65,13 +64,6 @@ async function listen(server: ReturnType<typeof createHeadlessGateway>["server"]
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Headless gateway did not bind a TCP port.");
   return address.port;
-}
-
-function attachTui(handle: RunHandle, password: string, sessionId: string): ChildProcess {
-  return spawn(resolve("node_modules", ".bin", "opencode"), ["attach", handle.openCodeUrl, "--session", sessionId], {
-    env: { ...process.env, OPENCODE_SERVER_PASSWORD: password },
-    stdio: "inherit",
-  });
 }
 
 async function closeServer(server: ReturnType<typeof createHeadlessGateway>["server"]): Promise<void> {
@@ -109,7 +101,7 @@ async function main(): Promise<void> {
     });
     const expectedManifestHash = await getPinnedLocalManifestHash();
     const researchModel = process.env.RESEARCH_MODEL ?? "deepseek-v4-flash";
-    const budget = await openPersistentRunBudget(workspace.root, headlessBudgetCeilings());
+    const budget = new MemoryRunBudget(headlessBudgetCeilings(), { onChange: () => undefined });
     const reportStore = await ReportStore.open(workspace.root, {
       runId,
       inputSha256: workspace.inputSha256,
@@ -124,12 +116,11 @@ async function main(): Promise<void> {
     gateway = createHeadlessGateway({
       runId,
       deadlineAt: deadlineAt.getTime(),
-      allowedTools: new Set([...toolNames, "source.excerpts", "official_domain.register", "research.memo.persist", ...reportToolNames]),
+      allowedTools: new Set([...toolNames, "source.excerpts", "research.memo.persist", ...reportToolNames]),
       allowedModels: new Set([researchModel]),
       agentTools: agentToolAllowlist(),
       reportStore,
       persistResearchMemo: (value) => persistResearchMemo(workspace!.root, value),
-      officialDomainRegistration: (value) => registerOfficialDomainProposal(workspace!.root, workspace!.sourceStore, value),
       executor: providerExecutor,
       sourceStore: workspace.sourceStore,
       budget,
@@ -178,7 +169,7 @@ async function main(): Promise<void> {
       beginPublishing: () => gateway!.setPhase("PUBLISHING"),
       onLeadStarted: async (sessionId) => {
         process.stderr.write(`Run ${runId}: lead session ${sessionId} is visible${options.watch ? " in the attached TUI" : ` with npm run attach -- ${runId}`}.\n`);
-        if (options.watch && handle) watchProcess = attachTui(handle, password, sessionId);
+        if (options.watch && handle) watchProcess = attachOpenCodeTui(handle, password, sessionId);
       },
       onProgress: (message) => { if (!options.watch) process.stderr.write(`Run ${runId}: ${message}\n`); },
     });
@@ -195,10 +186,10 @@ async function main(): Promise<void> {
     await mkdir(join(workspace.root, "provenance"), { recursive: true });
     const progress = await reportStore.progress();
     await atomicWrite(join(workspace.root, "provenance", "report.json"), `${JSON.stringify({ schemaVersion: 1, runId, inputSha256: workspace.inputSha256, reportDraftRevision: progress.revision, sourceRefs: [...new Set(output.result.findings.flatMap(({ sources }) => sources.map(({ sourceRef }) => sourceRef)))].sort() }, null, 2)}\n`);
-    await reportStore.markPublished();
-    if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
     await rename(reportTemporaryPath, reportPath);
     reportTemporaryPath = undefined;
+    await reportStore.markPublished();
+    if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
     await atomicWrite(resultPath, `${JSON.stringify(output.result, null, 2)}\n`);
     process.stdout.write(`${JSON.stringify({ runId, result: resultPath, report: reportPath, sources: join(workspace.root, "sources") }, null, 2)}\n`);
   } catch (caught) {

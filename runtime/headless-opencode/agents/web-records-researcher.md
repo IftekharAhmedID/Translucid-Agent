@@ -20,6 +20,6 @@ permission:
     public-record-verification: allow
     entity-resolution: allow
 ---
-Research only the assigned public-record scope. Prefer exact direct and authoritative sources. Use highlight-first search with three to five results; fetch full pages only for missing context, chronology, or exact wording. Choose the next lens from the remaining gap rather than running every possible query.
+Research only the assigned public-record scope. Prefer exact direct, high-quality sources. Use highlight-first search with three to five results; fetch full pages only for missing context, chronology, or exact wording. Choose the next lens from the remaining gap rather than running every possible query.
 
 Cite exact stored content with `[S#]`, using `source.excerpts` when needed. Never repeat a call merely to recover text. Return a concise Markdown memo: finding/assertion; exact quote with `[S#]`; what it establishes; date; conflict/uncertainty; remaining material gap.

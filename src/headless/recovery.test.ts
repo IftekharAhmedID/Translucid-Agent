@@ -54,21 +54,21 @@ test("writes and verifies the minimal durable research snapshot", async () => {
   }
 });
 
-test("verifies the existing legacy handoff without requiring its stale runtime configuration", async () => {
-  const root = await mkdtemp(join(tmpdir(), "translucid-legacy-snapshot-"));
+test("verifies the existing historical handoff without requiring its stale runtime configuration", async () => {
+  const root = await mkdtemp(join(tmpdir(), "translucid-historical-snapshot-"));
   try {
     await mkdir(join(root, ".work", "finalization"), { recursive: true });
     await mkdir(join(root, ".work", "memos"), { recursive: true });
-    await writeFile(join(root, ".work", "memos", "lead.md"), "legacy memo");
+    await writeFile(join(root, ".work", "memos", "lead.md"), "historical memo");
     await writeFile(join(root, ".work", "finalization", "handoff-manifest.json"), JSON.stringify({
       schemaVersion: 1,
       research: {
-        artifacts: { ".work/memos/lead.md": sha256("legacy memo") },
-        config: { runtime: "E2B", researchModel: "legacy-model", runtimeManifestHash: "stale" },
+        artifacts: { ".work/memos/lead.md": sha256("historical memo") },
+        config: { runtime: "E2B", researchModel: "historical-model", runtimeManifestHash: "stale" },
       },
     }));
 
-    assert.deepEqual(await verifyResearchSnapshot(root), { runtime: "E2B", researchModel: "legacy-model", artifactCount: 1, source: "LEGACY_HANDOFF" });
+    assert.deepEqual(await verifyResearchSnapshot(root), { runtime: "E2B", researchModel: "historical-model", artifactCount: 1, source: "HISTORICAL_HANDOFF" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

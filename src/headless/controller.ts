@@ -5,14 +5,26 @@ import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import type { GlobalEvent, Session } from "@opencode-ai/sdk/v2/client";
 
 import type { RunHandle } from "../runtime/types.ts";
-import { describeSdkError } from "./finalization-controller.ts";
 import { researchPrompt } from "./prompt-contracts.ts";
 import { writeResearchSnapshot } from "./recovery.ts";
 import type { LeanReportResult, ReportProgress, ReportStore } from "./report-store.ts";
 
-export { buildFinalizerContext, describeSdkError, extractTextOutput, finalizerPromptPayload, finalizerRepairPayload, finalizerTextPromptPayload, resultForAudit } from "./finalization-controller.ts";
-
 const directory = "/workspace/case";
+
+export function describeSdkError(error: unknown): string {
+  if (error instanceof Error) {
+    const details = Object.fromEntries(Object.getOwnPropertyNames(error)
+      .filter((name) => !new Set(["name", "message", "stack"]).has(name))
+      .map((name) => [name, (error as unknown as Record<string, unknown>)[name]]));
+    const suffix = Object.keys(details).length ? ` ${JSON.stringify(details)}` : "";
+    return `${error.name}: ${error.message}${suffix}`;
+  }
+  if (error && typeof error === "object") {
+    const details = Object.fromEntries(Object.getOwnPropertyNames(error).map((name) => [name, (error as Record<string, unknown>)[name]]));
+    return JSON.stringify(details);
+  }
+  return String(error);
+}
 
 export function publishingPrompt(): string {
   return `Research is complete. Stay in this lead session and publish the investigation through the native report tools. Do not call providers, delegate, or restart research.
@@ -34,7 +46,7 @@ The backend validates structure and captured references only. You own evidence r
 export function recoveryPublishingPrompt(): string {
   return `This is publishing-only recovery from completed immutable research. No provider executor is available and no provider, search, delegation, or new research call is permitted.
 
-Read /workspace/case/input/document.json, every completed /workspace/case/.work/memos/*.md file, and /workspace/case/sources/manifest.json. These durable artifacts replace the unavailable original conversation. Use source.excerpts only when a captured S reference needs local detail. Do not read, migrate, or rely on any V3, V4, or V5 claim, facet, packet, dossier, critic, audit, or finalization artifact.
+Read /workspace/case/input/document.json, every completed /workspace/case/.work/memos/*.md file, and /workspace/case/sources/manifest.json. These durable artifacts replace the unavailable original conversation. Use source.excerpts only when a captured S reference needs local detail. Ignore discarded historical report artifacts and use only the current research materials plus the durable report draft.
 
 ${publishingPrompt()}`;
 }
@@ -62,6 +74,7 @@ export async function runPublishingRecovery(input: {
   deadlineAt: number;
   signal: AbortSignal;
   reportStore: ReportStore;
+  onSessionStarted?: (sessionId: string) => void | Promise<void>;
 }): Promise<{ result: LeanReportResult; sessionId: string }> {
   const client = createOpencodeClient({ baseUrl: input.handle.openCodeUrl, headers: input.handle.accessHeaders, throwOnError: false });
   const session = unwrap(await client.session.create({
@@ -70,6 +83,7 @@ export async function runPublishingRecovery(input: {
     agent: "lead-researcher",
     model: { id: input.model, providerID: "translucid", variant: "medium" },
   }, { signal: input.signal }), "publishing recovery session creation");
+  await input.onSessionStarted?.(session.id);
   await driveReportPublishing({
     initialPrompt: recoveryPublishingPrompt(),
     launch: async (prompt) => {
@@ -163,7 +177,7 @@ export async function waitForResearchIdle(input: {
     const interval = input.intervalMs ?? 500;
     if (interval > 0) await new Promise((resolve) => setTimeout(resolve, interval));
   }
-  throw new DOMException("Finalization reserve began.", "TimeoutError");
+  throw new DOMException("Publishing reserve began.", "TimeoutError");
 }
 
 function eventSessionId(event: GlobalEvent): string | undefined {
@@ -209,7 +223,7 @@ export class HeadlessInvestigationController {
       input.onProgress?.(`Lead research session ${leadId} started.`);
       const researchDeadline = input.deadlineAt.getTime() - input.publishingReserveMs;
       const researchAbort = new AbortController();
-      const timeout = setTimeout(() => researchAbort.abort(new DOMException("Finalization reserve began.", "TimeoutError")), Math.max(1, researchDeadline - Date.now()));
+      const timeout = setTimeout(() => researchAbort.abort(new DOMException("Publishing reserve began.", "TimeoutError")), Math.max(1, researchDeadline - Date.now()));
       const abort = () => researchAbort.abort(input.signal.reason);
       input.signal.addEventListener("abort", abort, { once: true });
       let leadMemo = "";

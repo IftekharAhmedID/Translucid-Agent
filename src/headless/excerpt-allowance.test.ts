@@ -9,24 +9,24 @@ function result(maximum: number, truncated = false) {
 
 test("accounts repeated requests cumulatively and reports explicit exhaustion", async () => {
   const allowances = new SessionExcerptAllowances();
-  allowances.register("dossier", 10);
+  allowances.register("publishing", 10);
   let loads = 0;
   const load = async (maximum: number) => { loads += 1; return result(maximum); };
 
-  assert.deepEqual(await allowances.execute("dossier", "S1", 6, load), {
+  assert.deepEqual(await allowances.execute("publishing", "S1", 6, load), {
     ...result(6),
     returnedCharacters: 6,
     remainingCharacters: 4,
     budgetExhausted: false,
   });
-  assert.deepEqual(await allowances.execute("dossier", "S1", 6, load), {
+  assert.deepEqual(await allowances.execute("publishing", "S1", 6, load), {
     ...result(4),
     returnedCharacters: 4,
     remainingCharacters: 0,
     truncated: true,
     budgetExhausted: true,
   });
-  const exhausted = await allowances.execute("dossier", "S1", 6, load);
+  const exhausted = await allowances.execute("publishing", "S1", 6, load);
   assert.equal(exhausted.returnedCharacters, 0);
   assert.equal(exhausted.remainingCharacters, 0);
   assert.equal(exhausted.budgetExhausted, true);

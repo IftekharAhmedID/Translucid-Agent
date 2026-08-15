@@ -87,17 +87,17 @@ export async function verifyResearchSnapshot(rootPath: string): Promise<{
   runtime: "LOCAL" | "E2B";
   researchModel: string;
   artifactCount: number;
-  source: "RESEARCH_SNAPSHOT" | "LEGACY_HANDOFF";
+  source: "RESEARCH_SNAPSHOT" | "HISTORICAL_HANDOFF";
 }> {
   const root = resolve(rootPath);
   const currentPath = join(root, ".work", "research-snapshot.json");
-  let source: "RESEARCH_SNAPSHOT" | "LEGACY_HANDOFF" = "RESEARCH_SNAPSHOT";
+  let source: "RESEARCH_SNAPSHOT" | "HISTORICAL_HANDOFF" = "RESEARCH_SNAPSHOT";
   let raw: string;
   try {
     raw = await readFile(currentPath, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    source = "LEGACY_HANDOFF";
+    source = "HISTORICAL_HANDOFF";
     raw = await readFile(join(root, ".work", "finalization", "handoff-manifest.json"), "utf8");
   }
   const snapshot = snapshotSchema.parse(JSON.parse(raw));

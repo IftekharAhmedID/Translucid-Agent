@@ -17,11 +17,6 @@ export async function getPinnedLocalManifestHash(): Promise<string> {
   return (JSON.parse(result.stdout) as { manifestHash: string }).manifestHash;
 }
 
-export async function getPinnedResearchManifestHash(): Promise<string> {
-  const result = await runProcess(process.execPath, ["--import", "tsx", "scripts/runtime-manifest.ts", "--scope", "research"], { timeoutMs: 60_000 });
-  return (JSON.parse(result.stdout) as { manifestHash: string }).manifestHash;
-}
-
 function basicAuth(password: string): string {
   return `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;
 }
@@ -44,7 +39,7 @@ export class LocalDockerRuntime implements InvestigatorRuntime {
       "--env", `INVESTIGATION_ID=${input.investigationId}`,
       "--env", `RUN_ID=${input.runId}`,
       "--env", `OPENCODE_SERVER_PASSWORD=${input.openCodePassword}`,
-      "--env", `TRANSLUCID_RUNTIME_MODE=${input.mode ?? "legacy"}`,
+      "--env", `TRANSLUCID_RUNTIME_MODE=${input.mode ?? "headless"}`,
       ...(input.allowStaleCaseManifest ? ["--env", "CASE_ALLOW_STALE_MANIFEST=true"] : []),
       ...(input.deadlineAt ? ["--env", `CASE_DEADLINE_AT=${input.deadlineAt}`] : []),
       ...Object.entries(openCodeRuntimeEnvironment).flatMap(([name, value]) => ["--env", `${name}=${value}`]),

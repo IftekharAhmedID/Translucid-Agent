@@ -2,9 +2,6 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import { estimateModelInputTokens, modelCostReservation, proxyModelCompletion } from "../gateway/model-proxy.ts";
-import { FINALIZER_MODEL_CATALOG } from "../core/model-catalog.ts";
-import { prepareFinalizerUpstreamBody } from "../core/finalizer-transport.ts";
-import type { ModelRequestTimeouts } from "../core/config.ts";
 import { toolNames } from "../providers/contracts.ts";
 import type { ProviderExecutor } from "../providers/executor.ts";
 import type { MemoryRunBudget } from "./budget.ts";
@@ -14,8 +11,6 @@ import type { FileSourceStore } from "./source-store.ts";
 
 const MAX_TOOL_BODY = 1024 * 1024;
 const MAX_MODEL_BODY = 16 * 1024 * 1024;
-const finalizerAgents = new Set(["evidence-compiler", "evidence-auditor"]);
-
 class GatewayError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
@@ -57,12 +52,7 @@ type GatewayInput = {
   agentTools?: Map<string, Set<string>>;
   reportStore?: ReportStore;
   persistResearchMemo?: (value: unknown) => Promise<unknown>;
-  officialDomainRegistration?: (value: unknown) => Promise<unknown>;
   researchUpstreamUrl?: string;
-  finalizerUpstreamUrl?: string;
-  finalizerProvider?: "ZEN" | "GO";
-  finalizerModel?: string;
-  modelRequestTimeouts?: ModelRequestTimeouts;
   fixtureCompletion?: (body: Record<string, unknown>, agent: string, model: string) => Promise<{ content?: string; toolCall?: { name: string; arguments: Record<string, unknown> } }>;
   onModelRequest?: (request: { agent: string; estimatedInputTokens: number }) => void;
 };
@@ -78,9 +68,9 @@ export function createHeadlessGateway(input: GatewayInput) {
   const authorize = (request: IncomingMessage, kind: "tool" | "model", name: string): void => {
     const header = request.headers.authorization;
     const bearer = header?.startsWith("Bearer ") ? header.slice(7) : "";
-    const anthropic = typeof request.headers["x-api-key"] === "string" ? request.headers["x-api-key"] : "";
-    if (bearer && anthropic && bearer !== anthropic) throw new GatewayError(401, "Conflicting run credentials.");
-    const provided = bearer || anthropic;
+    const alternate = typeof request.headers["x-api-key"] === "string" ? request.headers["x-api-key"] : "";
+    if (bearer && alternate && bearer !== alternate) throw new GatewayError(401, "Conflicting run credentials.");
+    const provided = bearer || alternate;
     const providedDigest = digest(provided);
     if (!active || Date.now() >= input.deadlineAt || provided.length > 256 || !timingSafeEqual(providedDigest, tokenDigest)) throw new GatewayError(401, "Unauthorized or expired run token.");
     if (request.headers["x-run-id"] !== input.runId) throw new GatewayError(401, "Run scope mismatch.");
@@ -129,9 +119,6 @@ export function createHeadlessGateway(input: GatewayInput) {
           const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
           const sessionId = typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session";
           const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
-          if (finalizerAgents.has(agent) && !excerptAllowances.has(sessionId)) {
-            throw new GatewayError(403, `Finalization session ${sessionId} has no registered excerpt allowance.`);
-          }
           const sourceRef = typeof args.sourceRef === "string" ? args.sourceRef : "";
           const queries = Array.isArray(args.queries) ? args.queries.filter((value): value is string => typeof value === "string") : [];
           const requestedCharacters = typeof args.maxCharacters === "number" && Number.isFinite(args.maxCharacters)
@@ -145,12 +132,8 @@ export function createHeadlessGateway(input: GatewayInput) {
           );
           return json(response, 200, excerpt);
         }
-        if (name === "official_domain.register") {
-          if (!input.officialDomainRegistration) throw new GatewayError(403, "Official-domain proposals are unavailable in this run.");
-          return json(response, 200, await input.officialDomainRegistration(body.arguments));
-        }
         if (!toolNames.includes(name as (typeof toolNames)[number])) throw new GatewayError(403, "State and database tools are unavailable in headless runs.");
-        if (!input.executor) throw new GatewayError(403, "Research providers are unavailable during finalization-only recovery.");
+        if (!input.executor) throw new GatewayError(403, "Research providers are unavailable during publishing-only recovery.");
         const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
         const result = await input.executor.executeHeadless({ tool: name, arguments: body.arguments }, {
           runId: input.runId,
@@ -159,40 +142,26 @@ export function createHeadlessGateway(input: GatewayInput) {
         });
         return json(response, 200, result);
       }
-      if (request.method === "POST" && (url.pathname === "/internal/llm/v1/chat/completions" || url.pathname === "/internal/llm/v1/messages")) {
+      if (request.method === "POST" && url.pathname === "/internal/llm/v1/chat/completions") {
         const body = await readJson(request, MAX_MODEL_BODY);
         const model = typeof body.model === "string" ? body.model.split("/").at(-1) ?? "" : "";
         authorize(request, "model", model);
-        const protocol = url.pathname.endsWith("/messages") ? "ANTHROPIC_MESSAGES" : "OPENAI_CHAT";
-        const modelDefinition = FINALIZER_MODEL_CATALOG.find(({ id }) => id === model);
-        if (finalizerAgents.has(typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "")
-          && modelDefinition && modelDefinition.protocol !== protocol) {
-          throw new GatewayError(400, `Model ${model} requires the ${modelDefinition.protocol} transport.`);
-        }
         const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
         const remainingMs = input.deadlineAt - Date.now();
         if (remainingMs <= 0) throw new GatewayError(401, "Investigation deadline reached.");
-        const chargedBody = finalizerAgents.has(agent)
-          ? prepareFinalizerUpstreamBody(body, { agent, provider: input.finalizerProvider ?? "GO", model, protocol })
-          : body;
-        input.onModelRequest?.({ agent, estimatedInputTokens: estimateModelInputTokens(chargedBody) });
-        await input.budget.reserveModel(modelCostReservation(chargedBody, model));
+        input.onModelRequest?.({ agent, estimatedInputTokens: estimateModelInputTokens(body) });
+        await input.budget.reserveModel(modelCostReservation(body, model));
         await proxyModelCompletion({
           request,
           response,
-          body: chargedBody,
+          body,
           agent,
           model,
           remainingMs,
           providerMode: input.providerMode,
           upstreamKey: process.env.OPENCODE_API_KEY,
           researchUpstreamUrl: input.researchUpstreamUrl ?? "https://opencode.ai/zen/v1/chat/completions",
-          finalizerUpstreamUrl: input.finalizerUpstreamUrl ?? "https://opencode.ai/zen/go/v1/chat/completions",
-          finalizerProvider: input.finalizerProvider ?? "GO",
-          protocol,
-          finalizerAgents,
-          requestTimeouts: input.modelRequestTimeouts,
-          fixtureCompletion: () => input.fixtureCompletion?.(chargedBody, agent, model) ?? Promise.resolve({ content: "Headless fixture model completed." }),
+          fixtureCompletion: () => input.fixtureCompletion?.(body, agent, model) ?? Promise.resolve({ content: "Headless fixture model completed." }),
         });
         return;
       }

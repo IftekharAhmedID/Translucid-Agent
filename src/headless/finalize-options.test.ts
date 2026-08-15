@@ -14,7 +14,7 @@ test("requires an absolute run directory and accepts keep-debug and local watch"
   assert.throws(() => parseFinalizeArguments([]), /--run/i);
 });
 
-test("finalization-only recovery cannot construct or invoke a research provider adapter", async () => {
+test("publishing-only recovery cannot construct or invoke a research provider adapter", async () => {
   const source = await readFile(new URL("./finalize-cli.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /ProviderExecutor|createFileProviderBackend|executor:/);
   assert.match(source, /allowedTools: new Set\(\["source\.excerpts", \.\.\.reportToolNames\]\)/);

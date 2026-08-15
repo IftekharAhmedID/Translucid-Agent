@@ -32,7 +32,7 @@ export class E2BRuntime implements InvestigatorRuntime {
         INVESTIGATION_ID: input.investigationId,
         RUN_ID: input.runId,
         OPENCODE_SERVER_PASSWORD: input.openCodePassword,
-        TRANSLUCID_RUNTIME_MODE: input.mode ?? "legacy",
+      TRANSLUCID_RUNTIME_MODE: input.mode ?? "headless",
         ...(input.allowStaleCaseManifest ? { CASE_ALLOW_STALE_MANIFEST: "true" } : {}),
         ...(input.deadlineAt ? { CASE_DEADLINE_AT: input.deadlineAt } : {}),
         ...openCodeRuntimeEnvironment,

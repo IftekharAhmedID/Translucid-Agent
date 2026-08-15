@@ -2,10 +2,8 @@ import { buildCapabilityRegistry, type Capability } from "../core/capabilities.t
 import {
   capabilityForRequest,
   parseHeadlessToolRequest,
-  parseToolRequest,
   shouldAllowSocialResearch,
   type HeadlessParsedToolRequest,
-  type ParsedToolRequest,
   type ProfessionalMaterialField,
   type ProviderCostSource,
   type ToolName,
@@ -24,8 +22,7 @@ import { safePublicFetch } from "./http.ts";
 import { fetchWithRetry } from "./retry.ts";
 
 type Environment = Record<string, string | undefined>;
-type ExecuteContext = ProviderExecutionContext & { investigationId: string };
-type AnyParsedToolRequest = ParsedToolRequest | HeadlessParsedToolRequest;
+type AnyParsedToolRequest = HeadlessParsedToolRequest;
 type RequestOf<Name extends ToolName> = Extract<AnyParsedToolRequest, { tool: Name }>;
 type ProfileRequest = Extract<AnyParsedToolRequest, { tool: "professional.profile" }>;
 type ActivityRequest = Extract<AnyParsedToolRequest, { tool: "professional.activity" }>;
@@ -207,7 +204,7 @@ export class ProviderExecutor {
   private readonly pools: Map<ToolName, Semaphore>;
   private readonly brightDataPool: Semaphore;
 
-  constructor(private readonly environment: Environment = process.env, private readonly callBackend?: ProviderCallBackend) {
+  constructor(private readonly environment: Environment = process.env, private readonly callBackend: ProviderCallBackend) {
     this.registry = buildCapabilityRegistry(environment);
     this.pools = new Map(Object.keys(defaultToolCeilings).map((tool) => [tool as ToolName, new Semaphore(concurrencyFor(tool as ToolName, environment))]));
     this.brightDataPool = new Semaphore(Math.max(1, Number(environment.BRIGHTDATA_CONCURRENCY ?? 2)));
@@ -217,14 +214,9 @@ export class ProviderExecutor {
     return this.registry;
   }
 
-  async execute(raw: unknown, context: ExecuteContext): Promise<ToolResult> {
-    const request = parseToolRequest(raw);
-    return this.executeParsed(request, context, true);
-  }
-
   async executeHeadless(raw: unknown, context: ProviderExecutionContext): Promise<HeadlessToolResult> {
     const request = parseHeadlessToolRequest(raw);
-    const result = await this.executeParsed(request, context, false);
+    const result = await this.executeParsed(request, context);
     return {
       status: result.status,
       capability: result.capability,
@@ -239,12 +231,11 @@ export class ProviderExecutor {
     };
   }
 
-  private async executeParsed(request: AnyParsedToolRequest, context: ProviderExecutionContext, requireQuestionScope: boolean): Promise<ToolResult & { cache?: "HIT" | "MISS" }> {
+  private async executeParsed(request: AnyParsedToolRequest, context: ProviderExecutionContext): Promise<ToolResult & { cache?: "HIT" | "MISS" }> {
     const capability = capabilityForRequest(request);
     const entry = this.registry[capability];
     if (!["READY", "READY_FIXTURE", "DEGRADED"].includes(entry.state)) return unavailableResult(capability);
     if (request.tool === "social.profile" && !shouldAllowSocialResearch(request.arguments.reason)) return unavailableResult(capability);
-    if (requireQuestionScope) await this.assertQuestionScope(request as ParsedToolRequest, context as ExecuteContext);
     const pool = this.pools.get(request.tool);
     if (!pool) throw new Error("Provider semaphore is missing.");
     try {
@@ -279,15 +270,6 @@ export class ProviderExecutor {
         costSource: "UNKNOWN",
       };
     }
-  }
-
-  private async assertQuestionScope(request: ParsedToolRequest, context: ExecuteContext): Promise<void> {
-    const { getSql } = await import("../db/client.ts");
-    const [question] = await getSql()<Array<{ status: string }>>`
-      SELECT status FROM research_questions
-      WHERE id = ${request.arguments.questionId} AND investigation_id = ${context.investigationId} AND run_id = ${context.runId}
-    `;
-    if (!question || !["OPEN", "IN_PROGRESS"].includes(question.status)) throw new Error("Tool request must reference an active research question in this run.");
   }
 
   private executeFixture(request: AnyParsedToolRequest, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
@@ -554,16 +536,7 @@ export class ProviderExecutor {
   }
 
   private async executeProviderCall(input: Parameters<ProviderCallBackend>[0]): Promise<ConcreteProviderResult> {
-    if (this.callBackend) return this.callBackend(input);
-    if (!input.context.investigationId || !input.requestMetadata) throw new Error("Legacy provider persistence requires investigation and question metadata.");
-    const { executeConcreteProviderCall } = await import("./provider-call.ts");
-    return executeConcreteProviderCall({
-      ...input,
-      context: { ...input.context, investigationId: input.context.investigationId },
-      questionId: input.requestMetadata.questionId,
-      claimIds: input.requestMetadata.claimIds,
-      publicRationale: input.requestMetadata.publicRationale,
-    });
+    return this.callBackend(input);
   }
 
   private combine(results: ConcreteProviderResult[], data: unknown): ConcreteProviderResult {

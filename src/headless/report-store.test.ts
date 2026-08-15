@@ -130,7 +130,7 @@ test("returns actionable errors for invalid anchors and source references", asyn
   }
 });
 
-test("finalization requires basic structure and makes the report immutable", async () => {
+test("publishing requires basic structure and makes the report immutable", async () => {
   const { root, store } = await fixture();
   try {
     await assert.rejects(store.finalize(), (error: unknown) => error instanceof ReportStoreError && error.code === "INCOMPLETE_REPORT");
