@@ -11,6 +11,7 @@ const gatewayUrl = process.env.CASE_GATEWAY_URL;
 const token = process.env.CASE_TOKEN;
 const runId = process.env.RUN_ID;
 const deadlineAt = process.env.CASE_DEADLINE_AT;
+const caseRoot = process.env.CASE_ROOT ?? "/workspace/case";
 
 if (!gatewayUrl || !token || !runId) throw new Error("Headless run gateway environment is incomplete.");
 const configuredGatewayUrl = gatewayUrl;
@@ -18,6 +19,13 @@ const configuredToken = token;
 const configuredRunId = runId;
 
 const specialistRoles = ["professional-researcher", "github-researcher", "web-records-researcher", "social-researcher"] as const;
+type SpecialistRole = (typeof specialistRoles)[number];
+type Wave = "INITIAL" | "TARGETED";
+type PendingRepair = { role: SpecialistRole; wave: Wave; assignment: string; repairUsed: boolean };
+
+function specialistRole(value: unknown): value is SpecialistRole {
+  return typeof value === "string" && specialistRoles.some((role) => role === value);
+}
 
 function taskPrompt(args: Record<string, unknown>): string {
   return typeof args.prompt === "string" ? args.prompt : typeof args.description === "string" ? args.description : "";
@@ -42,9 +50,12 @@ function truncateUtf8(value: string, maximumBytes: number): string {
 function returnedSourceRefs(body: string): string[] {
   try {
     const parsed = JSON.parse(body) as Record<string, unknown>;
-    return [...new Set([parsed.sourceRefs, parsed.evidenceEligibleSourceRefs]
+    const refs = [parsed.sourceRefs, parsed.evidenceEligibleSourceRefs]
       .flatMap((value) => Array.isArray(value) ? value : [])
-      .filter((value): value is string => typeof value === "string" && /^S[1-9]\d*$/.test(value)))];
+      .concat(typeof parsed.sourceRef === "string" ? [parsed.sourceRef] : [])
+      .filter((value): value is string => typeof value === "string" && /^S[1-9]\d*$/.test(value));
+    return [...new Set(refs)]
+      .sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
   } catch {
     return [];
   }
@@ -63,7 +74,11 @@ export function validateMemoCitations(memo: string, encounteredSourceRefs: Itera
 
 const plugin: Plugin = async () => {
   const roleCounts = new Map<string, number>();
-  const taskWave = new Map<string, "INITIAL" | "TARGETED">();
+  const taskWave = new Map<string, Wave>();
+  const taskAssignments = new Map<string, string>();
+  const repairCalls = new Map<string, string>();
+  const pendingRepairs = new Map<string, PendingRepair>();
+  const repairSessions = new Set<string>();
   const assignments = new Map<string, string>();
   const sessionSourceRefs = new Map<string, Set<string>>();
   let totalChildren = 0;
@@ -71,6 +86,9 @@ const plugin: Plugin = async () => {
   let targetedStarted = false;
 
   async function execute(name: string, args: unknown, context: { sessionID: string; agent: string; callID?: string; abort: AbortSignal }) {
+    if (repairSessions.has(context.sessionID) && name !== "source.excerpts") {
+      throw new Error(`Memo repair mode denies ${name}; only source.excerpts is allowed.`);
+    }
     const response = await fetch(`${configuredGatewayUrl}/internal/tools/execute`, {
       method: "POST",
       headers: {
@@ -153,10 +171,26 @@ const plugin: Plugin = async () => {
     "tool.execute.before": async (input, output) => {
       if (input.tool !== "task") return;
       const role = output.args?.subagent_type;
-      if (!specialistRoles.includes(role)) return;
+      if (!specialistRole(role)) return;
       const prompt = taskPrompt(output.args ?? {});
-      const wave = prompt.match(/\bWAVE:\s*(INITIAL|TARGETED)\b/i)?.[1]?.toLocaleUpperCase("en-US") as "INITIAL" | "TARGETED" | undefined;
+      const wave = prompt.match(/\bWAVE:\s*(INITIAL|TARGETED)\b/i)?.[1]?.toLocaleUpperCase("en-US") as Wave | undefined;
       if (!wave) throw new Error("Every specialist task must declare WAVE: INITIAL or WAVE: TARGETED.");
+      const repairSessionId = typeof output.args?.task_id === "string" ? output.args.task_id : undefined;
+      if (repairSessionId) {
+        const pending = pendingRepairs.get(repairSessionId);
+        if (!pending) throw new Error(`Child ${repairSessionId} has no pending memo repair.`);
+        if (pending.repairUsed) throw new Error(`Child ${repairSessionId} already used its one memo repair.`);
+        if (role !== pending.role || wave !== pending.wave) throw new Error(`Memo repair for ${repairSessionId} must keep role ${pending.role} and wave ${pending.wave}.`);
+        pending.repairUsed = true;
+        repairCalls.set(input.callID, repairSessionId);
+        repairSessions.add(repairSessionId);
+        taskWave.set(input.callID, wave);
+        output.args.background = false;
+        const repairRule = `\n\nThis is the one allowed protocol repair for task_id ${repairSessionId}. Do not call provider or network tools; only source.excerpts may be used. Return a full, self-contained replacement memo for the original assignment, not a delta, correction, or reference to earlier output. Cite only S references encountered by this same child session.\n\nOriginal assignment:\n${pending.assignment}`;
+        if (typeof output.args.prompt === "string") output.args.prompt += repairRule;
+        else if (typeof output.args.description === "string") output.args.description += repairRule;
+        return;
+      }
       if (wave === "INITIAL" && targetedStarted) throw new Error("An initial task cannot start after the targeted wave.");
       if (wave === "TARGETED" && targetedChildren >= 2) throw new Error("The targeted wave has reached its two-child limit.");
       if ((roleCounts.get(role) ?? 0) >= 2) throw new Error(`${role} has already reached its two-invocation limit.`);
@@ -171,6 +205,7 @@ const plugin: Plugin = async () => {
       roleCounts.set(role, (roleCounts.get(role) ?? 0) + 1);
       totalChildren += 1;
       taskWave.set(input.callID, wave);
+      taskAssignments.set(input.callID, truncateUtf8(prompt, 16 * 1024));
       output.args.background = false;
       const memoRule = "\n\nReturn a public Markdown research memo with exact quotes and [S#] references. Do not return report records or scores.";
       if (typeof output.args?.prompt === "string") output.args.prompt += memoRule;
@@ -179,24 +214,56 @@ const plugin: Plugin = async () => {
     "tool.execute.after": async (input, output) => {
       if (input.tool !== "task") return;
       const role = input.args?.subagent_type;
-      if (!specialistRoles.includes(role)) return;
+      if (!specialistRole(role)) return;
       const sessionId = typeof output.metadata?.sessionId === "string" ? output.metadata.sessionId : input.callID;
+      const repairSessionId = repairCalls.get(input.callID);
+      if (repairSessionId && repairSessionId !== sessionId) throw new Error(`Memo repair resumed ${sessionId} instead of pending child ${repairSessionId}.`);
       const memo = completedTaskMemo(output.output);
       const wave = taskWave.get(input.callID) ?? "UNKNOWN";
+      const assignment = repairSessionId
+        ? pendingRepairs.get(repairSessionId)?.assignment ?? "Unavailable."
+        : taskAssignments.get(input.callID) ?? "Unavailable.";
       taskWave.delete(input.callID);
-      if (!memo) return;
-      await mkdir("/workspace/case/.work/memos", { recursive: true });
+      taskAssignments.delete(input.callID);
+      repairCalls.delete(input.callID);
+      await mkdir(`${caseRoot}/.work/memos`, { recursive: true });
       const encounteredSourceRefs = [...(sessionSourceRefs.get(sessionId) ?? new Set<string>())].sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
-      const { citedSourceRefs, unknownSourceRefs: unknown } = validateMemoCitations(memo, encounteredSourceRefs);
-      if (unknown.length) {
-        const diagnostic = `Rejected ${role} memo for session ${sessionId}: citation(s) ${unknown.join(", ")} were not returned to that specialist session. Retry the assigned scope with exact encountered S references.`;
+      const rejectedOutput = typeof output.output === "string" ? output.output : JSON.stringify(output.output ?? null);
+      const citationCheck = memo ? validateMemoCitations(memo, encounteredSourceRefs) : { citedSourceRefs: [], unknownSourceRefs: [] };
+      const failureKind = !memo ? "EMPTY_MEMO" : citationCheck.unknownSourceRefs.length ? "UNKNOWN_SOURCE_REFS" : undefined;
+      if (failureKind) {
+        const pending = pendingRepairs.get(sessionId) ?? { role, wave: wave === "UNKNOWN" ? "INITIAL" : wave, assignment, repairUsed: Boolean(repairSessionId) };
+        pendingRepairs.set(sessionId, pending);
+        const attempt = pending.repairUsed ? 2 : 1;
+        const reason = failureKind === "EMPTY_MEMO"
+          ? "the child returned no completed task-result memo"
+          : `citation(s) ${citationCheck.unknownSourceRefs.join(", ")} were not returned to that specialist session`;
+        const next = pending.repairUsed
+          ? "No repair remains; the research handoff must fail before publishing."
+          : `Resume this exact child once with subagent_type ${role}, task_id ${sessionId}, and WAVE: ${pending.wave}.`;
+        const diagnostic = `Rejected ${role} memo for session ${sessionId}: ${reason}. ${next}`;
         output.output = diagnostic;
-        await writeFile(`/workspace/case/.work/memos/rejected-${safeName(role)}-${safeName(sessionId)}.json`, `${JSON.stringify({ role, wave, sessionId, unknownSourceRefs: unknown, encounteredSourceRefs, citedSourceRefs, diagnostic }, null, 2)}\n`, { mode: 0o600 });
+        await writeFile(`${caseRoot}/.work/memos/rejected-${safeName(role)}-${safeName(sessionId)}-attempt-${attempt}.json`, `${JSON.stringify({
+          schemaVersion: 1,
+          role,
+          wave: pending.wave,
+          sessionId,
+          attempt,
+          failureKind,
+          unknownSourceRefs: citationCheck.unknownSourceRefs,
+          encounteredSourceRefs,
+          citedSourceRefs: citationCheck.citedSourceRefs,
+          rejectedOutputSha256: createHash("sha256").update(rejectedOutput).digest("hex"),
+          rejectedOutput: truncateUtf8(rejectedOutput, 4 * 1024),
+          diagnostic,
+        }, null, 2)}\n`, { mode: 0o600 });
         return;
       }
+      if (repairSessionId) pendingRepairs.delete(sessionId);
+      const { citedSourceRefs } = citationCheck;
       const memoFile = `# ${role} memo\n\nWave: ${wave}\nSession: ${sessionId}\n\n${memo}\n`;
-      await writeFile(`/workspace/case/.work/memos/${safeName(role)}-${safeName(sessionId)}.md`, memoFile, { mode: 0o600 });
-      await writeFile(`/workspace/case/.work/memos/${safeName(role)}-${safeName(sessionId)}.sources.json`, `${JSON.stringify({ schemaVersion: 1, role, wave, sessionId, memoSha256: createHash("sha256").update(memoFile).digest("hex"), encounteredSourceRefs, citedSourceRefs }, null, 2)}\n`, { mode: 0o600 });
+      await writeFile(`${caseRoot}/.work/memos/${safeName(role)}-${safeName(sessionId)}.md`, memoFile, { mode: 0o600 });
+      await writeFile(`${caseRoot}/.work/memos/${safeName(role)}-${safeName(sessionId)}.sources.json`, `${JSON.stringify({ schemaVersion: 1, role, wave, sessionId, memoSha256: createHash("sha256").update(memoFile).digest("hex"), encounteredSourceRefs, citedSourceRefs }, null, 2)}\n`, { mode: 0o600 });
       const persisted = await fetch(`${configuredGatewayUrl}/internal/tools/execute`, {
         method: "POST",
         headers: {

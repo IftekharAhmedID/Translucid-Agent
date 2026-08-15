@@ -8,6 +8,7 @@ const root = join(process.cwd(), "runtime", "headless-opencode");
 test("lead exposes native report tools while specialists keep research tools", async () => {
   const lead = await readFile(join(root, "agents", "lead-researcher.md"), "utf8");
   for (const name of ["report.summary.set", "report.finding.upsert", "report.finding.remove", "report.progress.get", "report.finalize"]) assert.match(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
+  assert.match(lead, /source\.excerpts: allow/);
   assert.doesNotMatch(lead, /\b(?:web\.search|professional\.profile|github\.rest|social\.profile): allow/);
   for (const file of ["professional-researcher.md", "github-researcher.md", "web-records-researcher.md", "social-researcher.md"]) {
     const source = await readFile(join(root, "agents", file), "utf8");
