@@ -34,12 +34,13 @@ test("headless runtime loads one plugin and keeps shell/edit tools disabled", as
   assert.match(plugin, /includeDomains/);
 });
 
-test("professional and web specialists use the bounded official-domain search ladder", async () => {
+test("professional and web specialists use adaptive evidence-saturation search", async () => {
   for (const file of ["professional-researcher.md", "web-records-researcher.md"]) {
     const source = await readFile(join(root, "agents", file), "utf8");
-    assert.match(source, /exact-name official-domain search/i);
+    assert.match(source, /adaptive evidence-saturation search/i);
     assert.match(source, /includeDomains/);
     assert.match(source, /archive only/i);
+    assert.match(source, /deep-reasoning/);
   }
 });
 

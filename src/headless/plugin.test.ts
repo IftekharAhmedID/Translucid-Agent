@@ -99,12 +99,49 @@ test("repairs an invalid memo once in the same child session without provider ca
     );
     assert.match(await readFile(join(process.env.CASE_ROOT!, ".work", "memos", "professional-researcher-child-1.md"), "utf8"), /Employment evidence \[S7\]/);
 
-    const targeted = { args: { subagent_type: "professional-researcher", prompt: "WAVE: TARGETED\nResolve one remaining gap.", background: true } };
+    const targeted = { args: { subagent_type: "professional-researcher", prompt: "WAVE: TARGETED\nMATERIAL PREDICATE: one gap\nCURRENT EVIDENCE: [S1]\nMISSING EVIDENCE LANE: authority\nSTOP CONDITION: exhausted.", background: true } };
     await before({ tool: "task", sessionID: "lead-session", callID: "task-call-2" }, targeted);
     await assert.rejects(before(
       { tool: "task", sessionID: "lead-session", callID: "task-repair-2" },
       { args: { subagent_type: "professional-researcher", task_id: "child-1", prompt: "WAVE: INITIAL\nTry again." } },
     ), /no pending memo repair|already used/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("targeted specialist tasks require an evidence-gap packet", async () => {
+  const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
+  const hooks = await plugin({} as Parameters<typeof plugin>[0]);
+  const before = hooks["tool.execute.before"]!;
+  await assert.rejects(
+    before({ tool: "task", sessionID: "lead-session", callID: "targeted-missing" }, {
+      args: { subagent_type: "web-records-researcher", prompt: "WAVE: TARGETED\nResolve one gap.", background: true },
+    }),
+    /MATERIAL PREDICATE/i,
+  );
+});
+
+test("initial specialists cannot use deep search and targeted depth is bounded", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) => new Response(JSON.stringify({ sourceRefs: [], evidenceEligibleSourceRefs: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  try {
+    const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
+    const hooks = await plugin({} as Parameters<typeof plugin>[0]);
+    const before = hooks["tool.execute.before"]!;
+    const chat = hooks["chat.message"]!;
+    const search = hooks.tool!["web.search"]!;
+
+    await before({ tool: "task", sessionID: "lead-session", callID: "initial-call" }, { args: { subagent_type: "web-records-researcher", prompt: "WAVE: INITIAL\nResearch the initial scope.", background: true } });
+    await chat({ sessionID: "initial-session" }, { message: {} as never, parts: [{ type: "text", text: "WAVE: INITIAL" }] as never });
+    await assert.rejects(search.execute({ query: "initial deep", mode: "deep" }, { sessionID: "initial-session", agent: "web-records-researcher", abort: new AbortController().signal } as never), /Initial-wave specialists may use auto or fast/i);
+
+    await before({ tool: "task", sessionID: "lead-session", callID: "targeted-call" }, { args: { subagent_type: "web-records-researcher", prompt: "WAVE: TARGETED\nMATERIAL PREDICATE: target\nCURRENT EVIDENCE: [S1]\nMISSING EVIDENCE LANE: independent\nSTOP CONDITION: exhausted.", background: true } });
+    await chat({ sessionID: "targeted-session" }, { message: {} as never, parts: [{ type: "text", text: "WAVE: TARGETED" }] as never });
+    await assert.rejects(search.execute({ query: "reason first", mode: "deep-reasoning" }, { sessionID: "targeted-session", agent: "web-records-researcher", abort: new AbortController().signal } as never), /requires one prior deep/i);
+    await search.execute({ query: "deep once", mode: "deep" }, { sessionID: "targeted-session", agent: "web-records-researcher", abort: new AbortController().signal } as never);
+    await search.execute({ query: "reason once", mode: "deep-reasoning" }, { sessionID: "targeted-session", agent: "web-records-researcher", abort: new AbortController().signal } as never);
+    await assert.rejects(search.execute({ query: "deep twice", mode: "deep" }, { sessionID: "targeted-session", agent: "web-records-researcher", abort: new AbortController().signal } as never), /at most one deep/i);
   } finally {
     globalThis.fetch = originalFetch;
   }

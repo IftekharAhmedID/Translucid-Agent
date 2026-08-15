@@ -85,6 +85,8 @@ const plugin: Plugin = async () => {
   const pendingRepairs = new Map<string, PendingRepair>();
   const repairSessions = new Set<string>();
   const assignments = new Map<string, string>();
+  const sessionWaves = new Map<string, Wave>();
+  const deepSearchCounts = new Map<string, { deep: number; deepReasoning: number }>();
   const sessionSourceRefs = new Map<string, Set<string>>();
   let totalChildren = 0;
   let targetedChildren = 0;
@@ -93,6 +95,24 @@ const plugin: Plugin = async () => {
   async function execute(name: string, args: unknown, context: { sessionID: string; agent: string; callID?: string; abort: AbortSignal }) {
     if (repairSessions.has(context.sessionID) && name !== "source.excerpts") {
       throw new Error(`Memo repair mode denies ${name}; only source.excerpts is allowed.`);
+    }
+    if (name === "web.search" && specialistRole(context.agent)) {
+      const searchArgs = args as { mode?: string };
+      const mode = searchArgs.mode ?? "auto";
+      const wave = sessionWaves.get(context.sessionID);
+      if (wave === "INITIAL" && (mode === "deep" || mode === "deep-reasoning")) {
+        throw new Error("Initial-wave specialists may use auto or fast search only; deep search is reserved for a targeted material gap.");
+      }
+      if (wave === "TARGETED") {
+        const counts = deepSearchCounts.get(context.sessionID) ?? { deep: 0, deepReasoning: 0 };
+        if (mode === "deep" && counts.deep >= 1) throw new Error("A targeted specialist may use at most one deep search.");
+        if (mode === "deep-reasoning" && (counts.deepReasoning >= 1 || counts.deep < 1)) {
+          throw new Error("A targeted deep-reasoning search requires one prior deep search and is allowed at most once.");
+        }
+        if (mode === "deep") counts.deep += 1;
+        if (mode === "deep-reasoning") counts.deepReasoning += 1;
+        deepSearchCounts.set(context.sessionID, counts);
+      }
     }
     const response = await fetch(`${configuredGatewayUrl}/internal/tools/execute`, {
       method: "POST",
@@ -122,7 +142,7 @@ const plugin: Plugin = async () => {
   }
 
   const tools = {
-    "web.search": gatewayTool("web.search", "Discover public sources with targeted highlights. Returned S references identify immutable captures.", { query: z.string().min(2).max(1000), mode: z.enum(["fast", "auto"]).default("fast"), highlightQuery: z.string().min(2).max(1000).optional(), resultLimit: z.number().int().min(1).max(10).default(5), includeDomains: includeDomains.optional() }),
+    "web.search": gatewayTool("web.search", "Discover public sources with targeted highlights. Use auto for ordinary search; deep and deep-reasoning are bounded targeted escalations. Returned S references identify immutable captures.", { query: z.string().min(2).max(1000), mode: z.enum(["fast", "auto", "deep", "deep-reasoning"]).default("auto"), highlightQuery: z.string().min(2).max(1000).optional(), resultLimit: z.number().int().min(1).max(10).default(5), includeDomains: includeDomains.optional() }),
     "web.fetch": gatewayTool("web.fetch", "Capture one public page as an immutable source.", { url: z.string().url() }),
     "professional.profile": gatewayTool("professional.profile", "Retrieve one full professional profile with one conditional fallback for a missing material field.", { username: z.string().min(2).max(200), requiredMaterialField: z.enum(["IDENTITY", "CURRENT_POSITION", "EMPLOYMENT_HISTORY", "EDUCATION"]).default("IDENTITY") }),
     "professional.activity": gatewayTool("professional.activity", "Escalation-only retrieval for material activity, chronology, ownership, or leadership gaps.", { username: z.string().min(2).max(200) }),
@@ -168,8 +188,10 @@ const plugin: Plugin = async () => {
       output.headers["x-opencode-agent"] = input.agent;
     },
     "chat.message": async (input, output) => {
-      if (assignments.has(input.sessionID)) return;
       const text = output.parts.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n").trim();
+      const wave = text.match(/\bWAVE:\s*(INITIAL|TARGETED)\b/i)?.[1]?.toLocaleUpperCase("en-US") as Wave | undefined;
+      if (wave) sessionWaves.set(input.sessionID, wave);
+      if (assignments.has(input.sessionID)) return;
       if (text) assignments.set(input.sessionID, truncateUtf8(text, 2 * 1024));
     },
     tool: tools,
@@ -204,6 +226,11 @@ const plugin: Plugin = async () => {
         throw new Error("Social research requires one explicit allowed SOCIAL_REASON.");
       }
       if (wave === "TARGETED") {
+        for (const heading of ["MATERIAL PREDICATE:", "CURRENT EVIDENCE:", "MISSING EVIDENCE LANE:", "STOP CONDITION:"]) {
+          if (!prompt.toLocaleUpperCase("en-US").includes(heading)) throw new Error(`Targeted specialist tasks must include ${heading}`);
+        }
+      }
+      if (wave === "TARGETED") {
         targetedStarted = true;
         targetedChildren += 1;
       }
@@ -225,6 +252,7 @@ const plugin: Plugin = async () => {
       if (repairSessionId && repairSessionId !== sessionId) throw new Error(`Memo repair resumed ${sessionId} instead of pending child ${repairSessionId}.`);
       const memo = completedTaskMemo(output.output);
       const wave = taskWave.get(input.callID) ?? "UNKNOWN";
+      if (wave === "INITIAL" || wave === "TARGETED") sessionWaves.set(sessionId, wave);
       const assignment = repairSessionId
         ? pendingRepairs.get(repairSessionId)?.assignment ?? "Unavailable."
         : taskAssignments.get(input.callID) ?? "Unavailable.";
