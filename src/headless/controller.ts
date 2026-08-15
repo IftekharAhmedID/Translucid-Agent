@@ -26,8 +26,8 @@ export function describeSdkError(error: unknown): string {
   return String(error);
 }
 
-export function publishingPrompt(): string {
-  return `Research is complete. Stay in this lead session and publish the investigation through the native report tools. Do not call providers, delegate, or restart research.
+export function draftingPrompt(): string {
+  return `Research is complete. Stay in this lead session and draft the investigation through the native report tools. Do not call providers, delegate, restart research, or finalize.
 
 1. Call report.progress.get. Preserve any valid existing findings when resuming.
 2. Call report.summary.set with one concise but complete investigation summary: overall result, strongest corroboration, material conflicts, unresolved areas, and limitations.
@@ -38,9 +38,28 @@ export function publishingPrompt(): string {
 7. Write a direct evidence synthesis, not a bibliography dump. Use notes only for a useful caveat.
 8. Assign exactly one investigator-owned status: 2 fully corroborated; 1 corroborated with a minor caveat; 0 unclear or insufficient credible public evidence; -1 materially inconsistent; -2 directly contradicted by multiple credible sources. Unresolved is not false.
 9. Call report.progress.get again and compare it with your research coverage checklist and every résumé section. Repair omissions, duplicates, over-broad findings, anchors, and source references with upsert/remove.
-10. Call report.finalize only after that review. Finalization is irreversible for this run.
+10. Stop after the draft has a summary and findings. Do not call report.finalize; a separate audit turn will do that.
 
 The backend validates structure and captured references only. You own evidence relevance, status, completeness, and wording.`;
+}
+
+export function publishingPrompt(): string {
+  return draftingPrompt();
+}
+
+export function auditingPrompt(): string {
+  return `The draft is complete. Perform a separate adversarial audit in this same lead session. Do not call providers, delegate, or restart research.
+
+1. Call report.progress.get and inspect every draft finding against /workspace/case/input/document.json, the durable specialist memos, and the captured S references already in context.
+2. Split any compound finding whose material facets have different evidence, especially entity, role, dates, present status, location, duties, skills, and credentials.
+3. Treat résumé, LinkedIn, personal-site, and candidate-written institutional pages as one candidate-origin family unless institutional authorship is evident. Do not call repeated URLs independent corroboration.
+4. Challenge every status 2. Require direct authoritative support or genuinely independent strong evidence for every material facet. Downgrade incomplete identity/date fit or candidate-family-only support to 0.
+5. Keep status 1 for minor caveats only. Use -1 for a materially stale or inconsistent facet and -2 only for direct contradiction by multiple credible sources. Missing public evidence remains 0.
+6. Check exact anchors, source relevance, temporal fit, contradiction handling, negative-evidence coverage, and whether the summary is stronger than the repaired findings.
+7. Repair with report.finding.upsert/remove and report.summary.set as needed. Call report.progress.get again.
+8. Call report.finalize only after the entire draft is calibrated. Finalization is irreversible for this run.
+
+The backend validates structure and captured references only. You own the semantic audit and calibrated wording.`;
 }
 
 export function recoveryPublishingPrompt(): string {
@@ -48,24 +67,38 @@ export function recoveryPublishingPrompt(): string {
 
 Read /workspace/case/input/document.json, every completed /workspace/case/.work/memos/*.md file, and /workspace/case/sources/manifest.json. These durable artifacts replace the unavailable original conversation. Use source.excerpts only when a captured S reference needs local detail. Ignore discarded historical report artifacts and use only the current research materials plus the durable report draft.
 
-${publishingPrompt()}`;
+${draftingPrompt()}`;
 }
 
 export async function driveReportPublishing(input: {
   launch: (prompt: string) => Promise<void>;
   waitUntilIdle: () => Promise<void>;
   progress: () => Promise<ReportProgress>;
+  beginDrafting?: () => void;
+  beginAuditing?: () => void;
   initialPrompt?: string;
 }): Promise<ReportProgress> {
   let progress = await input.progress();
   if (progress.state !== "OPEN") return progress;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    await input.launch(attempt === 0 ? input.initialPrompt ?? publishingPrompt() : "Continue publishing the existing draft. Call report.progress.get, complete or repair the remaining résumé findings from your existing context, review coverage, and call report.finalize. Do not restart research or call providers.");
+  input.beginDrafting?.();
+  for (let attempt = 0; attempt < 3 && !draftReady(progress); attempt += 1) {
+    await input.launch(attempt === 0 ? input.initialPrompt ?? draftingPrompt() : "Continue drafting the existing report. Call report.progress.get, complete the summary and remaining résumé findings, repair anchors and sources, and stop without report.finalize. Do not restart research or call providers.");
+    await input.waitUntilIdle();
+    progress = await input.progress();
+  }
+  if (!draftReady(progress)) throw new Error("Lead investigator did not produce a structurally complete report draft after three bounded drafting prompts.");
+  input.beginAuditing?.();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await input.launch(attempt === 0 ? auditingPrompt() : "Continue the adversarial audit. Repair remaining findings and summary issues, call report.progress.get, and call report.finalize when the draft is calibrated. Do not restart research or call providers.");
     await input.waitUntilIdle();
     progress = await input.progress();
     if (progress.state !== "OPEN") return progress;
   }
-  throw new Error("Lead investigator did not finalize the report after the initial publishing prompt and two bounded continuations.");
+  throw new Error("Lead investigator did not finalize the report after the bounded draft and audit turns.");
+}
+
+function draftReady(progress: ReportProgress): boolean {
+  return progress.summary.trim().length > 0 && progress.findings.length > 0;
 }
 
 export async function runPublishingRecovery(input: {
@@ -74,6 +107,8 @@ export async function runPublishingRecovery(input: {
   deadlineAt: number;
   signal: AbortSignal;
   reportStore: ReportStore;
+  beginDrafting?: () => void;
+  beginAuditing?: () => void;
   onSessionStarted?: (sessionId: string) => void | Promise<void>;
 }): Promise<{ result: LeanReportResult; sessionId: string }> {
   const client = createOpencodeClient({ baseUrl: input.handle.openCodeUrl, headers: input.handle.accessHeaders, throwOnError: false });
@@ -86,6 +121,8 @@ export async function runPublishingRecovery(input: {
   await input.onSessionStarted?.(session.id);
   await driveReportPublishing({
     initialPrompt: recoveryPublishingPrompt(),
+    beginDrafting: input.beginDrafting,
+    beginAuditing: input.beginAuditing,
     launch: async (prompt) => {
       const launched = await client.session.promptAsync({
         sessionID: session.id,
@@ -122,7 +159,8 @@ type Input = {
   researchModel: string;
   reportStore: ReportStore;
   assertResearchReadyForPublishing: () => void;
-  beginPublishing: () => void;
+  beginDrafting: () => void;
+  beginAuditing: () => void;
   onLeadStarted?: (sessionId: string) => void | Promise<void>;
   onProgress?: (message: string) => void;
 };
@@ -302,9 +340,10 @@ export class HeadlessInvestigationController {
       if (leadMemo) await writeFile(join(memoDirectory, `lead-${safeFile(lead.id)}.md`), leadMemo, { mode: 0o600 });
       await writeResearchSnapshot(input.root, { runtime: input.runtime, researchModel: input.researchModel });
       input.assertResearchReadyForPublishing();
-      input.beginPublishing();
-      input.onProgress?.(`Research handoff is durable; lead session ${leadId} entered publishing.`);
+      input.onProgress?.(`Research handoff is durable; lead session ${leadId} entered drafting.`);
       await driveReportPublishing({
+        beginDrafting: input.beginDrafting,
+        beginAuditing: input.beginAuditing,
         launch: async (prompt) => {
           const launched = await client.session.promptAsync({
             sessionID: leadId,

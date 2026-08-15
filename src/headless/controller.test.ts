@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { classifyInvestigationFailure, describeSdkError, driveReportPublishing, publishingPrompt, recoveryPublishingPrompt, readCompletedResearchMemos, ResearchHandoffError, waitForResearchIdle } from "./controller.ts";
+import { auditingPrompt, classifyInvestigationFailure, describeSdkError, draftingPrompt, driveReportPublishing, publishingPrompt, recoveryPublishingPrompt, readCompletedResearchMemos, ResearchHandoffError, waitForResearchIdle } from "./controller.ts";
 
 test("publishing prompt assigns report semantics to the lead and structure to the backend", () => {
   const prompt = recoveryPublishingPrompt();
@@ -12,30 +12,37 @@ test("publishing prompt assigns report semantics to the lead and structure to th
   assert.match(prompt, /report\.finding\.upsert/);
   assert.match(prompt, /discarded historical report artifacts/i);
   assert.match(prompt, /no provider/i);
-  assert.match(publishingPrompt(), /There is no target count/);
+  assert.match(draftingPrompt(), /There is no target count/);
+  assert.match(draftingPrompt(), /Do not call report\.finalize/i);
+  assert.match(auditingPrompt(), /Challenge every status 2/i);
+  assert.equal(publishingPrompt(), draftingPrompt());
 });
 
-test("publishes in the existing lead session with at most two continuation prompts", async () => {
+test("drafts and audits in separate bounded turns", async () => {
   const prompts: string[] = [];
   let reads = 0;
   const ready = await driveReportPublishing({
     launch: async (prompt) => { prompts.push(prompt); },
     waitUntilIdle: async () => undefined,
-    progress: async () => ({
-      schemaVersion: 1,
-      run: { id: "run-1", inputSha256: "a".repeat(64), startedAt: "2026-08-14T00:00:00.000Z", runtime: "LOCAL", model: "research-model" },
-      state: reads++ >= 2 ? "READY" : "OPEN",
-      revision: 0,
-      summary: "",
-      findings: [],
-    }),
+    progress: async () => {
+      const current = reads++;
+      return {
+        schemaVersion: 1,
+        run: { id: "run-1", inputSha256: "a".repeat(64), startedAt: "2026-08-14T00:00:00.000Z", runtime: "LOCAL", model: "research-model" },
+        state: current >= 3 ? "READY" : "OPEN",
+        revision: current,
+        summary: current >= 2 ? "Summary" : "",
+        findings: current >= 2 ? [{} as never] : [],
+      };
+    },
   });
   assert.equal(ready.state, "READY");
-  assert.equal(prompts.length, 2);
-  assert.match(prompts[1] ?? "", /report\.progress\.get/);
+  assert.equal(prompts.length, 3);
+  assert.match(prompts[0] ?? "", /draft/i);
+  assert.match(prompts[2] ?? "", /adversarial audit/i);
 });
 
-test("fails closed after the bounded publishing continuations", async () => {
+test("fails closed after bounded drafting prompts", async () => {
   let launches = 0;
   await assert.rejects(driveReportPublishing({
     launch: async () => { launches += 1; },
@@ -48,7 +55,7 @@ test("fails closed after the bounded publishing continuations", async () => {
       summary: "",
       findings: [],
     }),
-  }), /did not finalize/i);
+  }), /structurally complete report draft/i);
   assert.equal(launches, 3);
 });
 

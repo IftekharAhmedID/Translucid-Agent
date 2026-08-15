@@ -63,7 +63,7 @@ export function createHeadlessGateway(input: GatewayInput) {
   const excerptAllowances = new SessionExcerptAllowances();
   const reportTools = new Set<string>(reportToolNames);
   let active = true;
-  let phase: "RESEARCHING" | "PUBLISHING" = "RESEARCHING";
+  let phase: "RESEARCHING" | "DRAFTING" | "AUDITING" = "RESEARCHING";
 
   const authorize = (request: IncomingMessage, kind: "tool" | "model", name: string): void => {
     const header = request.headers.authorization;
@@ -81,8 +81,9 @@ export function createHeadlessGateway(input: GatewayInput) {
       if (!input.agentTools.get(agent)?.has(name)) throw new GatewayError(403, `Agent ${agent} cannot use ${name}.`);
     }
     if (kind === "tool") {
-      if (phase === "RESEARCHING" && reportTools.has(name)) throw new GatewayError(403, "Report tools are unavailable until publishing begins.");
-      if (phase === "PUBLISHING" && !reportTools.has(name) && name !== "source.excerpts") throw new GatewayError(403, `Publishing phase denies ${name}.`);
+      if (phase === "RESEARCHING" && reportTools.has(name)) throw new GatewayError(403, "Report tools are unavailable until drafting begins.");
+      if (phase !== "RESEARCHING" && !reportTools.has(name) && name !== "source.excerpts") throw new GatewayError(403, `${phase} phase denies ${name}.`);
+      if (phase === "DRAFTING" && name === "report.finalize") throw new GatewayError(403, "Drafting phase denies report.finalize; the separate audit phase must finalize.");
     }
   };
 
@@ -183,7 +184,7 @@ export function createHeadlessGateway(input: GatewayInput) {
     server,
     token,
     registerExcerptAllowance: (sessionId: string, characters: number) => excerptAllowances.register(sessionId, characters),
-    setPhase: (value: "RESEARCHING" | "PUBLISHING") => { phase = value; },
+    setPhase: (value: "RESEARCHING" | "DRAFTING" | "AUDITING") => { phase = value; },
     cancel: () => { active = false; },
   };
 }

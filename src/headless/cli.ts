@@ -169,7 +169,8 @@ async function main(): Promise<void> {
       researchModel,
       reportStore,
       assertResearchReadyForPublishing: () => providerExecutor.assertReadyForPublication(),
-      beginPublishing: () => gateway!.setPhase("PUBLISHING"),
+      beginDrafting: () => gateway!.setPhase("DRAFTING"),
+      beginAuditing: () => gateway!.setPhase("AUDITING"),
       onLeadStarted: async (sessionId) => {
         process.stderr.write(`Run ${runId}: lead session ${sessionId} is visible${options.watch ? " in the attached TUI" : ` with npm run attach -- ${runId}`}.\n`);
         if (options.watch && handle) watchProcess = attachOpenCodeTui(handle, password, sessionId);

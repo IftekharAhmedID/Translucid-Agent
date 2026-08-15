@@ -113,7 +113,7 @@ async function main(): Promise<void> {
     researchUpstreamUrl: upstream(researchProvider),
     fixtureCompletion: (body, agent) => fixture(body, agent),
   });
-  gateway.setPhase("PUBLISHING");
+  gateway.setPhase("DRAFTING");
   let runtime: InvestigatorRuntime | undefined;
   let handle: RunHandle | undefined;
   let watchProcess: ChildProcess | undefined;
@@ -151,6 +151,8 @@ async function main(): Promise<void> {
       deadlineAt,
       signal: abort.signal,
       reportStore,
+      beginDrafting: () => gateway.setPhase("DRAFTING"),
+      beginAuditing: () => gateway.setPhase("AUDITING"),
       onSessionStarted: (sessionId) => {
         if (options.watch && handle?.kind === "LOCAL") {
           process.stderr.write(`Publishing session ${sessionId} is visible in the attached TUI.\n`);
@@ -190,7 +192,7 @@ async function main(): Promise<void> {
       runId: workspace.runId,
       code: abort.signal.aborted ? "CANCELLED_OR_TIMED_OUT" : "PUBLISHING_FAILED",
       message: error.message,
-      phase: "PUBLISHING",
+      phase: "AUDITING",
       cancelled: abort.signal.aborted,
       diagnostics: handle ? { sessionId: handle.id } : {},
     }).catch(() => undefined);

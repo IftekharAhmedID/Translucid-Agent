@@ -46,7 +46,7 @@ test("persists specialist memos during research and denies them during publishin
     const response = () => fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "research.memo.persist", arguments: { sessionId: "ses_1", memo: "Finding [S1]." } }) });
     assert.equal((await response()).status, 200);
     assert.deepEqual(persisted, [{ sessionId: "ses_1", memo: "Finding [S1]." }]);
-    gateway.setPhase("PUBLISHING");
+    gateway.setPhase("DRAFTING");
     assert.equal((await response()).status, 403);
     gateway.cancel();
     await server.close();
@@ -79,12 +79,14 @@ test("allows only the lead to publish structurally valid findings", async () => 
     const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-report", "x-opencode-agent": "lead-researcher" };
     const execute = (tool: string, args: unknown, override = headers) => fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers: override, body: JSON.stringify({ tool, arguments: args, operational: { sessionId: "lead-session", callId: "call-1" } }) });
     assert.equal((await execute("report.summary.set", { summary: "Summary" })).status, 403);
-    gateway.setPhase("PUBLISHING");
+    gateway.setPhase("DRAFTING");
     assert.equal((await execute("web.search", { query: "must not run" })).status, 403);
     assert.equal((await execute("report.summary.set", { summary: "Summary" }, { ...headers, "x-opencode-agent": "web-records-researcher" })).status, 403);
     assert.equal((await execute("report.summary.set", { summary: "Summary" })).status, 200);
     assert.equal((await execute("report.finding.upsert", { findingId: "F001", section: "Career", claim: "Current role", anchor: { kind: "PDF_TEXT", page: 1, lineStart: 1, lineEnd: 1, exact: "Wrong text" }, evidence: "Evidence", status: 2, sourceRefs: [source.ref] })).status, 422);
     assert.equal((await execute("report.finding.upsert", { findingId: "F001", section: "Career", claim: "Current role", anchor: { kind: "PDF_TEXT", page: 1, lineStart: 1, lineEnd: 1, exact: "Principal Software Engineer" }, evidence: "Evidence", status: 2, sourceRefs: [source.ref] })).status, 200);
+    assert.equal((await execute("report.finalize", {})).status, 403);
+    gateway.setPhase("AUDITING");
     assert.equal((await execute("report.finalize", {})).status, 200);
     const events = (await readFile(join(directory, ".work", "report-events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(events.map(({ tool }: { tool: string }) => tool), ["report.summary.set", "report.finding.upsert", "report.finalize"]);
@@ -110,7 +112,7 @@ test("routes research providers and local excerpts, then blocks providers in pub
     const excerpt = await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "source.excerpts", arguments: { sourceRef: "S1", queries: ["Principal Engineer"] } }) });
     assert.equal(excerpt.status, 200);
     assert.match((await excerpt.json() as { excerpts: Array<{ text: string }> }).excerpts[0]?.text ?? "", /Principal Engineer/);
-    gateway.setPhase("PUBLISHING");
+    gateway.setPhase("DRAFTING");
     assert.equal((await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "web.search", arguments: { query: "blocked" } }) })).status, 403);
     gateway.cancel();
     await server.close();
