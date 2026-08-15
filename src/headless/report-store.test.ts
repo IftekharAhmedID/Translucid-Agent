@@ -130,6 +130,23 @@ test("returns actionable errors for invalid anchors and source references", asyn
   }
 });
 
+test("rejects discovery-only sources while accepting captured provider responses", async () => {
+  const { root, options, store } = await fixture();
+  try {
+    const discovery = await options.sourceStore.capture({ kind: "SEARCH_DISCOVERY", provider: "exa", providerRoute: "exa.search", sourceUrl: "https://api.exa.ai/search", mimeType: "application/json", content: { results: [] }, provenance: {} });
+    const providerResponse = await options.sourceStore.capture({ kind: "PROVIDER_RESPONSE", provider: "github", providerRoute: "github.graphql", sourceUrl: "https://api.github.com/graphql", mimeType: "application/json", content: { data: { viewer: "Synthetic Candidate" } }, provenance: {} });
+
+    await assert.rejects(
+      store.upsertFinding({ ...finding, sourceRefs: [discovery.ref] }),
+      (error: unknown) => error instanceof ReportStoreError && error.code === "INELIGIBLE_SOURCE" && error.field === "sourceRefs",
+    );
+    await store.upsertFinding({ ...finding, sourceRefs: [providerResponse.ref] });
+    assert.deepEqual((await store.progress()).findings[0]?.sources, [{ sourceRef: providerResponse.ref, url: "https://api.github.com/graphql" }]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("publishing requires basic structure and makes the report immutable", async () => {
   const { root, store } = await fixture();
   try {

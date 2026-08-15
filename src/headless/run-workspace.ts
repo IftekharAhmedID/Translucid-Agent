@@ -44,7 +44,7 @@ const existingManifestSchema = z.object({
 }).loose();
 
 export async function removeRunDiagnostics(root: string): Promise<void> {
-  for (const path of [".bun", ".cache", ".config", ".local", ".npm", ".opencode", ".work", "output"]) {
+  for (const path of [".bun", ".cache", ".config", ".local", ".npm", ".opencode", "output"]) {
     await rm(join(root, path), { recursive: true, force: true });
   }
   for (const path of ["opencode.json", "INSTRUCTIONS.md", "runtime-manifest.json"]) await rm(join(root, path), { force: true });

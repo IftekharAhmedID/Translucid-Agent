@@ -26,7 +26,7 @@ npm run investigate -- \
 npm run attach -- <active-run-id>
 ```
 
-The run directory contains the immutable input, captured sources, specialist memos, `.work/report-draft.json`, `report.pdf`, and `result.json`. The draft is durable after every accepted report mutation, so `npm run finalize -- --run /absolute/path/to/run --keep-debug --watch` resumes publishing without repeating research. `result.json` is written last and is the success marker.
+The run directory contains the immutable input, captured sources, specialist memos, durable `.work` state, `report.pdf`, and `result.json`. Successful cleanup removes disposable runtime caches but preserves `.work`, so `npm run finalize -- --run /absolute/path/to/run --watch` can resume publishing without repeating research. `result.json` is written last and is the success marker.
 
 For a text or JSON submission:
 

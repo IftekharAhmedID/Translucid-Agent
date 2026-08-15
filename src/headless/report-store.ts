@@ -212,12 +212,14 @@ export class ReportStore {
       }
       const sources = [];
       for (const sourceRef of [...new Set(value.sourceRefs)]) {
+        let source;
         try {
-          const source = await this.sourceStore.get(sourceRef);
-          sources.push({ sourceRef, ...(source.title ? { title: source.title } : {}), ...(source.sourceUrl ? { url: source.sourceUrl } : {}) });
+          source = await this.sourceStore.get(sourceRef);
         } catch {
           throw new ReportStoreError("UNKNOWN_SOURCE", `Source reference ${sourceRef} does not exist in this run.`, "sourceRefs");
         }
+        if (source.kind === "SEARCH_DISCOVERY") throw new ReportStoreError("INELIGIBLE_SOURCE", `Search discovery source ${sourceRef} cannot support a report finding.`, "sourceRefs");
+        sources.push({ sourceRef, ...(source.title ? { title: source.title } : {}), ...(source.sourceUrl ? { url: source.sourceUrl } : {}) });
       }
       const existingIndex = this.draft.findings.findIndex(({ findingId }) => findingId === value.findingId);
       const stored = { ...value, sourceRefs: [...new Set(value.sourceRefs)], sources, order: existingIndex >= 0 ? this.draft.findings[existingIndex]!.order : this.draft.findings.length + 1 };
