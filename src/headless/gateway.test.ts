@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,43 @@ import { ReportStore } from "./report-store.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
 import { FileSourceStore } from "./source-store.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
+
+test("persists specialist memos through the host gateway only during research", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-memo-gateway-"));
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    const budget = new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 300, repositoryClones: 3, socialProfiles: 1 });
+    const persisted: unknown[] = [];
+    const gateway = createHeadlessGateway({
+      runId: "run-memo",
+      deadlineAt: Date.now() + 60_000,
+      allowedTools: new Set(["research.memo.persist"]),
+      allowedModels: new Set(),
+      agentTools: new Map([["github-researcher", new Set(["research.memo.persist"])]]),
+      persistResearchMemo: async (value) => { persisted.push(value); return { ok: true }; },
+      sourceStore,
+      budget,
+      providerMode: "fixture",
+    });
+    await new Promise<void>((resolve) => gateway.server.listen(0, "127.0.0.1", resolve));
+    const address = gateway.server.address();
+    if (!address || typeof address === "string") throw new Error("Gateway did not bind a TCP port.");
+    const body = { role: "github-researcher", wave: "INITIAL", sessionId: "ses_1", memo: "Finding [S1].", encounteredSourceRefs: ["S1"], citedSourceRefs: ["S1"] };
+    const response = () => fetch(`http://127.0.0.1:${address.port}/internal/tools/execute`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-memo", "x-opencode-agent": "github-researcher" },
+      body: JSON.stringify({ tool: "research.memo.persist", arguments: body }),
+    });
+    assert.equal((await response()).status, 200);
+    assert.deepEqual(persisted, [body]);
+    gateway.setPhase("PUBLISHING");
+    assert.equal((await response()).status, 403);
+    gateway.cancel();
+    await new Promise<void>((resolve, reject) => gateway.server.close((error) => error ? reject(error) : resolve()));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("allows only the lead to publish structured findings during the publishing phase", async () => {
   const directory = await mkdtemp(join(tmpdir(), "translucid-report-gateway-"));
@@ -99,6 +136,13 @@ test("allows only the lead to publish structured findings during the publishing 
     assert.equal(progress.status, 200);
     assert.equal((await progress.json() as { findings: unknown[] }).findings.length, 1);
     assert.equal((await execute("report.finalize", {})).status, 200);
+    const events = (await readFile(join(directory, ".work", "report-events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(events.map(({ tool, sessionId, agent, callId }) => ({ tool, sessionId, agent, callId })), [
+      { tool: "report.summary.set", sessionId: "lead-session", agent: "lead-researcher", callId: "call-1" },
+      { tool: "report.finding.upsert", sessionId: "lead-session", agent: "lead-researcher", callId: "call-1" },
+      { tool: "report.progress.get", sessionId: "lead-session", agent: "lead-researcher", callId: "call-1" },
+      { tool: "report.finalize", sessionId: "lead-session", agent: "lead-researcher", callId: "call-1" },
+    ]);
 
     gateway.cancel();
     await new Promise<void>((resolve, reject) => gateway.server.close((error) => error ? reject(error) : resolve()));

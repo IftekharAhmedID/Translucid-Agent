@@ -12,4 +12,14 @@ test("E2B is secure, gateway-only, private, and killed on timeout", async () => 
   assert.match(source, /if \(!trafficAccessToken\) throw/);
   assert.match(source, /accepted unauthenticated traffic/);
   assert.match(source, /manifest\.manifestHash !== input\.expectedManifestHash/);
+  assert.match(source, /runtime-manifest\.publisher\.json/);
+  assert.match(source, /manifestHash: manifest\.manifestHash/);
+  assert.doesNotMatch(source, /manifestHash: input\.expectedManifestHash/);
+});
+
+test("local recovery reports the actual publisher manifest instead of the expected hash", async () => {
+  const source = await readFile(new URL("./local-docker.ts", import.meta.url), "utf8");
+  assert.match(source, /runtime-manifest\.publisher\.json/);
+  assert.match(source, /manifestHash: manifest\.manifestHash/);
+  assert.doesNotMatch(source, /manifestHash: input\.expectedManifestHash/);
 });

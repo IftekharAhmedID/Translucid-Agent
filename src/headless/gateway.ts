@@ -56,6 +56,7 @@ type GatewayInput = {
   providerMode: "fixture" | "live";
   agentTools?: Map<string, Set<string>>;
   reportStore?: ReportStore;
+  persistResearchMemo?: (value: unknown) => Promise<unknown>;
   officialDomainRegistration?: (value: unknown) => Promise<unknown>;
   researchUpstreamUrl?: string;
   finalizerUpstreamUrl?: string;
@@ -102,13 +103,26 @@ export function createHeadlessGateway(input: GatewayInput) {
         const body = await readJson(request, MAX_TOOL_BODY);
         const name = typeof body.tool === "string" ? body.tool : "";
         authorize(request, "tool", name);
+        if (name === "research.memo.persist") {
+          if (!input.persistResearchMemo) throw new GatewayError(403, "Host memo persistence is unavailable in this run.");
+          return json(response, 200, await input.persistResearchMemo(body.arguments));
+        }
         if (reportTools.has(name)) {
           if (!input.reportStore) throw new GatewayError(403, "Report publishing is unavailable in this run.");
-          if (name === "report.summary.set") return json(response, 200, await input.reportStore.setSummary(body.arguments));
-          if (name === "report.finding.upsert") return json(response, 200, await input.reportStore.upsertFinding(body.arguments));
-          if (name === "report.finding.remove") return json(response, 200, await input.reportStore.removeFinding(body.arguments));
-          if (name === "report.progress.get") return json(response, 200, await input.reportStore.progress());
-          if (name === "report.finalize") return json(response, 200, await input.reportStore.finalize());
+          let result: unknown;
+          if (name === "report.summary.set") result = await input.reportStore.setSummary(body.arguments);
+          else if (name === "report.finding.upsert") result = await input.reportStore.upsertFinding(body.arguments);
+          else if (name === "report.finding.remove") result = await input.reportStore.removeFinding(body.arguments);
+          else if (name === "report.progress.get") result = await input.reportStore.progress();
+          else if (name === "report.finalize") result = await input.reportStore.finalize();
+          const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
+          await input.reportStore.recordToolCall({
+            tool: name,
+            sessionId: typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session",
+            agent: typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent",
+            callId: typeof operational.callId === "string" ? operational.callId : "unknown-call",
+          });
+          return json(response, 200, result);
         }
         if (name === "source.excerpts") {
           const args = body.arguments && typeof body.arguments === "object" ? body.arguments as Record<string, unknown> : {};

@@ -206,6 +206,21 @@ const plugin: Plugin = async () => {
       const memoFile = `# ${role} memo\n\nWave: ${wave}\nSession: ${sessionId}\n\n${memo}\n`;
       await writeFile(`/workspace/case/.work/memos/${safeName(role)}-${safeName(sessionId)}.md`, memoFile, { mode: 0o600 });
       await writeFile(`/workspace/case/.work/memos/${safeName(role)}-${safeName(sessionId)}.sources.json`, `${JSON.stringify({ schemaVersion: 1, role, wave, sessionId, memoSha256: createHash("sha256").update(memoFile).digest("hex"), encounteredSourceRefs, citedSourceRefs }, null, 2)}\n`, { mode: 0o600 });
+      const persisted = await fetch(`${configuredGatewayUrl}/internal/tools/execute`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${configuredToken}`,
+          "content-type": "application/json",
+          "x-run-id": configuredRunId,
+          "x-opencode-agent": role,
+        },
+        body: JSON.stringify({
+          tool: "research.memo.persist",
+          arguments: { role, wave, sessionId, memo: memoFile, encounteredSourceRefs, citedSourceRefs },
+          operational: { sessionId, agent: role, callId: input.callID },
+        }),
+      });
+      if (!persisted.ok) throw new Error(`Host rejected completed ${role} memo (${persisted.status}): ${(await persisted.text()).slice(0, 300)}`);
     },
     "experimental.session.compacting": async (input, output) => {
       const counts = Object.fromEntries(specialistRoles.map((role) => [role, roleCounts.get(role) ?? 0]));

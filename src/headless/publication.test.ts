@@ -10,10 +10,11 @@ for (const file of ["cli.ts", "finalize-cli.ts"]) {
   test(`${file} verifies the temporary PDF and publishes result.json last`, async () => {
     const source = await readFile(join(process.cwd(), "src", "headless", file), "utf8");
     const steps = [
-      "assertPublishableResult(",
       "atomicWrite(reportTemporaryPath",
       "verifyInvestigationReport(await readFile(reportTemporaryPath))",
-      "publishFinalizationProvenance(workspace.root)",
+      "await runtime.stop(handle)",
+      "provenance\", \"report.json",
+      "reportStore.markPublished()",
       "rename(reportTemporaryPath, reportPath)",
       "atomicWrite(resultPath",
     ].map((text) => source.indexOf(text));

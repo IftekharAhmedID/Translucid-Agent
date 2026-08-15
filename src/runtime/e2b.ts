@@ -33,6 +33,7 @@ export class E2BRuntime implements InvestigatorRuntime {
         RUN_ID: input.runId,
         OPENCODE_SERVER_PASSWORD: input.openCodePassword,
         TRANSLUCID_RUNTIME_MODE: input.mode ?? "legacy",
+        ...(input.allowStaleCaseManifest ? { CASE_ALLOW_STALE_MANIFEST: "true" } : {}),
         ...(input.deadlineAt ? { CASE_DEADLINE_AT: input.deadlineAt } : {}),
         ...openCodeRuntimeEnvironment,
       },
@@ -52,8 +53,9 @@ export class E2BRuntime implements InvestigatorRuntime {
       const unauthenticatedAccess = await fetch(`${openCodeUrl}/global/health`, { signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
       if (unauthenticatedAccess?.ok) throw new Error("Secure E2B OpenCode endpoint accepted unauthenticated traffic.");
       await waitForHttp(openCodeUrl, accessHeaders);
-      const manifest = JSON.parse(await sandbox.files.read("/workspace/case/runtime-manifest.json")) as { manifestHash: string };
-      if (!input.expectedManifestHash || manifest.manifestHash !== input.expectedManifestHash) throw new Error("E2B runtime manifest does not equal the pinned local manifest.");
+      const manifestPath = input.allowStaleCaseManifest ? "/workspace/case/runtime-manifest.publisher.json" : "/workspace/case/runtime-manifest.json";
+      const manifest = JSON.parse(await sandbox.files.read(manifestPath)) as { manifestHash: string };
+      if (!input.expectedManifestHash || manifest.manifestHash !== input.expectedManifestHash) throw new Error("E2B publisher runtime manifest does not equal the pinned local manifest.");
       return { kind: "E2B", id: sandbox.sandboxId, openCodeUrl, accessHeaders, manifestHash: manifest.manifestHash };
     } catch (error) {
       await sandbox.kill().catch(() => undefined);

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { z } from "zod";
@@ -139,6 +139,7 @@ function normalizeText(value: string): string {
 
 export class ReportStore {
   private pending: Promise<void> = Promise.resolve();
+  private eventPending: Promise<void> = Promise.resolve();
 
   private constructor(
     private readonly root: string,
@@ -244,6 +245,24 @@ export class ReportStore {
   async progress(): Promise<ReportProgress> {
     await this.pending;
     return structuredClone(this.draft);
+  }
+
+  recordToolCall(input: { tool: string; sessionId: string; agent: string; callId: string }): Promise<void> {
+    const event = {
+      schemaVersion: 1,
+      tool: input.tool.slice(0, 100),
+      sessionId: input.sessionId.slice(0, 200),
+      agent: input.agent.slice(0, 100),
+      callId: input.callId.slice(0, 200),
+      recordedAt: new Date().toISOString(),
+    };
+    const operation = this.eventPending.then(async () => {
+      const path = join(this.root, ".work", "report-events.jsonl");
+      await mkdir(dirname(path), { recursive: true });
+      await appendFile(path, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
+    });
+    this.eventPending = operation.catch(() => undefined);
+    return operation;
   }
 
   finalize(): Promise<ReportMutationResult> {

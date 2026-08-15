@@ -4,28 +4,25 @@ import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { toolNames } from "../providers/contracts.ts";
-import { FINALIZER_MODEL_CATALOG, PAID_GO_MODEL_IDS } from "../core/model-catalog.ts";
-import { loadModelRequestTimeouts } from "../core/config.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
 import { E2BRuntime } from "../runtime/e2b.ts";
-import { getPinnedLocalManifestHash, getPinnedResearchManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
+import { getPinnedLocalManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
-import { currentCheckpointConfigs } from "./checkpoint-config.ts";
 import { openPersistentRunBudget } from "./checkpoint.ts";
 import { headlessBudgetCeilings } from "./budget.ts";
 import { parseInvestigationArguments } from "./cli-options.ts";
 import { HeadlessInvestigationController } from "./controller.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
-import { publishFinalizationProvenance } from "./incremental-pipeline.ts";
 import { createHeadlessGateway } from "./gateway.ts";
+import { persistResearchMemo } from "./recovery.ts";
 import { registerOfficialDomainProposal } from "./source-authority.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
-import { renderInvestigationReport, verifyInvestigationReport } from "./report.ts";
-import { assertPublishableResult } from "./result-contract.ts";
+import { reportToolNames, ReportStore } from "./report-store.ts";
+import { renderLeanReport, verifyInvestigationReport } from "./report.ts";
 import { createRunWorkspace, removeRunDiagnostics, sealRunFailure, type RunWorkspace } from "./run-workspace.ts";
 
 const RUN_TIMEOUT_MS = 60 * 60_000;
-const FINALIZATION_RESERVE_MS = 12 * 60_000;
+const PUBLISHING_RESERVE_MS = 12 * 60_000;
 
 async function atomicWrite(path: string, bytes: Uint8Array | string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -52,13 +49,11 @@ function providerEnvironment(mode: "fixture" | "live"): Record<string, string | 
 
 function agentToolAllowlist(): Map<string, Set<string>> {
   return new Map([
-    ["lead-researcher", new Set(["source.excerpts", "official_domain.register"])],
-    ["professional-researcher", new Set(["professional.profile", "professional.activity", "web.search", "web.fetch", "archives.search", "source.excerpts"])],
-    ["github-researcher", new Set(["github.graphql", "github.rest", "github.clone", "web.fetch", "source.excerpts"])],
-    ["web-records-researcher", new Set(["web.search", "web.fetch", "archives.search", "public_records.search", "scholarly.search", "packages.inspect", "security_records.search", "source.excerpts"])],
-    ["social-researcher", new Set(["social.profile", "source.excerpts"])],
-    ["evidence-compiler", new Set()],
-    ["evidence-auditor", new Set()],
+    ["lead-researcher", new Set(["source.excerpts", "official_domain.register", ...reportToolNames])],
+    ["professional-researcher", new Set(["professional.profile", "professional.activity", "web.search", "web.fetch", "archives.search", "source.excerpts", "research.memo.persist"])],
+    ["github-researcher", new Set(["github.graphql", "github.rest", "github.clone", "web.fetch", "source.excerpts", "research.memo.persist"])],
+    ["web-records-researcher", new Set(["web.search", "web.fetch", "archives.search", "public_records.search", "scholarly.search", "packages.inspect", "security_records.search", "source.excerpts", "research.memo.persist"])],
+    ["social-researcher", new Set(["social.profile", "source.excerpts", "research.memo.persist"])],
   ]);
 }
 
@@ -113,43 +108,34 @@ async function main(): Promise<void> {
       runId,
     });
     const expectedManifestHash = await getPinnedLocalManifestHash();
-    const researchManifestHash = await getPinnedResearchManifestHash();
     const researchModel = process.env.RESEARCH_MODEL ?? "deepseek-v4-flash";
-    const compilerModel = process.env.FINALIZER_MODEL ?? "deepseek-v4-pro";
-    const auditorModel = process.env.FINALIZER_AUDITOR_MODEL ?? "minimax-m3";
-    const checkpointConfigs = await currentCheckpointConfigs({
-      repositoryRoot: process.cwd(),
-      runtime: options.runtime,
-      providerMode: options.providerMode,
-      researchModel,
-      compilerModel,
-      runtimeManifestHash: researchManifestHash,
-    });
     const budget = await openPersistentRunBudget(workspace.root, headlessBudgetCeilings());
+    const reportStore = await ReportStore.open(workspace.root, {
+      runId,
+      inputSha256: workspace.inputSha256,
+      startedAt,
+      runtime: options.runtime,
+      model: researchModel,
+      sourceStore: workspace.sourceStore,
+    });
     const providerExecutor = new ProviderExecutor(providerEnvironment(options.providerMode), createFileProviderBackend({ sourceStore: workspace.sourceStore, budget, deadlineAt: deadlineAt.getTime() }));
     const researchProvider = process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
-    const finalizerProvider = process.env.FINALIZER_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
     const fixture = createHeadlessFixtureCompletion();
     gateway = createHeadlessGateway({
       runId,
       deadlineAt: deadlineAt.getTime(),
-      allowedTools: new Set([...toolNames, "source.excerpts", "official_domain.register"]),
-      allowedModels: new Set([researchModel, compilerModel, auditorModel, ...PAID_GO_MODEL_IDS, ...FINALIZER_MODEL_CATALOG.map(({ id }) => id)]),
+      allowedTools: new Set([...toolNames, "source.excerpts", "official_domain.register", "research.memo.persist", ...reportToolNames]),
+      allowedModels: new Set([researchModel]),
       agentTools: agentToolAllowlist(),
+      reportStore,
+      persistResearchMemo: (value) => persistResearchMemo(workspace!.root, value),
       officialDomainRegistration: (value) => registerOfficialDomainProposal(workspace!.root, workspace!.sourceStore, value),
       executor: providerExecutor,
       sourceStore: workspace.sourceStore,
       budget,
       providerMode: options.providerMode,
       researchUpstreamUrl: upstream(researchProvider),
-      finalizerUpstreamUrl: upstream(finalizerProvider),
-      finalizerProvider,
-      finalizerModel: compilerModel,
-      modelRequestTimeouts: loadModelRequestTimeouts(process.env),
       fixtureCompletion: (body, agent) => fixture(body, agent),
-      onModelRequest: ({ agent, estimatedInputTokens }) => {
-        if (agent === "evidence-compiler" || agent === "evidence-auditor") process.stderr.write(`Run ${runId}: ${agent} request estimated input tokens ${estimatedInputTokens}.\n`);
-      },
     });
     const gatewayPort = await listen(gateway.server, options.runtime === "E2B" ? integerEnvironment("HEADLESS_GATEWAY_PORT", 3001) : 0);
     const localGatewayUrl = `http://127.0.0.1:${gatewayPort}`;
@@ -181,26 +167,15 @@ async function main(): Promise<void> {
     }
     const controller = new HeadlessInvestigationController();
     const output = await controller.run({
-      repositoryRoot: process.cwd(),
-      runId,
       root: workspace.root,
       handle,
       deadlineAt,
-      finalizationReserveMs: FINALIZATION_RESERVE_MS,
+      publishingReserveMs: PUBLISHING_RESERVE_MS,
       signal: abort.signal,
-      sourceStore: workspace.sourceStore,
-      budget,
       runtime: options.runtime,
-      startedAt,
-      inputSha256: workspace.inputSha256,
-      classification: options.classification,
       researchModel,
-      compilerModel,
-      auditorModel,
-      finalizerProvider,
-      registerExcerptAllowance: gateway.registerExcerptAllowance,
-      researchCheckpointConfig: checkpointConfigs.research,
-      dossierCheckpointConfig: checkpointConfigs.dossier,
+      reportStore,
+      beginPublishing: () => gateway!.setPhase("PUBLISHING"),
       onLeadStarted: async (sessionId) => {
         process.stderr.write(`Run ${runId}: lead session ${sessionId} is visible${options.watch ? " in the attached TUI" : ` with npm run attach -- ${runId}`}.\n`);
         if (options.watch && handle) watchProcess = attachTui(handle, password, sessionId);
@@ -212,13 +187,15 @@ async function main(): Promise<void> {
     const resultPath = join(workspace.root, "result.json");
     const reportPath = join(workspace.root, "report.pdf");
     reportTemporaryPath = `${reportPath}.tmp`;
-    assertPublishableResult(output.result);
     await rm(reportTemporaryPath, { force: true });
-    await atomicWrite(reportTemporaryPath, await renderInvestigationReport(output.result));
+    await atomicWrite(reportTemporaryPath, await renderLeanReport(output.result));
     await verifyInvestigationReport(await readFile(reportTemporaryPath));
     await runtime.stop(handle);
     handle = undefined;
-    await publishFinalizationProvenance(workspace.root);
+    await mkdir(join(workspace.root, "provenance"), { recursive: true });
+    const progress = await reportStore.progress();
+    await atomicWrite(join(workspace.root, "provenance", "report.json"), `${JSON.stringify({ schemaVersion: 1, runId, inputSha256: workspace.inputSha256, reportDraftRevision: progress.revision, sourceRefs: [...new Set(output.result.findings.flatMap(({ sources }) => sources.map(({ sourceRef }) => sourceRef)))].sort() }, null, 2)}\n`);
+    await reportStore.markPublished();
     if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
     await rename(reportTemporaryPath, reportPath);
     reportTemporaryPath = undefined;

@@ -18,7 +18,12 @@ cd /opt/investigator
 if [ "${TRANSLUCID_RUNTIME_MODE:-legacy}" != "headless" ]; then
   ./node_modules/.bin/tsx runtime/extract-input.ts
 fi
-if [ ! -f /workspace/case/runtime-manifest.json ]; then
+if [ "${CASE_ALLOW_STALE_MANIFEST:-false}" = "true" ]; then
+  if [ -f /workspace/case/runtime-manifest.json ] && [ ! -f /workspace/case/runtime-manifest.research.json ]; then
+    cp /workspace/case/runtime-manifest.json /workspace/case/runtime-manifest.research.json
+  fi
+  ./node_modules/.bin/tsx scripts/runtime-manifest.ts --output /workspace/case/runtime-manifest.publisher.json
+elif [ ! -f /workspace/case/runtime-manifest.json ]; then
   ./node_modules/.bin/tsx scripts/runtime-manifest.ts --output /workspace/case/runtime-manifest.json
 fi
 

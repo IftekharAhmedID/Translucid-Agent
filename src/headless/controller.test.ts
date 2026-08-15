@@ -4,10 +4,58 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { buildFinalizerContext, describeSdkError, extractTextOutput, finalizerPromptPayload, finalizerRepairPayload, finalizerTextPromptPayload, readCompletedResearchMemos, resultForAudit, waitForResearchIdle } from "./controller.ts";
+import { buildFinalizerContext, describeSdkError, driveReportPublishing, extractTextOutput, finalizerPromptPayload, finalizerRepairPayload, finalizerTextPromptPayload, publishingPrompt, recoveryPublishingPrompt, readCompletedResearchMemos, resultForAudit, waitForResearchIdle } from "./controller.ts";
 import { waitForFinalizerAssistant } from "./finalization-controller.ts";
 import { investigationDraftSchema, type InvestigationResult } from "./result-contract.ts";
 import { FileSourceStore } from "./source-store.ts";
+
+test("recovery publishing reuses durable research and explicitly ignores atomic finalizer artifacts", () => {
+  const prompt = recoveryPublishingPrompt();
+  assert.match(prompt, /\.work\/memos\/.*\.md/);
+  assert.match(prompt, /sources\/manifest\.json/);
+  assert.match(prompt, /do not.*V3.*V4.*V5/is);
+  assert.match(prompt, /no provider/i);
+});
+
+test("publishes in the existing lead session with at most two continuation prompts", async () => {
+  const prompts: string[] = [];
+  let reads = 0;
+  const ready = await driveReportPublishing({
+    launch: async (prompt) => { prompts.push(prompt); },
+    waitUntilIdle: async () => undefined,
+    progress: async () => ({
+      schemaVersion: 1,
+      run: { id: "run-1", inputSha256: "a".repeat(64), startedAt: "2026-08-14T00:00:00.000Z", runtime: "LOCAL", model: "research-model" },
+      state: reads++ >= 2 ? "READY" : "OPEN",
+      revision: 0,
+      summary: "",
+      findings: [],
+    }),
+  });
+
+  assert.equal(ready.state, "READY");
+  assert.equal(prompts.length, 2);
+  assert.equal(prompts[0], publishingPrompt());
+  assert.match(prompts[1] ?? "", /report\.progress\.get/);
+  assert.match(prompts[1] ?? "", /do not restart research/i);
+});
+
+test("fails closed when the lead does not finalize after bounded continuations", async () => {
+  let launches = 0;
+  await assert.rejects(driveReportPublishing({
+    launch: async () => { launches += 1; },
+    waitUntilIdle: async () => undefined,
+    progress: async () => ({
+      schemaVersion: 1,
+      run: { id: "run-1", inputSha256: "a".repeat(64), startedAt: "2026-08-14T00:00:00.000Z", runtime: "LOCAL", model: "research-model" },
+      state: "OPEN",
+      revision: launches,
+      summary: "",
+      findings: [],
+    }),
+  }), /did not finalize/i);
+  assert.equal(launches, 3);
+});
 
 test("reads completed specialist memos and reports children without a snapshot", async () => {
   const root = await mkdtemp(join(tmpdir(), "translucid-memos-"));
@@ -170,6 +218,7 @@ test("bounded repair context contains only the rejected output and validator def
   assert.deepEqual(finalizerRepairPayload("<RESULT_JSON>{}</RESULT_JSON>", "claims: required"), {
     originalResponse: "<RESULT_JSON>{}</RESULT_JSON>",
     validatorError: "claims: required",
+    instruction: "Return the complete corrected result. Preserve every valid claim, facet, exclusion, and disposition from originalResponse; change only what validatorError requires, and do not omit valid records.",
   });
 });
 

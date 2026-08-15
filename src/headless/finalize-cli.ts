@@ -1,32 +1,22 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { E2BRuntime } from "../runtime/e2b.ts";
-import { FINALIZER_MODEL_CATALOG, PAID_GO_MODEL_IDS } from "../core/model-catalog.ts";
-import { loadModelRequestTimeouts } from "../core/config.ts";
-import { getPinnedLocalManifestHash, getPinnedResearchManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
+import { getPinnedLocalManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
-import { headlessBudgetCeilings } from "./budget.ts";
-import { currentCheckpointConfigs } from "./checkpoint-config.ts";
-import {
-  loadValidDossierCheckpoint,
-  loadValidPacketDossierCheckpoint,
-  archivePriorFailure,
-  openPersistentRunBudget,
-  readHandoffManifest,
-  validateResearchCheckpoint,
-} from "./checkpoint.ts";
+import { headlessBudgetCeilings, MemoryRunBudget } from "./budget.ts";
+import { runPublishingRecovery } from "./controller.ts";
 import { parseFinalizeArguments } from "./finalize-options.ts";
-import { runFinalizationPipeline } from "./finalization-controller.ts";
-import { publishFinalizationProvenance } from "./incremental-pipeline.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 import { createHeadlessGateway } from "./gateway.ts";
-import { renderInvestigationReport, verifyInvestigationReport } from "./report.ts";
-import { assertPublishableResult } from "./result-contract.ts";
+import { verifyResearchSnapshot } from "./recovery.ts";
+import { renderLeanReport, verifyInvestigationReport } from "./report.ts";
+import { reportToolNames, ReportStore } from "./report-store.ts";
 import { openRunWorkspace, removeRunDiagnostics, sealRunFailure, type ExistingRunWorkspace } from "./run-workspace.ts";
 
 const RUN_TIMEOUT_MS = 60 * 60_000;
+
 async function exists(path: string): Promise<boolean> {
   try { await stat(path); return true; }
   catch (error) {
@@ -57,7 +47,7 @@ async function listen(server: ReturnType<typeof createHeadlessGateway>["server"]
     server.listen(port, "127.0.0.1", done);
   });
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Finalization gateway did not bind a TCP port.");
+  if (!address || typeof address === "string") throw new Error("Publishing gateway did not bind a TCP port.");
   return address.port;
 }
 
@@ -66,20 +56,18 @@ async function closeServer(server: ReturnType<typeof createHeadlessGateway>["ser
   await new Promise<void>((done) => server.close(() => done()));
 }
 
-async function researchMemos(root: string): Promise<string> {
-  const directory = join(root, ".work", "memos");
-  const files = (await readdir(directory, { withFileTypes: true }))
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .map((entry) => entry.name)
-    .sort();
-  if (files.length === 0) throw new Error("Research checkpoint contains no completed memos.");
-  return (await Promise.all(files.map((file) => readFile(join(directory, file), "utf8")))).join("\n\n");
-}
-
 async function runtimeFor(workspace: ExistingRunWorkspace): Promise<InvestigatorRuntime> {
   if (workspace.runtime === "LOCAL") return new LocalDockerRuntime();
-  if (!process.env.E2B_API_KEY || !process.env.E2B_TEMPLATE_ID) throw new Error("E2B finalization requires E2B_API_KEY and E2B_TEMPLATE_ID.");
+  if (!process.env.E2B_API_KEY || !process.env.E2B_TEMPLATE_ID) throw new Error("E2B publishing requires E2B_API_KEY and E2B_TEMPLATE_ID.");
   return new E2BRuntime({ apiKey: process.env.E2B_API_KEY, templateId: process.env.E2B_TEMPLATE_ID });
+}
+
+async function archiveFailure(root: string): Promise<void> {
+  const path = join(root, "failure.json");
+  if (!await exists(path)) return;
+  const directory = join(root, ".work", "failures");
+  await mkdir(directory, { recursive: true });
+  await rename(path, join(directory, `previous-${new Date().toISOString().replace(/[:.]/g, "-")}.json`));
 }
 
 async function main(): Promise<void> {
@@ -87,130 +75,108 @@ async function main(): Promise<void> {
   const resultPath = join(options.runDirectory, "result.json");
   const reportPath = join(options.runDirectory, "report.pdf");
   const reportTemporaryPath = `${reportPath}.tmp`;
-  if (await exists(resultPath)) throw new Error("A successful result.json already exists; finalization will not overwrite it.");
+  if (await exists(resultPath)) throw new Error("A successful result.json already exists; publishing will not overwrite it.");
 
   const workspace = await openRunWorkspace(options.runDirectory);
-  const archivedFailure = Boolean(await archivePriorFailure(workspace.root));
-  const existingManifest = await readHandoffManifest(workspace.root);
-  if (existingManifest.research.config.runtime !== workspace.runtime) throw new Error("Research checkpoint runtime differs from the immutable input manifest.");
-  const expectedManifestHash = await getPinnedLocalManifestHash();
-  const researchManifestHash = await getPinnedResearchManifestHash();
-  const compilerModel = process.env.FINALIZER_MODEL ?? "deepseek-v4-pro";
-  const auditorModel = process.env.FINALIZER_AUDITOR_MODEL ?? "minimax-m3";
-  const checkpointConfigs = await currentCheckpointConfigs({
-    repositoryRoot: process.cwd(),
+  const snapshot = await verifyResearchSnapshot(workspace.root);
+  if (snapshot.runtime !== workspace.runtime) throw new Error("Research snapshot runtime differs from the immutable input manifest.");
+  const integrity = await workspace.sourceStore.verify();
+  if (!integrity.valid) throw new Error(`Source integrity failed for ${integrity.invalidSourceRefs.join(", ")}.`);
+  await archiveFailure(workspace.root);
+  const requestStatsBefore = await workspace.sourceStore.requestStats();
+  const reportStore = await ReportStore.open(workspace.root, {
+    runId: workspace.runId,
+    inputSha256: workspace.inputSha256,
+    startedAt: workspace.startedAt,
     runtime: workspace.runtime,
-    providerMode: existingManifest.research.config.providerMode,
-    researchModel: existingManifest.research.config.researchModel,
-    compilerModel,
-    runtimeManifestHash: researchManifestHash,
+    model: snapshot.researchModel,
+    sourceStore: workspace.sourceStore,
   });
-  const manifest = await validateResearchCheckpoint(workspace.root, checkpointConfigs.research);
-  const reusableDossier = await loadValidDossierCheckpoint(workspace.root, manifest, checkpointConfigs.dossier);
-  const reusablePacketDossier = await loadValidPacketDossierCheckpoint(workspace.root, manifest, checkpointConfigs.dossier);
-  const budget = await openPersistentRunBudget(workspace.root, headlessBudgetCeilings(), manifest.research.budget);
-  const memos = await researchMemos(workspace.root);
-
-  const finalizerProvider = process.env.FINALIZER_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
+  const budget = new MemoryRunBudget(headlessBudgetCeilings());
   const fixture = createHeadlessFixtureCompletion();
-  const deadlineAt = new Date(Date.now() + RUN_TIMEOUT_MS);
+  const providerMode = process.env.PROVIDER_MODE === "fixture" ? "fixture" : "live";
+  const researchProvider = process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
+  const deadlineAt = Date.now() + RUN_TIMEOUT_MS;
   const gateway = createHeadlessGateway({
     runId: workspace.runId,
-    deadlineAt: deadlineAt.getTime(),
-    allowedTools: new Set(),
-    allowedModels: new Set([compilerModel, auditorModel, ...PAID_GO_MODEL_IDS, ...FINALIZER_MODEL_CATALOG.map(({ id }) => id)]),
-    agentTools: new Map([
-      ["evidence-compiler", new Set()],
-      ["evidence-auditor", new Set()],
-    ]),
+    deadlineAt,
+    allowedTools: new Set(["source.excerpts", ...reportToolNames]),
+    allowedModels: new Set([snapshot.researchModel]),
+    agentTools: new Map([["lead-researcher", new Set(["source.excerpts", ...reportToolNames])]]),
+    reportStore,
     sourceStore: workspace.sourceStore,
     budget,
-    providerMode: existingManifest.research.config.providerMode,
-    finalizerUpstreamUrl: upstream(finalizerProvider),
-    finalizerProvider,
-    finalizerModel: compilerModel,
-    modelRequestTimeouts: loadModelRequestTimeouts(process.env),
+    providerMode,
+    researchUpstreamUrl: upstream(researchProvider),
     fixtureCompletion: (body, agent) => fixture(body, agent),
   });
+  gateway.setPhase("PUBLISHING");
   let runtime: InvestigatorRuntime | undefined;
   let handle: RunHandle | undefined;
+  let publisherManifestHash: string | undefined;
   const abort = new AbortController();
-  const abortHandler = () => abort.abort(new DOMException("Finalization cancelled by signal.", "AbortError"));
+  const abortHandler = () => abort.abort(new DOMException("Publishing cancelled by signal.", "AbortError"));
   process.once("SIGINT", abortHandler);
   process.once("SIGTERM", abortHandler);
-  const deadline = setTimeout(() => abort.abort(new DOMException("Finalization deadline reached.", "TimeoutError")), RUN_TIMEOUT_MS);
+  const deadline = setTimeout(() => abort.abort(new DOMException("Publishing deadline reached.", "TimeoutError")), RUN_TIMEOUT_MS);
   try {
     const configuredPort = Number(process.env.HEADLESS_GATEWAY_PORT ?? 3001);
     const gatewayPort = await listen(gateway.server, workspace.runtime === "LOCAL" ? 0 : Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : 3001);
     const localGatewayUrl = `http://127.0.0.1:${gatewayPort}`;
     const gatewayUrl = workspace.runtime === "E2B" ? process.env.E2B_GATEWAY_PUBLIC_URL : localGatewayUrl;
-    if (!gatewayUrl || (workspace.runtime === "E2B" && !gatewayUrl.startsWith("https://"))) {
-      throw new Error("E2B finalization requires an HTTPS E2B_GATEWAY_PUBLIC_URL routed to this gateway.");
-    }
+    if (!gatewayUrl || (workspace.runtime === "E2B" && !gatewayUrl.startsWith("https://"))) throw new Error("E2B publishing requires an HTTPS E2B_GATEWAY_PUBLIC_URL routed to this gateway.");
     runtime = await runtimeFor(workspace);
-    const password = randomBytes(24).toString("base64url");
     handle = await runtime.start({
       investigationId: workspace.runId,
       runId: workspace.runId,
       caseDirectory: workspace.root,
       gatewayUrl,
       caseToken: gateway.token,
-      openCodePassword: password,
-      expectedManifestHash,
+      openCodePassword: randomBytes(24).toString("base64url"),
+      expectedManifestHash: await getPinnedLocalManifestHash(),
       timeoutMs: RUN_TIMEOUT_MS,
       mode: "headless",
-      deadlineAt: deadlineAt.toISOString(),
+      deadlineAt: new Date(deadlineAt).toISOString(),
+      allowStaleCaseManifest: true,
     });
-    const result = await runFinalizationPipeline({
-      repositoryRoot: process.cwd(),
-      runId: workspace.runId,
-      root: workspace.root,
-      handle,
-      signal: abort.signal,
-      sourceStore: workspace.sourceStore,
-      budget,
-      runtime: workspace.runtime,
-      startedAt: workspace.startedAt,
-      inputSha256: workspace.inputSha256,
-      classification: workspace.classification,
-      researchModel: manifest.research.config.researchModel,
-      compilerModel,
-      auditorModel,
-      finalizerProvider,
-      deadlineAt: deadlineAt.getTime(),
-      registerExcerptAllowance: gateway.registerExcerptAllowance,
-      researchMemos: memos,
-      warnings: manifest.research.warnings,
-      dossierCheckpointConfig: checkpointConfigs.dossier,
-      ...(reusableDossier ? { reusableDossier } : {}),
-      ...(reusablePacketDossier ? { reusablePacketDossier } : {}),
-      onProgress: (message) => process.stderr.write(`Run ${workspace.runId}: ${message}\n`),
-    });
-    const integrity = await workspace.sourceStore.verify();
-    if (!integrity.valid) throw new Error(`Source integrity failed for ${integrity.invalidSourceRefs.join(", ")}.`);
-    assertPublishableResult(result);
+    publisherManifestHash = handle.manifestHash;
+    const output = await runPublishingRecovery({ handle, model: snapshot.researchModel, deadlineAt, signal: abort.signal, reportStore });
+    const requestStatsAfter = await workspace.sourceStore.requestStats();
+    if (JSON.stringify(requestStatsAfter) !== JSON.stringify(requestStatsBefore)) throw new Error("Publishing changed provider request statistics; research replay is forbidden.");
     await rm(reportTemporaryPath, { force: true });
-    await atomicWrite(reportTemporaryPath, await renderInvestigationReport(result));
+    await atomicWrite(reportTemporaryPath, await renderLeanReport(output.result));
     await verifyInvestigationReport(await readFile(reportTemporaryPath));
     await runtime.stop(handle);
     handle = undefined;
-    await publishFinalizationProvenance(workspace.root);
+    await mkdir(join(workspace.root, "provenance"), { recursive: true });
+    const progress = await reportStore.progress();
+    await atomicWrite(join(workspace.root, "provenance", "report.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      runId: workspace.runId,
+      inputSha256: workspace.inputSha256,
+      researchSnapshot: snapshot,
+      reportDraftRevision: progress.revision,
+      providerRequestStatsBefore: requestStatsBefore,
+      providerRequestStatsAfter: requestStatsAfter,
+      publisherSessionId: output.sessionId,
+      publisherManifestHash,
+      sourceRefs: [...new Set(output.result.findings.flatMap(({ sources }) => sources.map(({ sourceRef }) => sourceRef)))].sort(),
+    }, null, 2)}\n`);
+    await reportStore.markPublished();
     if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
     await rename(reportTemporaryPath, reportPath);
-    await atomicWrite(resultPath, `${JSON.stringify(result, null, 2)}\n`);
-    process.stdout.write(`${JSON.stringify({ runId: workspace.runId, result: resultPath, report: reportPath, reusedDossier: Boolean(reusableDossier || reusablePacketDossier) }, null, 2)}\n`);
+    await atomicWrite(resultPath, `${JSON.stringify(output.result, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ runId: workspace.runId, result: resultPath, report: reportPath, researchReplayed: false, findings: output.result.findings.length }, null, 2)}\n`);
   } catch (caught) {
-    const error = caught instanceof Error ? caught : new Error("Unknown finalization failure.");
-    if (archivedFailure || !await exists(join(workspace.root, "failure.json"))) {
-      await sealRunFailure(workspace.root, {
-        runId: workspace.runId,
-        code: abort.signal.aborted ? "CANCELLED_OR_TIMED_OUT" : "FINALIZATION_FAILED",
-        message: error.message,
-        phase: "FINALIZATION",
-        cancelled: abort.signal.aborted,
-        diagnostics: handle ? { sessionId: handle.id } : {},
-      }).catch(() => undefined);
-    }
+    const error = caught instanceof Error ? caught : new Error("Unknown publishing failure.");
+    await sealRunFailure(workspace.root, {
+      runId: workspace.runId,
+      code: abort.signal.aborted ? "CANCELLED_OR_TIMED_OUT" : "PUBLISHING_FAILED",
+      message: error.message,
+      phase: "PUBLISHING",
+      cancelled: abort.signal.aborted,
+      diagnostics: handle ? { sessionId: handle.id } : {},
+    }).catch(() => undefined);
     throw error;
   } finally {
     clearTimeout(deadline);
@@ -224,6 +190,6 @@ async function main(): Promise<void> {
 }
 
 await main().catch((error) => {
-  process.stderr.write(`Finalization failed: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`Publishing failed: ${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

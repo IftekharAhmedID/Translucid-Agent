@@ -14,6 +14,7 @@ export type RuntimeStartInput = {
   timeoutMs: number;
   mode?: "legacy" | "headless";
   deadlineAt?: string;
+  allowStaleCaseManifest?: boolean;
 };
 
 export type RunHandle = {

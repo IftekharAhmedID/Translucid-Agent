@@ -45,6 +45,7 @@ export class LocalDockerRuntime implements InvestigatorRuntime {
       "--env", `RUN_ID=${input.runId}`,
       "--env", `OPENCODE_SERVER_PASSWORD=${input.openCodePassword}`,
       "--env", `TRANSLUCID_RUNTIME_MODE=${input.mode ?? "legacy"}`,
+      ...(input.allowStaleCaseManifest ? ["--env", "CASE_ALLOW_STALE_MANIFEST=true"] : []),
       ...(input.deadlineAt ? ["--env", `CASE_DEADLINE_AT=${input.deadlineAt}`] : []),
       ...Object.entries(openCodeRuntimeEnvironment).flatMap(([name, value]) => ["--env", `${name}=${value}`]),
       imageName,
@@ -56,8 +57,9 @@ export class LocalDockerRuntime implements InvestigatorRuntime {
       const openCodeUrl = `http://127.0.0.1:${port}`;
       const accessHeaders = { authorization: basicAuth(input.openCodePassword) };
       await waitForHttp(openCodeUrl, accessHeaders);
-      const manifest = JSON.parse(await readFile(resolve(input.caseDirectory, "runtime-manifest.json"), "utf8")) as { manifestHash: string };
-      if (input.expectedManifestHash && manifest.manifestHash !== input.expectedManifestHash) throw new Error("Local runtime manifest differs from the expected E2B manifest.");
+      const manifestPath = input.allowStaleCaseManifest ? "runtime-manifest.publisher.json" : "runtime-manifest.json";
+      const manifest = JSON.parse(await readFile(resolve(input.caseDirectory, manifestPath), "utf8")) as { manifestHash: string };
+      if (input.expectedManifestHash && manifest.manifestHash !== input.expectedManifestHash) throw new Error("Local publisher runtime manifest differs from the expected manifest.");
       return { kind: "LOCAL", id: name, openCodeUrl, accessHeaders, manifestHash: manifest.manifestHash };
     } catch (error) {
       await runProcess("docker", ["rm", "--force", name]).catch(() => undefined);
