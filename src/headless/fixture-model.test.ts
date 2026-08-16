@@ -9,6 +9,7 @@ test("fixture model exercises research delegation and specialist capture", async
   assert.equal(lead.toolCall?.name, "task");
   const specialist = await complete({}, "professional-researcher");
   assert.equal(specialist.toolCall?.name, "web.fetch");
+  assert.equal((await complete({}, "professional-researcher")).toolCall?.name, "research.ledger.upsert");
   const memo = await complete({}, "professional-researcher");
   assert.match(memo.content ?? "", /\[S1\]/);
 });

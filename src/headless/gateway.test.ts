@@ -150,3 +150,40 @@ test("routes source.index during research and preserves read-only frozen recover
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("tracks session source ownership for notebook and ledger tools", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-research-tools-gateway-"));
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    await sourceStore.capture({ kind: "SOURCE_CONTENT", provider: "fixture", providerRoute: "fixture.web.fetch", sourceUrl: "https://example.test/source", mimeType: "text/plain", content: "Owned evidence.", provenance: {} });
+    const notebooks: unknown[] = [];
+    const ledgers: unknown[] = [];
+    const gateway = createHeadlessGateway({
+      runId: "run-research-tools",
+      deadlineAt: Date.now() + 60_000,
+      allowedTools: new Set(["source.index", "research.notebook.set", "research.ledger.upsert"]),
+      allowedModels: new Set(),
+      agentTools: new Map([["lead-researcher", new Set(["source.index", "research.notebook.set", "research.ledger.upsert"])]]),
+      persistResearchNotebook: async (value) => { notebooks.push(value); return { ok: true }; },
+      persistResearchLedger: async (value) => { ledgers.push(value); return { ok: true }; },
+      sourceStore,
+      budget: budget(),
+      providerMode: "fixture",
+    });
+    const server = await listen(gateway);
+    const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-research-tools", "x-opencode-agent": "lead-researcher" };
+    const execute = (tool: string, argumentsValue: unknown) => fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool, arguments: argumentsValue, operational: { sessionId: "lead-session", agent: "lead-researcher" } }) });
+    assert.equal((await execute("source.index", { queries: ["Owned evidence"] })).status, 200);
+    assert.equal((await execute("research.ledger.upsert", { entries: [{ sourceRef: "S1", disposition: "EVIDENCE", relevance: "owned", sourceFamily: "fixture", claimLane: "identity" }] })).status, 200);
+    assert.equal((await execute("research.notebook.set", { markdown: "# Investigation", recoverySummary: "## Active claim lanes\nidentity\n\n## Strongest source refs\nS1\n\n## Contradictions\nnone\n\n## Unresolved material facets\nnone\n\n## Current search leads\nnone\n\n## Next actions\nnone\n\n## Stop decisions\nnone" })).status, 200);
+    assert.equal((ledgers[0] as { sessionId: string }).sessionId, "lead-session");
+    assert.deepEqual((ledgers[0] as { encounteredSourceRefs: string[] }).encounteredSourceRefs, ["S1"]);
+    assert.equal((notebooks[0] as { markdown: string }).markdown, "# Investigation");
+    gateway.setPhase("DRAFTING");
+    assert.equal((await execute("research.ledger.upsert", { entries: [] })).status, 403);
+    gateway.cancel();
+    await server.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -10,12 +10,16 @@ test("lead exposes native report tools while specialists keep research tools", a
   assert.match(lead, /^variant: xhigh$/m);
   for (const name of ["report.summary.set", "report.finding.upsert", "report.finding.remove", "report.progress.get", "report.finalize"]) assert.match(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
   assert.match(lead, /source\.excerpts: allow/);
-  assert.doesNotMatch(lead, /\b(?:web\.search|professional\.profile|github\.rest|social\.profile): allow/);
+  assert.match(lead, /source\.index: allow/);
+  assert.match(lead, /web\.search: allow/);
+  assert.match(lead, /research\.notebook\.set: allow/);
+  assert.match(lead, /research\.ledger\.upsert: allow/);
   for (const file of ["professional-researcher.md", "github-researcher.md", "web-records-researcher.md", "social-researcher.md"]) {
     const source = await readFile(join(root, "agents", file), "utf8");
     assert.match(source, /^variant: xhigh$/m);
     assert.doesNotMatch(source, /\btask:\s*allow/);
     assert.match(source, /source\.excerpts: allow/);
+    assert.match(source, /research\.ledger\.upsert: allow/);
   }
 });
 

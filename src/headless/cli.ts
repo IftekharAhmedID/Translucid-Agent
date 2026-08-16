@@ -13,7 +13,7 @@ import { parseInvestigationArguments } from "./cli-options.ts";
 import { classifyInvestigationFailure, HeadlessInvestigationController, ResearchHandoffError } from "./controller.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 import { createHeadlessGateway } from "./gateway.ts";
-import { persistResearchMemo } from "./recovery.ts";
+import { persistResearchLedger, persistResearchMemo, persistResearchNotebook } from "./recovery.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
 import { reportToolNames, ReportStore } from "./report-store.ts";
 import { renderLeanReport, verifyInvestigationReport } from "./report.ts";
@@ -49,11 +49,11 @@ function providerEnvironment(mode: "fixture" | "live"): Record<string, string | 
 
 function agentToolAllowlist(): Map<string, Set<string>> {
   return new Map([
-    ["lead-researcher", new Set(["source.excerpts", ...reportToolNames])],
-    ["professional-researcher", new Set(["professional.profile", "professional.activity", "web.search", "web.fetch", "archives.search", "source.excerpts", "research.memo.persist"])],
-    ["github-researcher", new Set(["github.graphql", "github.rest", "github.clone", "web.fetch", "source.excerpts", "research.memo.persist"])],
-    ["web-records-researcher", new Set(["web.search", "web.fetch", "archives.search", "public_records.search", "scholarly.search", "packages.inspect", "security_records.search", "source.excerpts", "research.memo.persist"])],
-    ["social-researcher", new Set(["social.profile", "source.excerpts", "research.memo.persist"])],
+    ["lead-researcher", new Set(["source.excerpts", "source.index", "research.notebook.set", "research.ledger.upsert", ...reportToolNames])],
+    ["professional-researcher", new Set(["professional.profile", "professional.activity", "web.search", "web.fetch", "archives.search", "source.excerpts", "research.ledger.upsert", "research.memo.persist"])],
+    ["github-researcher", new Set(["github.graphql", "github.rest", "github.clone", "web.fetch", "source.excerpts", "research.ledger.upsert", "research.memo.persist"])],
+    ["web-records-researcher", new Set(["web.search", "web.fetch", "archives.search", "public_records.search", "scholarly.search", "packages.inspect", "security_records.search", "source.excerpts", "research.ledger.upsert", "research.memo.persist"])],
+    ["social-researcher", new Set(["social.profile", "source.excerpts", "research.ledger.upsert", "research.memo.persist"])],
   ]);
 }
 
@@ -118,11 +118,13 @@ async function main(): Promise<void> {
     gateway = createHeadlessGateway({
       runId,
       deadlineAt: deadlineAt.getTime(),
-      allowedTools: new Set([...toolNames, "source.excerpts", "research.memo.persist", ...reportToolNames]),
+      allowedTools: new Set([...toolNames, "source.excerpts", "source.index", "research.memo.persist", "research.notebook.set", "research.ledger.upsert", ...reportToolNames]),
       allowedModels: new Set([researchModel, SPECIALIST_MODEL]),
       agentTools: agentToolAllowlist(),
       reportStore,
       persistResearchMemo: (value) => persistResearchMemo(workspace!.root, value),
+      persistResearchNotebook: (value) => persistResearchNotebook(workspace!.root, value),
+      persistResearchLedger: (value) => persistResearchLedger(workspace!.root, value),
       executor: providerExecutor,
       sourceStore: workspace.sourceStore,
       budget,

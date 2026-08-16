@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -92,6 +92,8 @@ test("repairs an invalid memo once in the same child session without provider ca
     );
     assert.equal(calls.length, callsBeforeDeniedProvider);
     await hooks.tool!["source.excerpts"]!.execute({ sourceRef: "S7", queries: ["employment"] }, { sessionID: "child-1", agent: "professional-researcher", abort: new AbortController().signal } as never);
+    await mkdir(join(process.env.CASE_ROOT!, ".work", "evidence-ledgers"), { recursive: true });
+    await writeFile(join(process.env.CASE_ROOT!, ".work", "evidence-ledgers", "professional-researcher-child-1.json"), JSON.stringify({ schemaVersion: 1, role: "professional-researcher", sessionId: "child-1", encounteredSourceRefs: ["S7"], entries: [{ sourceRef: "S7", disposition: "EVIDENCE", relevance: "employment", sourceFamily: "employer", claimLane: "chronology" }] }));
 
     await afterTask(
       { tool: "task", sessionID: "lead-session", callID: "task-repair-1", args: repair.args },

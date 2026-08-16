@@ -103,9 +103,9 @@ async function main(): Promise<void> {
   const gateway = createHeadlessGateway({
     runId: workspace.runId,
     deadlineAt,
-    allowedTools: new Set(["source.excerpts", ...reportToolNames]),
+    allowedTools: new Set(["source.excerpts", "source.index", ...reportToolNames]),
     allowedModels: new Set([snapshot.researchModel]),
-    agentTools: new Map([["lead-researcher", new Set(["source.excerpts", ...reportToolNames])]]),
+    agentTools: new Map([["lead-researcher", new Set(["source.excerpts", "source.index", ...reportToolNames])]]),
     reportStore,
     sourceStore: workspace.sourceStore,
     budget,

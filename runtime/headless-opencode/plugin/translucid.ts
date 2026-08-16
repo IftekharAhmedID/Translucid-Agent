@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
@@ -54,12 +55,23 @@ function truncateUtf8(value: string, maximumBytes: number): string {
 
 function returnedSourceRefs(body: string): string[] {
   try {
-    const parsed = JSON.parse(body) as Record<string, unknown>;
-    const refs = [parsed.sourceRefs, parsed.evidenceEligibleSourceRefs]
-      .flatMap((value) => Array.isArray(value) ? value : [])
-      .concat(typeof parsed.sourceRef === "string" ? [parsed.sourceRef] : [])
-      .filter((value): value is string => typeof value === "string" && /^S[1-9]\d*$/.test(value));
-    return [...new Set(refs)]
+    const refs = new Set<string>();
+    const visit = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      if (Array.isArray(value)) {
+        for (const item of value) visit(item);
+        return;
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (key === "sourceRef" && typeof child === "string" && /^S[1-9]\d*$/.test(child)) refs.add(child);
+        else if ((key === "sourceRefs" || key === "evidenceEligibleSourceRefs") && Array.isArray(child)) {
+          for (const ref of child) if (typeof ref === "string" && /^S[1-9]\d*$/.test(ref)) refs.add(ref);
+        }
+        visit(child);
+      }
+    };
+    visit(JSON.parse(body));
+    return [...refs]
       .sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
   } catch {
     return [];
@@ -97,8 +109,8 @@ const plugin: Plugin = async () => {
     if (publicationSessions.has(context.sessionID) && name === "task") {
       throw new Error("Drafting and auditing phases deny specialist delegation.");
     }
-    if (repairSessions.has(context.sessionID) && name !== "source.excerpts") {
-      throw new Error(`Memo repair mode denies ${name}; only source.excerpts is allowed.`);
+    if (repairSessions.has(context.sessionID) && name !== "source.excerpts" && name !== "source.index" && name !== "research.ledger.upsert") {
+      throw new Error(`Memo repair mode denies ${name}; only local source recovery and ledger updates are allowed.`);
     }
     if (name === "web.search" && specialistRole(context.agent)) {
       const searchArgs = args as { mode?: string };
@@ -160,6 +172,9 @@ const plugin: Plugin = async () => {
     "packages.inspect": gatewayTool("packages.inspect", "Inspect public package metadata and repository links.", { registry: z.enum(["NPM", "PYPI", "HUGGING_FACE"]), package: z.string().min(1).max(300) }),
     "security_records.search": gatewayTool("security_records.search", "Search public vulnerability records.", { ecosystem: z.string().max(100).optional(), package: z.string().max(300).optional(), cve: z.string().max(40).optional() }),
     "source.excerpts": gatewayTool("source.excerpts", "Search one immutable S reference locally for exact JSON scalar paths or bounded text windows without a network call.", { sourceRef: z.string().regex(/^S[1-9]\d*$/), queries: z.array(z.string().min(1).max(500)).min(1).max(12), maxCharacters: z.number().int().min(1).max(60000).optional() }),
+    "source.index": gatewayTool("source.index", "Search the complete locally captured textual source corpus for exact recovery leads without a network call.", { queries: z.array(z.string().trim().min(1).max(500)).min(1).max(12), sourceRefs: z.array(z.string().regex(/^S[1-9]\d*$/)).max(200).optional(), limit: z.number().int().min(1).max(50).default(20) }),
+    "research.notebook.set": gatewayTool("research.notebook.set", "Persist the complete investigation notebook and its small compaction recovery summary.", { markdown: z.string().max(120_000), recoverySummary: z.string().max(20_000) }),
+    "research.ledger.upsert": gatewayTool("research.ledger.upsert", "Persist high-recall evidence dispositions for sources encountered by this research session.", { entries: z.array(z.object({ sourceRef: z.string().regex(/^S[1-9]\d*$/), disposition: z.enum(["EVIDENCE", "LEAD", "CONTEXT", "LOW_VALUE"]), relevance: z.string().trim().min(1).max(2_000), sourceFamily: z.string().trim().min(1).max(500), claimLane: z.string().trim().min(1).max(500), date: z.string().trim().max(100).optional(), followUp: z.string().trim().max(2_000).optional(), stopReason: z.string().trim().max(2_000).optional() })).max(1_000) }),
     "report.summary.set": gatewayTool("report.summary.set", "Set or replace the single concise investigation summary after research is complete.", {
       summary: z.string().trim().min(1).max(50000),
     }),
@@ -221,7 +236,7 @@ const plugin: Plugin = async () => {
         repairSessions.add(repairSessionId);
         taskWave.set(input.callID, wave);
         output.args.background = false;
-        const repairRule = `\n\nThis is the one allowed protocol repair for task_id ${repairSessionId}. Do not call provider or network tools; only source.excerpts may be used. Return a full, self-contained replacement memo for the original assignment, not a delta, correction, or reference to earlier output. Cite only S references encountered by this same child session.\n\nOriginal assignment:\n${pending.assignment}`;
+        const repairRule = `\n\nThis is the one allowed protocol repair for task_id ${repairSessionId}. Do not call provider or network tools; use only source.index, source.excerpts, and research.ledger.upsert. Return a full, self-contained replacement memo for the original assignment, not a delta, correction, or reference to earlier output. Update the high-recall ledger before returning the memo, and cite only S references encountered by this same child session.\n\nOriginal assignment:\n${pending.assignment}`;
         if (typeof output.args.prompt === "string") output.args.prompt += repairRule;
         else if (typeof output.args.description === "string") output.args.description += repairRule;
         return;
@@ -271,14 +286,19 @@ const plugin: Plugin = async () => {
       const encounteredSourceRefs = [...(sessionSourceRefs.get(sessionId) ?? new Set<string>())].sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
       const rejectedOutput = typeof output.output === "string" ? output.output : JSON.stringify(output.output ?? null);
       const citationCheck = memo ? validateMemoCitations(memo, encounteredSourceRefs) : { citedSourceRefs: [], unknownSourceRefs: [] };
-      const failureKind = !memo ? "EMPTY_MEMO" : citationCheck.unknownSourceRefs.length ? "UNKNOWN_SOURCE_REFS" : undefined;
+      const ledgerPath = join(caseRoot, ".work", "evidence-ledgers", `${safeName(role)}-${safeName(sessionId)}.json`);
+      let ledger: { role?: unknown; sessionId?: unknown; entries?: unknown } | undefined;
+      try { ledger = JSON.parse(await readFile(ledgerPath, "utf8")) as typeof ledger; } catch { ledger = undefined; }
+      const failureKind = !memo ? "EMPTY_MEMO" : citationCheck.unknownSourceRefs.length ? "UNKNOWN_SOURCE_REFS" : !ledger || ledger.role !== role || ledger.sessionId !== sessionId ? "MISSING_LEDGER" : undefined;
       if (failureKind) {
         const pending = pendingRepairs.get(sessionId) ?? { role, wave: wave === "UNKNOWN" ? "INITIAL" : wave, assignment, repairUsed: Boolean(repairSessionId) };
         pendingRepairs.set(sessionId, pending);
         const attempt = pending.repairUsed ? 2 : 1;
         const reason = failureKind === "EMPTY_MEMO"
           ? "the child returned no completed task-result memo"
-          : `citation(s) ${citationCheck.unknownSourceRefs.join(", ")} were not returned to that specialist session`;
+          : failureKind === "UNKNOWN_SOURCE_REFS"
+            ? `citation(s) ${citationCheck.unknownSourceRefs.join(", ")} were not returned to that specialist session`
+            : "the child returned a memo without its session-owned evidence ledger";
         const next = pending.repairUsed
           ? "No repair remains; the research handoff must fail before publishing."
           : `Resume this exact child once with subagent_type ${role}, task_id ${sessionId}, and WAVE: ${pending.wave}.`;
@@ -304,7 +324,8 @@ const plugin: Plugin = async () => {
       const { citedSourceRefs } = citationCheck;
       const memoFile = `# ${role} memo\n\nWave: ${wave}\nSession: ${sessionId}\n\n${memo}\n`;
       await writeFile(`${caseRoot}/.work/memos/${safeName(role)}-${safeName(sessionId)}.md`, memoFile, { mode: 0o600 });
-      await writeFile(`${caseRoot}/.work/memos/${safeName(role)}-${safeName(sessionId)}.sources.json`, `${JSON.stringify({ schemaVersion: 1, role, wave, sessionId, memoSha256: createHash("sha256").update(memoFile).digest("hex"), encounteredSourceRefs, citedSourceRefs }, null, 2)}\n`, { mode: 0o600 });
+      const ledgerBytes = await readFile(ledgerPath);
+      await writeFile(`${caseRoot}/.work/memos/${safeName(role)}-${safeName(sessionId)}.sources.json`, `${JSON.stringify({ schemaVersion: 2, role, wave, sessionId, memoSha256: createHash("sha256").update(memoFile).digest("hex"), encounteredSourceRefs, citedSourceRefs, ledgerPath: `.work/evidence-ledgers/${safeName(role)}-${safeName(sessionId)}.json`, ledgerSha256: createHash("sha256").update(ledgerBytes).digest("hex"), ledgerEntryCount: Array.isArray(ledger?.entries) ? ledger.entries.length : 0 }, null, 2)}\n`, { mode: 0o600 });
       const persisted = await fetch(`${configuredGatewayUrl}/internal/tools/execute`, {
         method: "POST",
         headers: {
@@ -324,7 +345,11 @@ const plugin: Plugin = async () => {
     "experimental.session.compacting": async (input, output) => {
       const counts = Object.fromEntries(specialistRoles.map((role) => [role, roleCounts.get(role) ?? 0]));
       const refs = [...(sessionSourceRefs.get(input.sessionID) ?? [])].sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
-      output.context.push(truncateUtf8(`Headless recovery context:\n- Initial assignment: ${assignments.get(input.sessionID) ?? "Unavailable; continue the current assigned scope."}\n- Child invocation counts: ${JSON.stringify(counts)}\n- Research children: ${totalChildren}; targeted children: ${targetedChildren}\n- Remaining wave: ${targetedStarted ? "none; targeted wave already began" : "one targeted wave if a material exact gap remains"}\n- Hard deadline: ${deadlineAt ?? "host controlled"}\n- This session's encountered source refs: ${refs.join(", ") || "none"}\nNever repeat a provider call merely to recover an S reference; use source.excerpts.`, 8 * 1024));
+      let notebookRecovery = "";
+      try { notebookRecovery = await readFile(join(caseRoot, ".work", "investigation-recovery.md"), "utf8"); }
+      catch { notebookRecovery = "## Active claim lanes\nNo durable notebook recovery summary is available yet."; }
+      const metadata = `Headless recovery metadata:\n- Initial assignment: ${assignments.get(input.sessionID) ?? "Unavailable; continue the current assigned scope."}\n- Child invocation counts: ${JSON.stringify(counts)}\n- Research children: ${totalChildren}; targeted children: ${targetedChildren}\n- Remaining wave: ${targetedStarted ? "none; targeted wave already began" : "one targeted wave if a material exact gap remains"}\n- Hard deadline: ${deadlineAt ?? "host controlled"}\n- This session's encountered source refs: ${refs.join(", ") || "none"}\nNever repeat a provider call merely to recover an S reference; use source.index or source.excerpts.`;
+      output.context.push(truncateUtf8(`${metadata}\n\nDurable notebook recovery:\n${notebookRecovery}`, 16 * 1024));
     },
   };
 };

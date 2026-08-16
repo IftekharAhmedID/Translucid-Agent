@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { auditingPrompt, classifyInvestigationFailure, describeSdkError, draftingPrompt, driveReportPublishing, publishingPrompt, recoveryPublishingPrompt, readCompletedResearchMemos, ResearchHandoffError, waitForResearchIdle } from "./controller.ts";
+
+async function writeAcceptedMemo(memoDirectory: string, role: string, sessionId: string, memo: string, filePrefix = `${role}-${sessionId}`): Promise<void> {
+  const ledgerDirectory = join(memoDirectory, "..", "evidence-ledgers");
+  await mkdir(ledgerDirectory, { recursive: true });
+  const ledgerPath = `.work/evidence-ledgers/${role}-${sessionId}.json`;
+  const ledger = JSON.stringify({ schemaVersion: 1, role, sessionId, encounteredSourceRefs: ["S1"], entries: [{ sourceRef: "S1", disposition: "EVIDENCE", relevance: "test", sourceFamily: "fixture", claimLane: "test" }] }, null, 2) + "\n";
+  await writeFile(join(ledgerDirectory, `${role}-${sessionId}.json`), ledger);
+  await writeFile(join(memoDirectory, `${filePrefix}.md`), memo);
+  await writeFile(join(memoDirectory, `${filePrefix}.sources.json`), JSON.stringify({ schemaVersion: 2, role, sessionId, memoSha256: createHash("sha256").update(memo).digest("hex"), encounteredSourceRefs: ["S1"], citedSourceRefs: ["S1"], ledgerPath, ledgerSha256: createHash("sha256").update(ledger).digest("hex"), ledgerEntryCount: 1 }));
+}
 
 test("publishing prompt assigns report semantics to the lead and structure to the backend", () => {
   const prompt = recoveryPublishingPrompt();
@@ -69,7 +80,7 @@ test("fails the handoff for every launched child session without exactly one acc
   try {
     const memoDirectory = join(root, ".work", "memos");
     await mkdir(memoDirectory, { recursive: true });
-    await writeFile(join(memoDirectory, "professional-researcher-child-1.md"), "# professional-researcher memo\n\nSession: child-1\n\nCompleted finding [S1].\n");
+    await writeAcceptedMemo(memoDirectory, "professional-researcher", "child-1", "# professional-researcher memo\n\nSession: child-1\n\nCompleted finding [S1].\n");
     const children = [
       { id: "child-1", agent: "professional-researcher" },
       { id: "child-2", agent: "professional-researcher" },
@@ -83,12 +94,12 @@ test("fails the handoff for every launched child session without exactly one acc
       return true;
     });
 
-    await writeFile(join(memoDirectory, "professional-researcher-child-2.md"), "# professional-researcher memo\n\nSession: child-2\n\nSearch completed with no credible public evidence.\n");
+    await writeAcceptedMemo(memoDirectory, "professional-researcher", "child-2", "# professional-researcher memo\n\nSession: child-2\n\nSearch completed with no credible public evidence.\n");
     const result = await readCompletedResearchMemos(memoDirectory, children);
     assert.equal(result.memos.length, 2);
     assert.deepEqual(result.completedSessionIds, new Set(["child-1", "child-2"]));
 
-    await writeFile(join(memoDirectory, "duplicate-child-2.md"), "# professional-researcher memo\n\nSession: child-2\n\nDuplicate handoff.\n");
+    await writeAcceptedMemo(memoDirectory, "professional-researcher", "child-2", "# professional-researcher memo\n\nSession: child-2\n\nDuplicate handoff.\n", "duplicate-child-2");
     await assert.rejects(readCompletedResearchMemos(memoDirectory, children), (error: unknown) => {
       assert.ok(error instanceof ResearchHandoffError);
       assert.deepEqual(error.failures, [{ sessionId: "child-2", role: "professional-researcher", acceptedMemoCount: 2 }]);

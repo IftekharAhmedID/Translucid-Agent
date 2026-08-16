@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -209,21 +210,40 @@ export async function readCompletedResearchMemos(memoDirectory: string, children
   const files = await readdir(memoDirectory).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error));
   const records = await Promise.all(files.filter((file) => file.endsWith(".md") && !file.startsWith("lead-")).sort().map(async (file) => {
     const memo = await readFile(join(memoDirectory, file), "utf8");
+    const memoRole = memo.match(/^#\s+(\S+)\s+memo\s*$/m)?.[1];
+    const memoSessionId = memo.match(/^Session:\s*(\S+)\s*$/m)?.[1];
+    let accepted = false;
+    try {
+      const sidecar = JSON.parse(await readFile(join(memoDirectory, file.replace(/\.md$/, ".sources.json")), "utf8")) as Record<string, unknown>;
+      const ledgerPath = typeof sidecar.ledgerPath === "string" ? sidecar.ledgerPath : "";
+      const ledgerAbsolute = join(memoDirectory, "..", ledgerPath.replace(/^\.work\//, ""));
+      const ledger = await readFile(ledgerAbsolute);
+      accepted = sidecar.schemaVersion === 2
+        && sidecar.role === memoRole
+        && sidecar.sessionId === memoSessionId
+        && sidecar.memoSha256 === createHash("sha256").update(memo).digest("hex")
+        && /^\.work\/evidence-ledgers\/[A-Za-z0-9_-]+\.json$/.test(ledgerPath)
+        && sidecar.ledgerSha256 === createHash("sha256").update(ledger).digest("hex")
+        && Number.isInteger(sidecar.ledgerEntryCount) && Number(sidecar.ledgerEntryCount) >= 0;
+    } catch {
+      accepted = false;
+    }
     return {
       memo,
-      role: memo.match(/^#\s+(\S+)\s+memo\s*$/m)?.[1],
-      sessionId: memo.match(/^Session:\s*(\S+)\s*$/m)?.[1],
+      role: memoRole,
+      sessionId: memoSessionId,
+      accepted,
     };
   }));
   const materialChildren = children.filter((child) => child.agent && materialSpecialistRoles.has(child.agent));
   if (materialChildren.length === 0) throw new ResearchHandoffError([], "No material specialist child was launched; refusing to publish an uninvestigated report.");
   const failures = materialChildren.flatMap((child) => {
-    const acceptedMemoCount = records.filter((record) => record.sessionId === child.id && record.role === child.agent).length;
+    const acceptedMemoCount = records.filter((record) => record.accepted && record.sessionId === child.id && record.role === child.agent).length;
     return acceptedMemoCount === 1 ? [] : [{ sessionId: child.id, role: child.agent!, acceptedMemoCount }];
   });
   if (failures.length) throw new ResearchHandoffError(failures);
   const completedSessionIds = new Set(materialChildren.map(({ id }) => id));
-  const memos = records.filter(({ sessionId }) => sessionId && completedSessionIds.has(sessionId)).map(({ memo }) => memo);
+  const memos = records.filter(({ accepted, sessionId }) => accepted && sessionId && completedSessionIds.has(sessionId)).map(({ memo }) => memo);
   return { memos, completedSessionIds };
 }
 

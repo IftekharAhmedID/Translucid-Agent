@@ -60,6 +60,7 @@ export function createHeadlessFixtureCompletion(): (body: Record<string, unknown
     }
     if (agent === "professional-researcher") {
       if (call === 1) return { toolCall: { name: "web.fetch", arguments: { url: "https://example.test/synthetic-source" } } };
+      if (call === 2) return { toolCall: { name: "research.ledger.upsert", arguments: { entries: [{ sourceRef: "S1", disposition: "EVIDENCE", relevance: "Acme employment", sourceFamily: "employer", claimLane: "chronology" }] } } };
       return { content: `Finding: synthetic Acme employment.\nExact quote: “${quote}” [S1]\nWhat it establishes: employer, title, and 2021–2025 interval.` };
     }
     return { content: "No additional synthetic research was required." };
