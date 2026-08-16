@@ -1,0 +1,29 @@
+node_modules/
+.next/
+coverage/
+dist/
+.debug/
+runs/
+runtime-manifest.json
+
+# Private profile inputs and generated acceptance documents never belong in Git.
+/*.pdf
+/acceptance-private/
+/gold-private/
+
+# Local investigation inputs and generated acceptance artifacts. Keep on disk,
+# but do not add candidate material or generated reports to the repository.
+/tmp/acceptance/*.pdf
+/tmp/pdfs/resume-cs-case/
+/tmp/pdfs/resume-cs-render/
+
+.env
+.env.local
+.env.*.local
+!.env.example
+
+*.pem
+*.key
+*.log
+*.tsbuildinfo
+.DS_Store
