@@ -52,6 +52,74 @@ test("returns bounded JSON and text excerpts from captured local material", asyn
   }
 });
 
+test("indexes the complete stored text instead of an agent-preview prefix", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-source-index-late-match-"));
+  try {
+    const store = await FileSourceStore.open(directory);
+    const late = await store.capture({
+      kind: "SOURCE_CONTENT",
+      provider: "fixture",
+      providerRoute: "fixture.web.fetch",
+      sourceUrl: "https://example.test/large",
+      mimeType: "text/plain",
+      content: `${"prefix ".repeat(400_000)}A late material phrase appears here.`,
+      provenance: {},
+    });
+    const discovery = await store.capture({
+      kind: "SEARCH_DISCOVERY",
+      provider: "fixture",
+      providerRoute: "fixture.web.search",
+      sourceUrl: "https://example.test/search",
+      mimeType: "application/json",
+      content: { text: "A late material phrase appears here." },
+      provenance: {},
+    });
+    const binary = await store.capture({
+      kind: "SOURCE_CONTENT",
+      provider: "fixture",
+      providerRoute: "fixture.web.fetch",
+      sourceUrl: "https://example.test/file.pdf",
+      mimeType: "application/pdf",
+      content: new Uint8Array([37, 80, 68, 70]),
+      provenance: {},
+    });
+
+    const indexed = await store.index({ queries: ["late material phrase"], limit: 10 });
+    assert.deepEqual(indexed.map(({ sourceRef }) => sourceRef), [late.ref, discovery.ref]);
+    assert.match(indexed[0]!.snippet, /late material phrase/);
+    assert.equal(indexed[0]!.citable, true);
+    assert.equal(indexed[1]!.citable, false);
+    assert.equal(indexed.some(({ sourceRef }) => sourceRef === binary.ref), false);
+    assert.ok(indexed[0]!.storedByteLength > 2_800_000);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("indexes complete JSON and applies deterministic candidate and response bounds", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-source-index-bounds-"));
+  try {
+    const store = await FileSourceStore.open(directory);
+    for (let index = 0; index < 60; index += 1) {
+      await store.capture({
+        kind: "SOURCE_CONTENT",
+        provider: "fixture",
+        providerRoute: "fixture.web.fetch",
+        sourceUrl: `https://example.test/${index}`,
+        mimeType: "application/json",
+        content: { index, phrase: "shared material phrase" },
+        provenance: {},
+      });
+    }
+    const indexed = await store.index({ queries: ["shared material phrase"], limit: 50 });
+    assert.equal(indexed.length, 50);
+    assert.deepEqual(indexed.map(({ sourceRef }) => sourceRef), Array.from({ length: 50 }, (_, index) => `S${index + 1}`));
+    assert.ok(Buffer.byteLength(JSON.stringify(indexed), "utf8") <= 25 * 1024);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("loads historical manifests while ignoring extra semantic fields", async () => {
   const directory = await mkdtemp(join(tmpdir(), "translucid-source-historical-"));
   try {

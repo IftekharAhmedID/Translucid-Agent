@@ -52,6 +52,8 @@ type GatewayInput = {
   agentTools?: Map<string, Set<string>>;
   reportStore?: ReportStore;
   persistResearchMemo?: (value: unknown) => Promise<unknown>;
+  persistResearchNotebook?: (value: unknown) => Promise<unknown>;
+  persistResearchLedger?: (value: unknown) => Promise<unknown>;
   researchUpstreamUrl?: string;
   fixtureCompletion?: (body: Record<string, unknown>, agent: string, model: string) => Promise<{ content?: string; toolCall?: { name: string; arguments: Record<string, unknown> } }>;
   onModelRequest?: (request: { agent: string; estimatedInputTokens: number }) => void;
@@ -64,6 +66,32 @@ export function createHeadlessGateway(input: GatewayInput) {
   const reportTools = new Set<string>(reportToolNames);
   let active = true;
   let phase: "RESEARCHING" | "DRAFTING" | "AUDITING" = "RESEARCHING";
+  const researchOnlyTools = new Set(["research.memo.persist", "research.notebook.set", "research.ledger.upsert"]);
+  const frozenReadTools = new Set(["source.excerpts", "source.index"]);
+
+  function sourceRefs(value: unknown, output: Set<string> = new Set()): Set<string> {
+    if (!value || typeof value !== "object") return output;
+    if (Array.isArray(value)) {
+      for (const item of value) sourceRefs(item, output);
+      return output;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "sourceRef" && typeof child === "string" && /^S[1-9]\d*$/.test(child)) output.add(child);
+      else if ((key === "sourceRefs" || key === "evidenceEligibleSourceRefs") && Array.isArray(child)) {
+        for (const ref of child) if (typeof ref === "string" && /^S[1-9]\d*$/.test(ref)) output.add(ref);
+      }
+      sourceRefs(child, output);
+    }
+    return output;
+  }
+
+  function recordSessionSources(sessionId: string, value: unknown): void {
+    const refs = sessionSources.get(sessionId) ?? new Set<string>();
+    for (const ref of sourceRefs(value)) refs.add(ref);
+    sessionSources.set(sessionId, refs);
+  }
+
+  const sessionSources = new Map<string, Set<string>>();
 
   const authorize = (request: IncomingMessage, kind: "tool" | "model", name: string): void => {
     const header = request.headers.authorization;
@@ -82,7 +110,8 @@ export function createHeadlessGateway(input: GatewayInput) {
     }
     if (kind === "tool") {
       if (phase === "RESEARCHING" && reportTools.has(name)) throw new GatewayError(403, "Report tools are unavailable until drafting begins.");
-      if (phase !== "RESEARCHING" && !reportTools.has(name) && name !== "source.excerpts") throw new GatewayError(403, `${phase} phase denies ${name}.`);
+      if (phase !== "RESEARCHING" && !reportTools.has(name) && !frozenReadTools.has(name)) throw new GatewayError(403, `${phase} phase denies ${name}.`);
+      if (phase !== "RESEARCHING" && researchOnlyTools.has(name)) throw new GatewayError(403, `${phase} phase denies ${name}.`);
       if (phase === "DRAFTING" && name === "report.finalize") throw new GatewayError(403, "Drafting phase denies report.finalize; the separate audit phase must finalize.");
     }
   };
@@ -97,6 +126,18 @@ export function createHeadlessGateway(input: GatewayInput) {
         if (name === "research.memo.persist") {
           if (!input.persistResearchMemo) throw new GatewayError(403, "Host memo persistence is unavailable in this run.");
           return json(response, 200, await input.persistResearchMemo(body.arguments));
+        }
+        if (name === "research.notebook.set") {
+          if (!input.persistResearchNotebook) throw new GatewayError(403, "Host notebook persistence is unavailable in this run.");
+          return json(response, 200, await input.persistResearchNotebook(body.arguments));
+        }
+        if (name === "research.ledger.upsert") {
+          if (!input.persistResearchLedger) throw new GatewayError(403, "Host ledger persistence is unavailable in this run.");
+          const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
+          const sessionId = typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session";
+          const role = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
+          const argumentsValue = body.arguments && typeof body.arguments === "object" ? body.arguments as Record<string, unknown> : {};
+          return json(response, 200, await input.persistResearchLedger({ ...argumentsValue, sessionId, role, encounteredSourceRefs: [...(sessionSources.get(sessionId) ?? [])] }));
         }
         if (reportTools.has(name)) {
           if (!input.reportStore) throw new GatewayError(403, "Report publishing is unavailable in this run.");
@@ -131,7 +172,19 @@ export function createHeadlessGateway(input: GatewayInput) {
             requestedCharacters,
             (maximumCharacters) => input.sourceStore.excerpts({ sourceRef, queries, maxCharacters: maximumCharacters }),
           );
+          recordSessionSources(sessionId, excerpt);
           return json(response, 200, excerpt);
+        }
+        if (name === "source.index") {
+          const args = body.arguments && typeof body.arguments === "object" ? body.arguments as Record<string, unknown> : {};
+          const queries = Array.isArray(args.queries) ? args.queries.filter((value): value is string => typeof value === "string") : [];
+          const sourceRefs = Array.isArray(args.sourceRefs) ? args.sourceRefs.filter((value): value is string => typeof value === "string") : undefined;
+          const limit = typeof args.limit === "number" && Number.isFinite(args.limit) ? Math.floor(args.limit) : undefined;
+          const indexed = await input.sourceStore.index({ queries, ...(sourceRefs ? { sourceRefs } : {}), ...(limit === undefined ? {} : { limit }) });
+          const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
+          const sessionId = typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session";
+          recordSessionSources(sessionId, indexed);
+          return json(response, 200, indexed);
         }
         if (!toolNames.includes(name as (typeof toolNames)[number])) throw new GatewayError(403, "State and database tools are unavailable in headless runs.");
         if (!input.executor) throw new GatewayError(403, "Research providers are unavailable during publishing-only recovery.");

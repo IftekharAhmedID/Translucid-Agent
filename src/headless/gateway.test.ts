@@ -120,3 +120,33 @@ test("routes research providers and local excerpts, then blocks providers in pub
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("routes source.index during research and preserves read-only frozen recovery in publishing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-index-gateway-"));
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    await sourceStore.capture({ kind: "SOURCE_CONTENT", provider: "fixture", providerRoute: "fixture.web.fetch", sourceUrl: "https://example.test/source", mimeType: "text/plain", content: "A captured material phrase.", provenance: {} });
+    const gateway = createHeadlessGateway({
+      runId: "run-index",
+      deadlineAt: Date.now() + 60_000,
+      allowedTools: new Set(["source.index", "web.search"]),
+      allowedModels: new Set(),
+      sourceStore,
+      budget: budget(),
+      providerMode: "fixture",
+    });
+    const server = await listen(gateway);
+    const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-index" };
+    const execute = (tool: string, argumentsValue: unknown) => fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool, arguments: argumentsValue, operational: { sessionId: "lead-session", agent: "lead-researcher" } }) });
+    const indexed = await execute("source.index", { queries: ["material phrase"] });
+    assert.equal(indexed.status, 200);
+    assert.equal((await indexed.json() as Array<{ sourceRef: string }>)[0]?.sourceRef, "S1");
+    gateway.setPhase("DRAFTING");
+    assert.equal((await execute("source.index", { queries: ["material phrase"] })).status, 200);
+    assert.equal((await execute("web.search", { query: "blocked" })).status, 403);
+    gateway.cancel();
+    await server.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

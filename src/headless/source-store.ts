@@ -63,6 +63,21 @@ export type SourceExcerptResult = {
   truncated: boolean;
 };
 
+export type SourceIndexRequest = {
+  queries: string[];
+  sourceRefs?: string[];
+  limit?: number;
+};
+
+export type SourceIndexResult = {
+  sourceRef: string;
+  sourceKind: string;
+  citable: boolean;
+  matchedQueries: string[];
+  snippet: string;
+  storedByteLength: number;
+};
+
 type Manifest = z.infer<typeof manifestSchema>;
 type Excerpt = z.infer<typeof excerptLedgerSchema>["excerpts"][number];
 type FlatValue = { path: string; text: string };
@@ -143,6 +158,62 @@ function boundedWindow(text: string, query: string, maximum: number): { text: st
 
 function excerptRef(sourceRef: string, path: string, offsetStart: number, offsetEnd: number, text: string): string {
   return `X${createHash("sha256").update([sourceRef, path, offsetStart, offsetEnd, text].join("\0")).digest("hex")}`;
+}
+
+function isSearchableMime(mimeType: string): boolean {
+  const mime = mimeType.toLocaleLowerCase("en-US");
+  return mime.startsWith("text/") || mime.includes("json") || mime.includes("html") || mime.includes("xml") || mime.includes("javascript") || mime.includes("yaml") || mime.includes("csv");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\[\]\\]/g, "\\$&");
+}
+
+function queryPattern(query: string): RegExp {
+  const parts = query.trim().split(/\s+/).map(escapeRegExp);
+  return new RegExp(parts.join("\\s+"), "giu");
+}
+
+function utf8Prefix(value: string, maximumBytes: number): string {
+  if (Buffer.byteLength(value, "utf8") <= maximumBytes) return value;
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(value.slice(0, middle), "utf8") <= maximumBytes) low = middle;
+    else high = middle - 1;
+  }
+  return value.slice(0, low);
+}
+
+function sourceSnippet(text: string, matchStart: number, matchEnd: number): string {
+  const maximum = 500;
+  const context = Math.floor((maximum - (matchEnd - matchStart)) / 2);
+  const start = Math.max(0, matchStart - context);
+  const end = Math.min(text.length, start + maximum);
+  return utf8Prefix(text.slice(start, end), maximum);
+}
+
+function matchingQueries(text: string, queries: string[]): { matchedQueries: string[]; totalMatches: number; snippet: string } {
+  const matches: Array<{ query: string; index: number; end: number; count: number }> = [];
+  for (const query of queries) {
+    const pattern = queryPattern(query);
+    let count = 0;
+    let first: RegExpExecArray | null = null;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      if (!first) first = match;
+      count += 1;
+      if (match[0].length === 0) pattern.lastIndex += 1;
+    }
+    if (first) matches.push({ query, index: first.index, end: first.index + first[0].length, count });
+  }
+  const first = matches.sort((left, right) => left.index - right.index)[0];
+  return {
+    matchedQueries: matches.map(({ query }) => query),
+    totalMatches: matches.reduce((total, { count }) => total + count, 0),
+    snippet: first ? sourceSnippet(text, first.index, first.end) : "",
+  };
 }
 
 export class FileSourceStore {
@@ -269,6 +340,39 @@ export class FileSourceStore {
     }
     if (this.excerptIndex.size !== previousCount) await this.persistExcerpts();
     return { sourceRef: source.ref, excerpts, truncated: matchCount > excerpts.length || remaining <= 0 };
+  }
+
+  async index(input: SourceIndexRequest): Promise<SourceIndexResult[]> {
+    if (input.queries.length < 1 || input.queries.length > 12) throw new Error("Source index requires between one and twelve queries.");
+    const queries = input.queries.map((query) => query.trim()).filter(Boolean);
+    if (queries.length !== input.queries.length) throw new Error("Source index queries cannot be empty.");
+    const limit = Math.min(Math.max(input.limit ?? 20, 1), 50);
+    const allowed = input.sourceRefs ? new Set(input.sourceRefs) : undefined;
+    if (allowed) {
+      for (const ref of allowed) if (!/^S[1-9]\\d*$/.test(ref)) throw new Error(`Invalid source reference ${ref}.`);
+    }
+    const candidates: Array<SourceIndexResult & { matchedCount: number; totalMatches: number }> = [];
+    for (const source of await this.list()) {
+      if (allowed && !allowed.has(source.ref)) continue;
+      if (!isSearchableMime(source.mimeType)) continue;
+      const raw = await readFile(join(this.root, source.relativePath), "utf8");
+      const match = matchingQueries(raw, queries);
+      if (!match.matchedQueries.length) continue;
+      candidates.push({
+        sourceRef: source.ref,
+        sourceKind: source.kind,
+        citable: source.kind !== "SEARCH_DISCOVERY",
+        matchedQueries: match.matchedQueries,
+        snippet: match.snippet,
+        storedByteLength: source.byteLength,
+        matchedCount: match.matchedQueries.length,
+        totalMatches: match.totalMatches,
+      });
+    }
+    candidates.sort((left, right) => right.matchedCount - left.matchedCount || right.totalMatches - left.totalMatches || Number(left.sourceRef.slice(1)) - Number(right.sourceRef.slice(1)));
+    const output = candidates.slice(0, limit).map(({ matchedCount: _matchedCount, totalMatches: _totalMatches, ...result }) => result);
+    while (output.length && Buffer.byteLength(JSON.stringify(output), "utf8") > 25 * 1024) output.pop();
+    return output;
   }
 
   async verify(): Promise<{ valid: boolean; invalidSourceRefs: string[] }> {
