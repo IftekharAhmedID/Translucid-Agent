@@ -55,13 +55,20 @@ export function createHeadlessFixtureCompletion(): (body: Record<string, unknown
         if (publishingCalls === 4) return { toolCall: { name: "report.progress.get", arguments: {} } };
         return { toolCall: { name: "report.finalize", arguments: {} } };
       }
-      if (call === 1) return { toolCall: { name: "task", arguments: { description: "Research synthetic employment", prompt: "WAVE: INITIAL\nVerify the synthetic candidate's Acme title and dates using the professional specialist.", subagent_type: "professional-researcher", background: false } } };
+      if (call === 1) return { toolCall: { name: "research.notebook.set", arguments: { markdown: "# Investigation\n\nSynthetic fixture coverage notebook.", recoverySummary: "## Active claim lanes\nemployment\n\n## Strongest source refs\nnone\n\n## Contradictions\nnone\n\n## Unresolved material facets\nnone\n\n## Current search leads\nnone\n\n## Next actions\nlaunch required specialists\n\n## Stop decisions\nnone" } } };
+      if (call === 2) return { toolCall: { name: "task", arguments: { description: "Research synthetic employment", prompt: "WAVE: INITIAL\nVerify the synthetic candidate's Acme title and dates using the professional specialist.", subagent_type: "professional-researcher", background: false } } };
+      if (call === 3) return { toolCall: { name: "task", arguments: { description: "Research public technical attribution", prompt: "WAVE: INITIAL\nVerify whether the synthetic candidate has attributable public technical contributions using the GitHub specialist.", subagent_type: "github-researcher", background: false } } };
       return { content: `Synthetic employment finding\n\nExact quote: “${quote}” [S1]\n\nThe source establishes the employer, title, and reported interval.` };
     }
     if (agent === "professional-researcher") {
       if (call === 1) return { toolCall: { name: "web.fetch", arguments: { url: "https://example.test/synthetic-source" } } };
       if (call === 2) return { toolCall: { name: "research.ledger.upsert", arguments: { entries: [{ sourceRef: "S1", disposition: "EVIDENCE", relevance: "Acme employment", sourceFamily: "employer", claimLane: "chronology" }] } } };
       return { content: `Finding: synthetic Acme employment.\nExact quote: “${quote}” [S1]\nWhat it establishes: employer, title, and 2021–2025 interval.` };
+    }
+    if (agent === "github-researcher") {
+      if (call === 1) return { toolCall: { name: "web.fetch", arguments: { url: "https://example.test/synthetic-source" } } };
+      if (call === 2) return { toolCall: { name: "research.ledger.upsert", arguments: { entries: [{ sourceRef: "S1", disposition: "LOW_VALUE", relevance: "No attributable public technical contribution", sourceFamily: "employer", claimLane: "technical-attribution", stopReason: "No GitHub-specific public record in fixture." }] } } };
+      return { content: "No attributable public GitHub evidence was found in the bounded fixture scope; stop with that explicit limitation." };
     }
     return { content: "No additional synthetic research was required." };
   };

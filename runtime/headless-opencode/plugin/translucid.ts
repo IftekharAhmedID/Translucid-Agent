@@ -110,8 +110,8 @@ const plugin: Plugin = async () => {
     if (publicationSessions.has(context.sessionID) && name === "task") {
       throw new Error("Drafting and auditing phases deny specialist delegation.");
     }
-    if (repairSessions.has(context.sessionID) && name !== "source.excerpts" && name !== "source.index" && name !== "research.ledger.upsert") {
-      throw new Error(`Memo repair mode denies ${name}; only local source recovery and ledger updates are allowed.`);
+    if (repairSessions.has(context.sessionID) && name !== "source.excerpts" && name !== "research.ledger.upsert") {
+      throw new Error(`Memo repair mode denies ${name}; only source.excerpts and ledger updates are allowed.`);
     }
     if (name === "web.search" && specialistRole(context.agent)) {
       const searchArgs = args as { mode?: string };
@@ -248,7 +248,7 @@ const plugin: Plugin = async () => {
         repairSessions.add(repairSessionId);
         taskWave.set(input.callID, wave);
         output.args.background = false;
-        const repairRule = `\n\nThis is the one allowed protocol repair for task_id ${repairSessionId}. Do not call provider or network tools; use only source.index, source.excerpts, and research.ledger.upsert. Return a full, self-contained replacement memo for the original assignment, not a delta, correction, or reference to earlier output. Update the high-recall ledger before returning the memo, and cite only S references encountered by this same child session.\n\nOriginal assignment:\n${pending.assignment}`;
+        const repairRule = `\n\nThis is the one allowed protocol repair for task_id ${repairSessionId}. Do not call provider or network tools; use only source.excerpts and research.ledger.upsert. Return a full, self-contained replacement memo for the original assignment, not a delta, correction, or reference to earlier output. Update the high-recall ledger before returning the memo, and cite only S references encountered by this same child session.\n\nOriginal assignment:\n${pending.assignment}`;
         if (typeof output.args.prompt === "string") output.args.prompt += repairRule;
         else if (typeof output.args.description === "string") output.args.description += repairRule;
         return;
@@ -361,7 +361,10 @@ const plugin: Plugin = async () => {
       try { notebookRecovery = await readFile(join(caseRoot, ".work", "investigation-recovery.md"), "utf8"); }
       catch { notebookRecovery = "## Active claim lanes\nNo durable notebook recovery summary is available yet."; }
       const metadata = `Headless recovery metadata:\n- Initial assignment: ${assignments.get(input.sessionID) ?? "Unavailable; continue the current assigned scope."}\n- Child invocation counts: ${JSON.stringify(counts)}\n- Research children: ${totalChildren}; targeted children: ${targetedChildren}\n- Remaining wave: ${targetedStarted ? "none; targeted wave already began" : "one targeted wave if a material exact gap remains"}\n- Hard deadline: ${deadlineAt ?? "host controlled"}\n- This session's encountered source refs: ${refs.join(", ") || "none"}\nNever repeat a provider call merely to recover an S reference; use source.index or source.excerpts.`;
-      output.context.push(truncateUtf8(`${metadata}\n\nDurable notebook recovery:\n${notebookRecovery}`, 16 * 1024));
+      if (Buffer.byteLength(notebookRecovery, "utf8") > 16 * 1024) throw new Error("Durable notebook recovery summary exceeds the 16 KiB compaction limit.");
+      const separator = "\n\nDurable notebook recovery:\n";
+      const metadataBudget = Math.max(0, 16 * 1024 - Buffer.byteLength(separator, "utf8") - Buffer.byteLength(notebookRecovery, "utf8"));
+      output.context.push(`${truncateUtf8(metadata, metadataBudget)}${separator}${notebookRecovery}`);
     },
   };
 };

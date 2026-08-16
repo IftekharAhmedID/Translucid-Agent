@@ -6,7 +6,9 @@ import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 test("fixture model exercises research delegation and specialist capture", async () => {
   const complete = createHeadlessFixtureCompletion();
   const lead = await complete({ messages: [{ role: "user", content: "Begin the headless investigation." }] }, "lead-researcher");
-  assert.equal(lead.toolCall?.name, "task");
+  assert.equal(lead.toolCall?.name, "research.notebook.set");
+  assert.equal((await complete({}, "lead-researcher")).toolCall?.name, "task");
+  assert.equal((await complete({}, "lead-researcher")).toolCall?.name, "task");
   const specialist = await complete({}, "professional-researcher");
   assert.equal(specialist.toolCall?.name, "web.fetch");
   assert.equal((await complete({}, "professional-researcher")).toolCall?.name, "research.ledger.upsert");

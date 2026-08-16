@@ -56,6 +56,9 @@ test("compaction context is bounded and contains only the session's encountered 
     assert.doesNotMatch(firstText, /S2/);
     assert.match(secondText, /S2/);
     assert.doesNotMatch(secondText, /S1|S3/);
+
+    await writeFile(join(process.env.CASE_ROOT!, ".work", "investigation-recovery.md"), "x".repeat(16 * 1024 + 1));
+    await assert.rejects(compact({ sessionID: "session-one" }, { context: [] as string[] }), /16 KiB/i);
   } finally {
     globalThis.fetch = originalFetch;
   }

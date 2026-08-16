@@ -92,6 +92,12 @@ function sortedRefs(refs: Iterable<string>): string[] {
   return [...new Set(refs)].sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
 }
 
+function validateNumericSourceRefs(value: string): void {
+  for (const match of value.matchAll(/\bS\d+\b/g)) {
+    if (!/^S[1-9]\d*$/.test(match[0])) throw new Error(`Invalid source reference ${match[0]}.`);
+  }
+}
+
 async function exists(path: string): Promise<boolean> {
   try {
     await readFile(path);
@@ -134,7 +140,7 @@ export async function persistResearchMemo(rootPath: string, input: unknown): Pro
   const citedSourceRefs = [...new Set(value.citedSourceRefs)].sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
   await atomicBytes(join(root, ".work", "memos", `${base}.md`), value.memo);
   await atomicWrite(join(root, ".work", "memos", `${base}.sources.json`), {
-    schemaVersion: 1,
+    schemaVersion: 2,
     role: value.role,
     wave: value.wave,
     sessionId: value.sessionId,
@@ -152,6 +158,8 @@ export async function persistResearchNotebook(rootPath: string, input: unknown):
   const parsed = notebookPayloadSchema.safeParse(input);
   if (!parsed.success) throw new Error(`Invalid research notebook payload: ${parsed.error.issues[0]?.message ?? "validation failed"}`);
   const { markdown, recoverySummary } = parsed.data;
+  validateNumericSourceRefs(markdown);
+  validateNumericSourceRefs(recoverySummary);
   const markdownByteLength = Buffer.byteLength(markdown, "utf8");
   const recoveryByteLength = Buffer.byteLength(recoverySummary, "utf8");
   if (markdownByteLength > NOTEBOOK_MAX_BYTES) throw new Error("Investigation notebook exceeds the 100 KiB limit.");

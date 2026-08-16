@@ -103,12 +103,16 @@ test("routes research providers and local excerpts, then blocks providers in pub
     const sourceStore = await FileSourceStore.open(directory);
     const runBudget = budget();
     const executor = new ProviderExecutor({ PROVIDER_MODE: "fixture" }, createFileProviderBackend({ sourceStore, budget: runBudget, deadlineAt: Date.now() + 60_000 }));
-    const gateway = createHeadlessGateway({ runId: "run-gateway", deadlineAt: Date.now() + 60_000, allowedTools: new Set(["web.search", "source.excerpts"]), allowedModels: new Set(), executor, sourceStore, budget: runBudget, providerMode: "fixture" });
+    const ledgers: unknown[] = [];
+    const gateway = createHeadlessGateway({ runId: "run-gateway", deadlineAt: Date.now() + 60_000, allowedTools: new Set(["web.search", "source.excerpts", "research.ledger.upsert"]), allowedModels: new Set(), executor, sourceStore, budget: runBudget, providerMode: "fixture", persistResearchLedger: async (value) => { ledgers.push(value); return { ok: true }; } });
     const server = await listen(gateway);
     const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-gateway" };
     const provider = await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "web.search", arguments: { query: "Synthetic Candidate Principal Engineer" }, operational: { agent: "web-records-researcher", sessionId: "session-a" } }) });
     assert.equal(provider.status, 200);
     assert.deepEqual((await provider.json() as { sourceRefs: string[] }).sourceRefs, ["S1"]);
+    const ledger = await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "research.ledger.upsert", arguments: { entries: [{ sourceRef: "S1", disposition: "EVIDENCE", relevance: "fixture evidence", sourceFamily: "employer", claimLane: "chronology" }] }, operational: { agent: "web-records-researcher", sessionId: "session-a" } }) });
+    assert.equal(ledger.status, 200);
+    assert.deepEqual((ledgers[0] as { encounteredSourceRefs: string[] }).encounteredSourceRefs, ["S1"]);
     const excerpt = await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "source.excerpts", arguments: { sourceRef: "S1", queries: ["Principal Engineer"] } }) });
     assert.equal(excerpt.status, 200);
     assert.match((await excerpt.json() as { excerpts: Array<{ text: string }> }).excerpts[0]?.text ?? "", /Principal Engineer/);

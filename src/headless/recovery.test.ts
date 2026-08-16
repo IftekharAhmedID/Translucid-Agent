@@ -29,6 +29,7 @@ test("persists a completed sandbox memo to the host with safe host-derived paths
     assert.equal(result.ok, true);
     assert.match(await readFile(join(root, ".work", "memos", "github-researcher-ses_123.md"), "utf8"), /Finding \[S1\]/);
     const metadata = JSON.parse(await readFile(join(root, ".work", "memos", "github-researcher-ses_123.sources.json"), "utf8"));
+    assert.equal(metadata.schemaVersion, 2);
     assert.equal(metadata.memoSha256, sha256("# github-researcher memo\n\nSession: ses_123\n\nFinding [S1].\n"));
     await assert.rejects(persistResearchMemo(root, { role: "../../escape", wave: "INITIAL", sessionId: "ses_123", memo: "x", encounteredSourceRefs: [], citedSourceRefs: [] }), /invalid/i);
   } finally {
@@ -59,6 +60,7 @@ test("persists a bounded notebook and a separate compaction recovery summary", a
     await assert.rejects(persistResearchNotebook(root, { markdown: "x", recoverySummary: "## Active claim lanes\nmissing headings" }), /headings/i);
     await assert.rejects(persistResearchNotebook(root, { markdown: "x".repeat(100 * 1024 + 1), recoverySummary: recovery }), /100 KiB/i);
     await assert.rejects(persistResearchNotebook(root, { markdown: "x", recoverySummary: `${recovery}\n${"x".repeat(16 * 1024)}` }), /16 KiB/i);
+    await assert.rejects(persistResearchNotebook(root, { markdown: "S0", recoverySummary: recovery }), /invalid source reference/i);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

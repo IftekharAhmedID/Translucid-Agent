@@ -194,6 +194,7 @@ export function createHeadlessGateway(input: GatewayInput) {
           agent: typeof operational.agent === "string" ? operational.agent : "unknown-agent",
           sessionId: typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session",
         });
+        recordSessionSources(typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session", result);
         return json(response, 200, result);
       }
       if (request.method === "POST" && url.pathname === "/internal/llm/v1/chat/completions") {
