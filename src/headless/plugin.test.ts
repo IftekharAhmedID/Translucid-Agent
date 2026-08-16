@@ -159,6 +159,9 @@ test("specialist tasks are forced to complete before their memo handoff", async 
   await before({ tool: "task", sessionID: "lead-session", callID: "task-call-1" }, output);
 
   assert.equal(output.args.background, false);
+  assert.match(output.args.prompt, /complete material handoff/i);
+  assert.match(output.args.prompt, /materially useful observation/i);
+  assert.match(output.args.prompt, /negative finding/i);
 });
 
 test("empty OpenCode task-result envelopes are not completed memo handoffs", async () => {

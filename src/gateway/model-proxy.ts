@@ -6,14 +6,21 @@ import { writeFixtureCompletion, type Completion } from "./fixture-model.ts";
 
 export function modelCostReservation(body: Record<string, unknown>, model: string): number {
   const estimatedInputTokens = estimateModelInputTokens(body);
-  const maximumOutputTokens = Math.min(Number(body.max_tokens ?? body.max_completion_tokens ?? 32_000), 384_000);
+  const maximumOutputTokens = Math.min(Number(body.max_tokens ?? body.max_completion_tokens ?? body.max_output_tokens ?? 32_000), 384_000);
   void model;
   const rates = { inputUsdPerMillion: 0.14, outputUsdPerMillion: 0.28 };
   return (estimatedInputTokens * rates.inputUsdPerMillion + maximumOutputTokens * rates.outputUsdPerMillion) / 1_000_000;
 }
 
 export function estimateModelInputTokens(body: Record<string, unknown>): number {
-  return Math.ceil(JSON.stringify(body.messages ?? []).length / 4);
+  return Math.ceil(JSON.stringify(body.messages ?? body.input ?? []).length / 4);
+}
+
+export type ResearchUpstreamFamily = "GO" | "ZEN";
+
+export function resolveResearchUpstream(family: ResearchUpstreamFamily, model: string): string {
+  const base = family === "GO" ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1";
+  return `${base}/${model === "gpt-5.6-luna" ? "responses" : "chat/completions"}`;
 }
 
 export function modelUpstreamHeaders(key: string): Record<string, string> {
@@ -59,7 +66,7 @@ export async function proxyModelCompletion(input: {
   remainingMs: number;
   providerMode: "fixture" | "live";
   upstreamKey?: string;
-  researchUpstreamUrl: string;
+  researchUpstreamFamily: ResearchUpstreamFamily;
   fixtureCompletion: () => Promise<Completion>;
 }): Promise<void> {
   if (input.providerMode === "fixture") {
@@ -76,7 +83,7 @@ export async function proxyModelCompletion(input: {
   let upstream: IncomingMessage;
   try {
     upstream = await requestUpstream(
-      input.researchUpstreamUrl,
+      resolveResearchUpstream(input.researchUpstreamFamily, input.model),
       modelUpstreamHeaders(input.upstreamKey),
       JSON.stringify({ ...encoded.body, model: input.model }),
       upstreamAbort.signal,

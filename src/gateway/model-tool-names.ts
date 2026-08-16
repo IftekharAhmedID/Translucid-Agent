@@ -36,7 +36,8 @@ export function encodeModelToolNames<T>(body: T): {
     if (Array.isArray(tools)) {
       for (const tool of tools) {
         const name = tool && typeof tool === "object"
-          ? (tool as { function?: { name?: unknown } }).function?.name
+          ? (tool as { name?: unknown; function?: { name?: unknown } }).name
+            ?? (tool as { function?: { name?: unknown } }).function?.name
           : undefined;
         if (typeof name === "string" && !validToolName.test(name)) {
           semanticToWire.set(name, encodedName(name));

@@ -39,10 +39,6 @@ async function atomicWrite(path: string, bytes: Uint8Array | string): Promise<vo
   await rename(temporary, path);
 }
 
-function upstream(provider: "ZEN" | "GO"): string {
-  return provider === "GO" ? "https://opencode.ai/zen/go/v1/chat/completions" : "https://opencode.ai/zen/v1/chat/completions";
-}
-
 async function listen(server: ReturnType<typeof createHeadlessGateway>["server"], port: number): Promise<number> {
   await new Promise<void>((done, reject) => {
     server.once("error", reject);
@@ -110,7 +106,7 @@ async function main(): Promise<void> {
     sourceStore: workspace.sourceStore,
     budget,
     providerMode,
-    researchUpstreamUrl: upstream(researchProvider),
+    researchUpstreamFamily: researchProvider,
     fixtureCompletion: (body, agent) => fixture(body, agent),
   });
   gateway.setPhase("PUBLISHING");

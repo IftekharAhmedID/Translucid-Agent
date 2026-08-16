@@ -212,7 +212,7 @@ const plugin: Plugin = async () => {
       taskWave.set(input.callID, wave);
       taskAssignments.set(input.callID, truncateUtf8(prompt, 16 * 1024));
       output.args.background = false;
-      const memoRule = "\n\nReturn a public Markdown research memo with exact quotes and [S#] references. Do not return report records or scores.";
+      const memoRule = "\n\nReturn a complete material handoff in public Markdown, not an artificially concise memo or raw transcript. For each materially useful observation, preserve every fact, exact quote, conflict, uncertainty, chronology detail, negative finding, and unresolved gap that could materially affect the lead's claim judgment, with [S#] references. Omit search-process noise, duplicates, dead low-value results, and tool narration. Do not return report records or scores.";
       if (typeof output.args?.prompt === "string") output.args.prompt += memoRule;
       else if (typeof output.args?.description === "string") output.args.description += memoRule;
     },

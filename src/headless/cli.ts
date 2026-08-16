@@ -34,10 +34,6 @@ async function atomicWrite(path: string, bytes: Uint8Array | string): Promise<vo
   await rename(temporary, path);
 }
 
-function upstream(provider: "ZEN" | "GO"): string {
-  return provider === "GO" ? "https://opencode.ai/zen/go/v1/chat/completions" : "https://opencode.ai/zen/v1/chat/completions";
-}
-
 function integerEnvironment(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isInteger(value) && value > 0 ? value : fallback;
@@ -126,7 +122,7 @@ async function main(): Promise<void> {
       sourceStore: workspace.sourceStore,
       budget,
       providerMode: options.providerMode,
-      researchUpstreamUrl: upstream(researchProvider),
+      researchUpstreamFamily: researchProvider,
       fixtureCompletion: (body, agent) => fixture(body, agent),
     });
     const gatewayPort = await listen(gateway.server, options.runtime === "E2B" ? integerEnvironment("HEADLESS_GATEWAY_PORT", 3001) : 0);

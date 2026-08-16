@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
-import { estimateModelInputTokens, modelCostReservation, proxyModelCompletion } from "../gateway/model-proxy.ts";
+import { estimateModelInputTokens, modelCostReservation, proxyModelCompletion, type ResearchUpstreamFamily } from "../gateway/model-proxy.ts";
 import { toolNames } from "../providers/contracts.ts";
 import type { ProviderExecutor } from "../providers/executor.ts";
 import type { MemoryRunBudget } from "./budget.ts";
@@ -52,7 +52,7 @@ type GatewayInput = {
   agentTools?: Map<string, Set<string>>;
   reportStore?: ReportStore;
   persistResearchMemo?: (value: unknown) => Promise<unknown>;
-  researchUpstreamUrl?: string;
+  researchUpstreamFamily?: ResearchUpstreamFamily;
   fixtureCompletion?: (body: Record<string, unknown>, agent: string, model: string) => Promise<{ content?: string; toolCall?: { name: string; arguments: Record<string, unknown> } }>;
   onModelRequest?: (request: { agent: string; estimatedInputTokens: number }) => void;
 };
@@ -142,10 +142,14 @@ export function createHeadlessGateway(input: GatewayInput) {
         });
         return json(response, 200, result);
       }
-      if (request.method === "POST" && url.pathname === "/internal/llm/v1/chat/completions") {
+      if (request.method === "POST" && (url.pathname === "/internal/llm/v1/chat/completions" || url.pathname === "/internal/llm/v1/responses")) {
         const body = await readJson(request, MAX_MODEL_BODY);
         const model = typeof body.model === "string" ? body.model.split("/").at(-1) ?? "" : "";
         authorize(request, "model", model);
+        const responsesPath = url.pathname.endsWith("/responses");
+        if (responsesPath !== (model === "gpt-5.6-luna")) {
+          throw new GatewayError(400, `Model ${model || "unknown"} must use the ${model === "gpt-5.6-luna" ? "Responses" : "Chat Completions"} endpoint.`);
+        }
         const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
         const remainingMs = input.deadlineAt - Date.now();
         if (remainingMs <= 0) throw new GatewayError(401, "Investigation deadline reached.");
@@ -160,7 +164,7 @@ export function createHeadlessGateway(input: GatewayInput) {
           remainingMs,
           providerMode: input.providerMode,
           upstreamKey: process.env.OPENCODE_API_KEY,
-          researchUpstreamUrl: input.researchUpstreamUrl ?? "https://opencode.ai/zen/v1/chat/completions",
+          researchUpstreamFamily: input.researchUpstreamFamily ?? "ZEN",
           fixtureCompletion: () => input.fixtureCompletion?.(body, agent, model) ?? Promise.resolve({ content: "Headless fixture model completed." }),
         });
         return;

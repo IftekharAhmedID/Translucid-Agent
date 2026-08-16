@@ -23,6 +23,14 @@ test("invalid semantic tool names are encoded only on the model wire", () => {
   assert.equal(encoded.wireToSemantic.get(wireName), "claim.create");
 });
 
+test("Responses function tools use the same semantic-name encoder", () => {
+  const encoded = encodeModelToolNames({ tools: [{ type: "function", name: "report.finding.upsert" }] });
+  const wireName = encoded.body.tools[0]!.name;
+  assert.match(wireName, /^[a-zA-Z0-9_-]+$/);
+  assert.notEqual(wireName, "report.finding.upsert");
+  assert.equal(encoded.wireToSemantic.get(wireName), "report.finding.upsert");
+});
+
 test("streamed tool calls are decoded across arbitrary chunk boundaries", () => {
   const decoder = new SseToolNameDecoder(new Map([["tool_deadbeef", "claim.create"]]));
   const first = decoder.push(Buffer.from('data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"tool_'));
