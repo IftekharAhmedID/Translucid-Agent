@@ -15,6 +15,7 @@ test("measures a source omitted from the memo but recovered through the complete
     const report = await evaluateEvidenceRecovery({
       sourceStore,
       goldSources: [{ sourceRef: source.ref, recoveryQueries: ["late material recovery phrase"] }],
+      encounteredSourceRefs: [source.ref],
       memos: ["The concise memo omitted the source."],
       ledgerSourceRefs: [],
       utilizedSourceRefs: [source.ref],
@@ -35,10 +36,12 @@ test("does not call binary-only sources recoverable without a memo or ledger ref
   try {
     const sourceStore = await FileSourceStore.open(root);
     const source = await sourceStore.capture({ kind: "SOURCE_CONTENT", provider: "fixture", providerRoute: "fixture.web.fetch", sourceUrl: "https://example.test/file.pdf", mimeType: "application/pdf", content: new Uint8Array([37, 80, 68, 70]), provenance: {} });
-    const report = await evaluateEvidenceRecovery({ sourceStore, goldSources: [{ sourceRef: source.ref, recoveryQueries: ["anything"] }] });
+    const report = await evaluateEvidenceRecovery({ sourceStore, goldSources: [{ sourceRef: source.ref, recoveryQueries: ["anything"] }], encounteredSourceRefs: [source.ref] });
     assert.equal(report.capturedGoldSources, 1);
     assert.equal(report.recoverableCapturedGoldSources, 0);
     assert.equal(report.sources[0]?.recoveryPath, "NONE");
+    const unencountered = await evaluateEvidenceRecovery({ sourceStore, goldSources: [{ sourceRef: source.ref, recoveryQueries: ["anything"] }], encounteredSourceRefs: [] });
+    assert.equal(unencountered.capturedGoldSources, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -50,19 +50,21 @@ async function atomicWrite(path: string, value: string): Promise<void> {
 export async function evaluateEvidenceRecovery(input: {
   sourceStore: FileSourceStore;
   goldSources: EvidenceGoldSource[];
+  encounteredSourceRefs?: Iterable<string>;
   memos?: string[];
   ledgerSourceRefs?: Iterable<string>;
   utilizedSourceRefs?: Iterable<string>;
   rejectedSourceRefs?: Iterable<string>;
 }): Promise<EvidenceRecoveryReport> {
   const memoRefs = new Set((input.memos ?? []).flatMap((memo) => [...sourceRefsFromText(memo)]));
+  const encounteredRefs = input.encounteredSourceRefs ? new Set(input.encounteredSourceRefs) : undefined;
   const ledgerRefs = new Set(input.ledgerSourceRefs ?? []);
   const utilizedRefs = new Set(input.utilizedSourceRefs ?? []);
   const rejectedRefs = new Set(input.rejectedSourceRefs ?? []);
   const sources: EvidenceRecoverySourceResult[] = [];
   for (const gold of input.goldSources) {
     let captured = false;
-    try { await input.sourceStore.get(gold.sourceRef); captured = true; }
+    try { await input.sourceStore.get(gold.sourceRef); captured = encounteredRefs ? encounteredRefs.has(gold.sourceRef) : true; }
     catch { captured = false; }
     let recoveryPath: EvidenceRecoverySourceResult["recoveryPath"] = "NONE";
     if (captured && memoRefs.has(gold.sourceRef)) recoveryPath = "MEMO";
