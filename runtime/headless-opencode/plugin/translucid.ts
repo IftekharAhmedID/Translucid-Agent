@@ -122,7 +122,7 @@ const plugin: Plugin = async () => {
   }
 
   const tools = {
-    "web.search": gatewayTool("web.search", "Discover public sources with targeted highlights. Returned S references identify immutable captures.", { query: z.string().min(2).max(1000), mode: z.enum(["fast", "auto"]).default("fast"), highlightQuery: z.string().min(2).max(1000).optional(), resultLimit: z.number().int().min(1).max(10).default(5), includeDomains: includeDomains.optional() }),
+    "web.search": gatewayTool("web.search", "Discover public sources with targeted highlights. Returned S references identify immutable captures.", { query: z.string().min(2).max(1000), mode: z.enum(["fast", "auto", "deep", "deep-reasoning"]).default("auto"), highlightQuery: z.string().min(2).max(1000).optional(), resultLimit: z.number().int().min(1).max(10).default(5), includeDomains: includeDomains.optional() }),
     "web.fetch": gatewayTool("web.fetch", "Capture one public page as an immutable source.", { url: z.string().url() }),
     "professional.profile": gatewayTool("professional.profile", "Retrieve one full professional profile with one conditional fallback for a missing material field.", { username: z.string().min(2).max(200), requiredMaterialField: z.enum(["IDENTITY", "CURRENT_POSITION", "EMPLOYMENT_HISTORY", "EDUCATION"]).default("IDENTITY") }),
     "professional.activity": gatewayTool("professional.activity", "Escalation-only retrieval for material activity, chronology, ownership, or leadership gaps.", { username: z.string().min(2).max(200) }),

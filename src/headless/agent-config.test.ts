@@ -7,10 +7,18 @@ const root = join(process.cwd(), "runtime", "headless-opencode");
 
 test("lead exposes native report tools while specialists keep research tools", async () => {
   const lead = await readFile(join(root, "agents", "lead-researcher.md"), "utf8");
+  const cli = await readFile(join(process.cwd(), "src", "headless", "cli.ts"), "utf8");
   assert.match(lead, /^variant: xhigh$/m);
   for (const name of ["report.summary.set", "report.finding.upsert", "report.finding.remove", "report.progress.get", "report.finalize"]) assert.match(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
   assert.match(lead, /source\.excerpts: allow/);
-  assert.doesNotMatch(lead, /\b(?:web\.search|professional\.profile|github\.rest|social\.profile): allow/);
+  for (const name of ["web.search", "web.fetch", "archives.search"]) assert.match(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
+  assert.doesNotMatch(lead, /\b(?:professional\.profile|github\.rest|public_records\.search|scholarly\.search|packages\.inspect|security_records\.search): allow/);
+  assert.match(lead, /Launch exactly these default `?INITIAL`? specialist roles/i);
+  assert.doesNotMatch(lead, /^steps:/m);
+  assert.match(lead, /professional-researcher.*github-researcher/is);
+  assert.match(lead, /Do not launch `?web-records-researcher`? in the default initial wave/i);
+  assert.match(lead, /source\.excerpts.*own direct research/is);
+  assert.match(cli, /\["lead-researcher", new Set\(\["web\.search", "web\.fetch", "archives\.search", "source\.excerpts", \.\.\.reportToolNames\]\)\]/);
   for (const file of ["professional-researcher.md", "github-researcher.md", "web-records-researcher.md", "social-researcher.md"]) {
     const source = await readFile(join(root, "agents", file), "utf8");
     assert.match(source, /^variant: xhigh$/m);

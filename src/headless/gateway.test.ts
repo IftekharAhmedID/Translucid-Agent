@@ -101,10 +101,10 @@ test("routes research providers and local excerpts, then blocks providers in pub
     const sourceStore = await FileSourceStore.open(directory);
     const runBudget = budget();
     const executor = new ProviderExecutor({ PROVIDER_MODE: "fixture" }, createFileProviderBackend({ sourceStore, budget: runBudget, deadlineAt: Date.now() + 60_000 }));
-    const gateway = createHeadlessGateway({ runId: "run-gateway", deadlineAt: Date.now() + 60_000, allowedTools: new Set(["web.search", "source.excerpts"]), allowedModels: new Set(), executor, sourceStore, budget: runBudget, providerMode: "fixture" });
+    const gateway = createHeadlessGateway({ runId: "run-gateway", deadlineAt: Date.now() + 60_000, allowedTools: new Set(["web.search", "source.excerpts"]), allowedModels: new Set(), agentTools: new Map([["lead-researcher", new Set(["web.search", "source.excerpts"])]]), executor, sourceStore, budget: runBudget, providerMode: "fixture" });
     const server = await listen(gateway);
-    const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-gateway" };
-    const provider = await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "web.search", arguments: { query: "Synthetic Candidate Principal Engineer" }, operational: { agent: "web-records-researcher", sessionId: "session-a" } }) });
+    const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-gateway", "x-opencode-agent": "lead-researcher" };
+    const provider = await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "web.search", arguments: { query: "Synthetic Candidate Principal Engineer" }, operational: { agent: "lead-researcher", sessionId: "session-a" } }) });
     assert.equal(provider.status, 200);
     assert.deepEqual((await provider.json() as { sourceRefs: string[] }).sourceRefs, ["S1"]);
     const excerpt = await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "source.excerpts", arguments: { sourceRef: "S1", queries: ["Principal Engineer"] } }) });

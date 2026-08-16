@@ -56,6 +56,25 @@ test("compaction context is bounded and contains only the session's encountered 
   }
 });
 
+test("web search plugin forwards deep mode unchanged", async () => {
+  const originalFetch = globalThis.fetch;
+  const modes: unknown[] = [];
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { tool: string; arguments?: { mode?: unknown } };
+    if (body.tool === "web.search") modes.push(body.arguments?.mode);
+    return new Response(JSON.stringify({ sourceRefs: ["S1"], evidenceEligibleSourceRefs: ["S1"] }));
+  };
+
+  try {
+    const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
+    const hooks = await plugin({} as Parameters<typeof plugin>[0]);
+    await hooks.tool!["web.search"]!.execute({ query: "deep search", mode: "deep", resultLimit: 5 }, { sessionID: "deep-session", agent: "lead-researcher", abort: new AbortController().signal } as never);
+    assert.deepEqual(modes, ["deep"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("repairs an invalid memo once in the same child session without provider calls or task quota", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];

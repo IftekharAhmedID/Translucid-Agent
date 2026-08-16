@@ -41,7 +41,7 @@ const includeDomainsSchema = z.array(z.string().trim().min(1).max(500).regex(sea
   }))].sort());
 const webSearchSchema = contextSchema.extend({
   query: searchText,
-  mode: z.enum(["fast", "auto"]).default("fast"),
+  mode: z.enum(["fast", "auto", "deep", "deep-reasoning"]).default("auto"),
   highlightQuery: searchText.optional(),
   resultLimit: z.number().int().min(1).max(10).default(5),
   includeDomains: includeDomainsSchema.optional(),
@@ -50,7 +50,7 @@ const webSearchSchema = contextSchema.extend({
 const headlessSchemas = {
   "web.search": z.object({
     query: searchText,
-    mode: z.enum(["fast", "auto"]).default("fast"),
+    mode: z.enum(["fast", "auto", "deep", "deep-reasoning"]).default("auto"),
     highlightQuery: searchText.optional(),
     resultLimit: z.number().int().min(1).max(10).default(5),
     includeDomains: includeDomainsSchema.optional(),

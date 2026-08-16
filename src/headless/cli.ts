@@ -45,7 +45,7 @@ function providerEnvironment(mode: "fixture" | "live"): Record<string, string | 
 
 function agentToolAllowlist(): Map<string, Set<string>> {
   return new Map([
-    ["lead-researcher", new Set(["source.excerpts", ...reportToolNames])],
+    ["lead-researcher", new Set(["web.search", "web.fetch", "archives.search", "source.excerpts", ...reportToolNames])],
     ["professional-researcher", new Set(["professional.profile", "professional.activity", "web.search", "web.fetch", "archives.search", "source.excerpts", "research.memo.persist"])],
     ["github-researcher", new Set(["github.graphql", "github.rest", "github.clone", "web.fetch", "source.excerpts", "research.memo.persist"])],
     ["web-records-researcher", new Set(["web.search", "web.fetch", "archives.search", "public_records.search", "scholarly.search", "packages.inspect", "security_records.search", "source.excerpts", "research.memo.persist"])],

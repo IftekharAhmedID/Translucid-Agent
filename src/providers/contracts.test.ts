@@ -28,6 +28,31 @@ test("headless provider requests contain only network-semantic arguments", () =>
   }));
 });
 
+test("web search exposes bounded Exa modes with an auto default", () => {
+  const base = { query: "Casey Morgan Project Atlas" };
+  for (const [mode, expected] of [[undefined, "auto"], ["fast", "fast"], ["auto", "auto"], ["deep", "deep"], ["deep-reasoning", "deep-reasoning"]] as const) {
+    const parsed = parseHeadlessToolRequest({ tool: "web.search", arguments: { ...base, ...(mode ? { mode } : {}) } });
+    if (parsed.tool !== "web.search") throw new Error("Unexpected parsed tool.");
+    assert.equal(parsed.arguments.mode, expected);
+  }
+
+  const standard = parseToolRequest({
+    tool: "web.search",
+    arguments: {
+      ...base,
+      questionId: "11111111-1111-4111-8111-111111111111",
+      claimIds: [],
+      publicRationale: "Checking a material authorship claim.",
+    },
+  });
+  if (standard.tool !== "web.search") throw new Error("Unexpected parsed tool.");
+  assert.equal(standard.arguments.mode, "auto");
+
+  for (const mode of ["instant", "deep-lite", "bogus"]) {
+    assert.throws(() => parseHeadlessToolRequest({ tool: "web.search", arguments: { ...base, mode } }));
+  }
+});
+
 test("web search normalizes a bounded official-domain filter", () => {
   const parsed = parseHeadlessToolRequest({
     tool: "web.search",

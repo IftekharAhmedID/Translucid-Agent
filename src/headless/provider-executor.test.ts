@@ -56,9 +56,10 @@ test("forwards normalized includeDomains to the Exa search request only when sup
   const executor = new ProviderExecutor({ PROVIDER_MODE: "live", EXA_API_KEY: "test-key" }, backend);
   const context = { runId: "run-headless", agent: "web-records-researcher", sessionId: "session-headless" };
 
-  await executor.executeHeadless({ tool: "web.search", arguments: { query: "Exact Candidate Name", includeDomains: ["Rowan.Example.EDU", "*.example.edu"] } }, context);
+  await executor.executeHeadless({ tool: "web.search", arguments: { query: "Exact Candidate Name", mode: "deep", includeDomains: ["Rowan.Example.EDU", "*.example.edu"] } }, context);
   await executor.executeHeadless({ tool: "web.search", arguments: { query: "Exact Candidate Name without filter" } }, context);
 
   assert.deepEqual(networkArguments[0]?.includeDomains, ["*.example.edu", "rowan.example.edu"]);
+  assert.equal(networkArguments[0]?.type, "deep");
   assert.equal("includeDomains" in networkArguments[1]!, false);
 });
