@@ -65,8 +65,10 @@ test("forwards normalized includeDomains to the Exa search request only when sup
 
 test("defaults Exa search to auto and preserves explicit deep modes", async () => {
   const networkArguments: Array<Record<string, unknown>> = [];
+  const providerRoutes: string[] = [];
   const backend: ProviderCallBackend = async (input) => {
     networkArguments.push(input.networkArguments);
+    providerRoutes.push(input.providerRoute);
     return {
       provider: "exa",
       providerRoute: input.providerRoute,
@@ -89,6 +91,7 @@ test("defaults Exa search to auto and preserves explicit deep modes", async () =
   assert.equal(networkArguments[0]?.type, "auto");
   assert.equal(networkArguments[1]?.type, "deep");
   assert.equal(networkArguments[2]?.type, "deep-reasoning");
+  assert.deepEqual(providerRoutes, ["exa.search", "exa.search.deep", "exa.search.deep-reasoning"]);
 });
 
 test("preserves Exa request identifiers, tags, and bounded error detail", async () => {

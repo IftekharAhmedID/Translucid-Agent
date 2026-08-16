@@ -16,6 +16,8 @@ type Options = {
 function errorStatus(error: unknown): string {
   const status = typeof (error as { status?: unknown })?.status === "number" ? Number((error as { status: number }).status) : undefined;
   if (error instanceof Error && /budget exhausted/i.test(error.message)) return "BUDGET_EXHAUSTED";
+  if (status === 402) return "BUDGET_EXHAUSTED";
+  if (status === 401 || status === 403) return "CAPABILITY_UNAVAILABLE";
   return status === 429 ? "RATE_LIMITED" : "ERROR";
 }
 

@@ -48,7 +48,7 @@ export function publishingPrompt(): string {
 }
 
 export function auditingPrompt(): string {
-  return `The draft is complete. Perform a separate adversarial audit in this same lead session. Do not call providers, delegate, or restart research.
+  return `Research is complete and the draft is complete. Perform a separate adversarial audit in this same lead session. Do not call providers, delegate, or restart research.
 
 1. Call report.progress.get and inspect every draft finding against /workspace/case/input/document.json, the durable specialist memos, and the captured S references already in context.
 2. Split any compound finding whose material facets have different evidence, especially entity, role, dates, present status, location, duties, skills, and credentials.

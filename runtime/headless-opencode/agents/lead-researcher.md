@@ -1,7 +1,7 @@
 ---
 description: Audits the input and coordinates bounded natural-language research.
 mode: primary
-model: translucid/deepseek-v4-flash
+model: translucid/gpt-5.6-luna
 variant: xhigh
 steps: 48
 permission:

@@ -22,3 +22,15 @@ test("fixture model publishes through the five native report tools", async () =>
   assert.equal((await complete(body, "lead-researcher")).toolCall?.name, "report.progress.get");
   assert.equal((await complete(body, "lead-researcher")).toolCall?.name, "report.finalize");
 });
+
+test("fixture model keeps drafting and adversarial audit turns separate", async () => {
+  const complete = createHeadlessFixtureCompletion();
+  const draft = { messages: [{ role: "user", content: "Research is complete. Stay in this lead session and draft the investigation. Do not finalize." }] };
+  assert.equal((await complete(draft, "lead-researcher")).toolCall?.name, "report.progress.get");
+  assert.equal((await complete(draft, "lead-researcher")).toolCall?.name, "report.summary.set");
+  assert.equal((await complete(draft, "lead-researcher")).toolCall?.name, "report.finding.upsert");
+  assert.equal((await complete(draft, "lead-researcher")).toolCall?.name, "report.progress.get");
+  assert.match((await complete(draft, "lead-researcher")).content ?? "", /separate audit/i);
+  const audit = { messages: [...draft.messages, { role: "user", content: "Research is complete and the draft is complete. Perform a separate adversarial audit." }] };
+  assert.equal((await complete(audit, "lead-researcher")).toolCall?.name, "report.finalize");
+});

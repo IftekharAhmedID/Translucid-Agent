@@ -20,9 +20,12 @@ test("publishing prompt assigns report semantics to the lead and structure to th
 
 test("drafts and audits in separate bounded turns", async () => {
   const prompts: string[] = [];
+  const phases: string[] = [];
   let reads = 0;
   const ready = await driveReportPublishing({
     launch: async (prompt) => { prompts.push(prompt); },
+    beginDrafting: () => { phases.push("DRAFTING"); },
+    beginAuditing: () => { phases.push("AUDITING"); },
     waitUntilIdle: async () => undefined,
     progress: async () => {
       const current = reads++;
@@ -40,6 +43,7 @@ test("drafts and audits in separate bounded turns", async () => {
   assert.equal(prompts.length, 3);
   assert.match(prompts[0] ?? "", /draft/i);
   assert.match(prompts[2] ?? "", /adversarial audit/i);
+  assert.deepEqual(phases, ["DRAFTING", "AUDITING"]);
 });
 
 test("fails closed after bounded drafting prompts", async () => {

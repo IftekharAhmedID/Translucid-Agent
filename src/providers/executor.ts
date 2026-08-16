@@ -8,6 +8,7 @@ import {
   type ProviderCostSource,
   type ToolName,
   type ToolResult,
+  type WebSearchMode,
   unavailableResult,
 } from "./contracts.ts";
 import type {
@@ -184,6 +185,15 @@ export async function readProviderResponse(response: Response): Promise<unknown>
 }
 
 const terminalProviderStatuses = new Set([401, 402, 403]);
+// Exa's current API-key/x402 pricing: search is $7/$12/$15 per 1,000 requests
+// for auto/fast, deep, and deep-reasoning; text+highlights contents is $2/1,000 pages.
+const exaSearchConfiguredCosts: Record<WebSearchMode, number> = {
+  fast: 0.007,
+  auto: 0.007,
+  deep: 0.012,
+  "deep-reasoning": 0.015,
+};
+const exaContentsConfiguredCost = 0.002;
 
 function terminalFailure(error: unknown, provider: string, route: string): TerminalProviderFailure | undefined {
   const errorProvider = (error as { provider?: unknown })?.provider;
@@ -236,14 +246,42 @@ function nonEmpty(value: unknown): boolean {
   return Boolean(value && typeof value === "object" && Object.keys(value as Record<string, unknown>).length > 0);
 }
 
+function exaContentsStatus(value: unknown): { tag?: string; status?: string } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const statuses = (value as Record<string, unknown>).statuses;
+  if (!Array.isArray(statuses)) return undefined;
+  const first = statuses[0];
+  if (!first || typeof first !== "object") return undefined;
+  const record = first as Record<string, unknown>;
+  const error = record.error && typeof record.error === "object" ? record.error as Record<string, unknown> : undefined;
+  return {
+    ...(typeof record.status === "string" ? { status: record.status } : {}),
+    ...(typeof error?.tag === "string" ? { tag: error.tag } : {}),
+  };
+}
+
 function exaContentsUsable(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
-  const contents = (value as Record<string, unknown>).contents;
-  if (!Array.isArray(contents) || contents.length === 0) return false;
-  const first = contents[0];
-  if (!first || typeof first !== "object") return false;
-  const record = first as Record<string, unknown>;
-  return nonEmpty(record.text) || nonEmpty(record.highlights) || nonEmpty(record.title);
+  const results = (value as Record<string, unknown>).results;
+  if (!Array.isArray(results) || results.length === 0) return false;
+  const status = exaContentsStatus(value);
+  if (status?.status === "error") return false;
+  return results.some((result) => {
+    if (!result || typeof result !== "object") return false;
+    const record = result as Record<string, unknown>;
+    return nonEmpty(record.text) || nonEmpty(record.highlights) || nonEmpty(record.summary);
+  });
+}
+
+function exaContentsAllowsDirectFallback(value: unknown): boolean {
+  if (exaContentsUsable(value)) return false;
+  const status = exaContentsStatus(value);
+  return !status?.tag || [
+    "CRAWL_NOT_FOUND",
+    "CRAWL_TIMEOUT",
+    "CRAWL_LIVECRAWL_TIMEOUT",
+    "SOURCE_NOT_AVAILABLE",
+  ].includes(status.tag);
 }
 
 export function profileHasMaterialField(profile: Record<string, unknown>, field: ProfessionalMaterialField): boolean {
@@ -304,6 +342,7 @@ export class ProviderExecutor {
         countCeiling: 1,
         providerBudgetUsd: nonNegativeNumber(this.environment.PROVIDER_BUDGET_USD, 10),
         captureArtifacts: false,
+        knownCost: this.exaSearchConfiguredCost("auto"),
         run: async (signal, onAttempt) => {
           const data = await apiFetch("https://api.exa.ai/search", {
             method: "POST",
@@ -311,7 +350,7 @@ export class ProviderExecutor {
             body: JSON.stringify({ query: "Translucid Exa readiness", type: "auto", numResults: 1 }),
             signal,
           }, onAttempt);
-          return { data, sourceUrl: "https://api.exa.ai/search", ...this.exaCost(data), artifacts: [] };
+          return { data, sourceUrl: "https://api.exa.ai/search", ...this.exaSearchCost("auto", data), artifacts: [] };
         },
       });
     } catch (error) {
@@ -426,6 +465,11 @@ export class ProviderExecutor {
   }
 
   private webSearch(request: RequestOf<"web.search">, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
+    const providerRoute = request.arguments.mode === "deep-reasoning"
+      ? "exa.search.deep-reasoning"
+      : request.arguments.mode === "deep"
+        ? "exa.search.deep"
+        : "exa.search";
     const body = {
       query: request.arguments.query,
       type: request.arguments.mode,
@@ -435,7 +479,7 @@ export class ProviderExecutor {
         highlights: { query: request.arguments.highlightQuery, maxCharacters: 4_000 },
       },
     };
-    return this.call(request, context, capability, "exa", "exa.search", body, async (signal, onAttempt) => {
+    return this.call(request, context, capability, "exa", providerRoute, body, async (signal, onAttempt) => {
       const data = await apiFetch("https://api.exa.ai/search", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.required("EXA_API_KEY") }, body: JSON.stringify(body), signal }, onAttempt);
       const envelope = data && typeof data === "object" ? data as Record<string, unknown> : {};
       const results = Array.isArray(envelope.results) ? envelope.results : [];
@@ -451,8 +495,8 @@ export class ProviderExecutor {
           provenance: { captureMethod: "EXA_INLINE_CONTENTS" },
         });
       }
-      return { data, sourceUrl: "https://api.exa.ai/search", ...this.exaCost(data), artifacts };
-    });
+      return { data, sourceUrl: "https://api.exa.ai/search", ...this.exaSearchCost(request.arguments.mode, data), artifacts };
+    }, this.exaSearchConfiguredCost(request.arguments.mode));
   }
 
   private webFetch(request: RequestOf<"web.fetch">, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
@@ -460,7 +504,11 @@ export class ProviderExecutor {
     if (this.environment.EXA_API_KEY) {
       return this.call(request, context, capability, "exa", "exa.contents", { urls: [url], text: true, highlights: true }, async (signal, onAttempt) => {
         const data = await apiFetch("https://api.exa.ai/contents", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.environment.EXA_API_KEY! }, body: JSON.stringify({ urls: [url], text: true, highlights: true }), signal }, onAttempt);
-        if (exaContentsUsable(data)) return { data, sourceUrl: url, ...this.exaCost(data), artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: data, provenance: { captureMethod: "EXA_CONTENTS" } }] };
+        if (exaContentsUsable(data)) return { data, sourceUrl: url, ...this.exaContentsCost(data), artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: data, provenance: { captureMethod: "EXA_CONTENTS" } }] };
+        if (!exaContentsAllowsDirectFallback(data)) {
+          const status = exaContentsStatus(data);
+          throw new Error(`Exa contents returned no usable content${status?.tag ? ` (${status.tag})` : ""}.`);
+        }
         let fallback: unknown;
         let directStatus: number;
         try {
@@ -474,12 +522,12 @@ export class ProviderExecutor {
         return {
           data: fallback,
           sourceUrl: url,
-          costUsd: this.exaCost(data).costUsd,
-          costSource: this.exaCost(data).costSource,
+          costUsd: this.exaContentsCost(data).costUsd,
+          costSource: this.exaContentsCost(data).costSource,
           status: directStatus!,
           artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: fallback, status: directStatus!, provenance: { captureMethod: "DIRECT_PUBLIC_FALLBACK", exaContents: "UNUSABLE" } }],
         };
-      });
+      }, this.exaContentsConfiguredCost());
     }
     return this.call(request, context, capability, "public-fetch", "public-fetch", { url }, async (signal) => {
       const response = await safePublicFetch(url, { headers: { "user-agent": this.publicUserAgent() }, signal });
@@ -703,6 +751,24 @@ export class ProviderExecutor {
     return typeof cost === "number" && Number.isFinite(cost) && cost >= 0
       ? { costUsd: cost, costSource: "REPORTED" }
       : { costUsd: 0, costSource: "UNKNOWN" };
+  }
+
+  private exaSearchConfiguredCost(mode: WebSearchMode): Pick<ProviderNetworkResult, "costUsd" | "costSource"> {
+    return { costUsd: exaSearchConfiguredCosts[mode], costSource: "CONFIGURED" };
+  }
+
+  private exaSearchCost(mode: WebSearchMode, value: unknown): Pick<ProviderNetworkResult, "costUsd" | "costSource"> {
+    const reported = this.exaCost(value);
+    return reported.costSource === "UNKNOWN" ? this.exaSearchConfiguredCost(mode) : reported;
+  }
+
+  private exaContentsConfiguredCost(): Pick<ProviderNetworkResult, "costUsd" | "costSource"> {
+    return { costUsd: exaContentsConfiguredCost, costSource: "CONFIGURED" };
+  }
+
+  private exaContentsCost(value: unknown): Pick<ProviderNetworkResult, "costUsd" | "costSource"> {
+    const reported = this.exaCost(value);
+    return reported.costSource === "UNKNOWN" ? this.exaContentsConfiguredCost() : reported;
   }
 
   private firstRecord(value: unknown): Record<string, unknown> | undefined {

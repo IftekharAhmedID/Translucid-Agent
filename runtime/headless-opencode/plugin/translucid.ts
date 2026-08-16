@@ -88,11 +88,15 @@ const plugin: Plugin = async () => {
   const sessionWaves = new Map<string, Wave>();
   const deepSearchCounts = new Map<string, { deep: number; deepReasoning: number }>();
   const sessionSourceRefs = new Map<string, Set<string>>();
+  const publicationSessions = new Set<string>();
   let totalChildren = 0;
   let targetedChildren = 0;
   let targetedStarted = false;
 
   async function execute(name: string, args: unknown, context: { sessionID: string; agent: string; callID?: string; abort: AbortSignal }) {
+    if (publicationSessions.has(context.sessionID) && name === "task") {
+      throw new Error("Drafting and auditing phases deny specialist delegation.");
+    }
     if (repairSessions.has(context.sessionID) && name !== "source.excerpts") {
       throw new Error(`Memo repair mode denies ${name}; only source.excerpts is allowed.`);
     }
@@ -189,6 +193,9 @@ const plugin: Plugin = async () => {
     },
     "chat.message": async (input, output) => {
       const text = output.parts.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n").trim();
+      if (/stay in this lead session and draft|publishing-only recovery|perform a separate adversarial audit/i.test(text)) {
+        publicationSessions.add(input.sessionID);
+      }
       const wave = text.match(/\bWAVE:\s*(INITIAL|TARGETED)\b/i)?.[1]?.toLocaleUpperCase("en-US") as Wave | undefined;
       if (wave) sessionWaves.set(input.sessionID, wave);
       if (assignments.has(input.sessionID)) return;
@@ -197,6 +204,7 @@ const plugin: Plugin = async () => {
     tool: tools,
     "tool.execute.before": async (input, output) => {
       if (input.tool !== "task") return;
+      if (publicationSessions.has(input.sessionID)) throw new Error("Drafting and auditing phases deny specialist delegation.");
       const role = output.args?.subagent_type;
       if (!specialistRole(role)) return;
       const prompt = taskPrompt(output.args ?? {});

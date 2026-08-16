@@ -147,6 +147,18 @@ test("initial specialists cannot use deep search and targeted depth is bounded",
   }
 });
 
+test("publication prompts deny native specialist delegation", async () => {
+  const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
+  const hooks = await plugin({} as Parameters<typeof plugin>[0]);
+  const chat = hooks["chat.message"]!;
+  const before = hooks["tool.execute.before"]!;
+  await chat({ sessionID: "lead-publication" }, { message: {} as never, parts: [{ type: "text", text: "Research is complete. Stay in this lead session and draft the investigation." }] as never });
+  await assert.rejects(before(
+    { tool: "task", sessionID: "lead-publication", callID: "blocked-task" },
+    { args: { subagent_type: "professional-researcher", prompt: "WAVE: TARGETED\nMATERIAL PREDICATE: gap\nCURRENT EVIDENCE: [S1]\nMISSING EVIDENCE LANE: authority\nSTOP CONDITION: exhausted." } },
+  ), /deny specialist delegation/i);
+});
+
 test("unknown memo citations enter the same bounded repair path", async () => {
   const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
   const hooks = await plugin({} as Parameters<typeof plugin>[0]);
