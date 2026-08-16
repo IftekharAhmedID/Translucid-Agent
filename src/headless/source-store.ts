@@ -349,7 +349,7 @@ export class FileSourceStore {
     const limit = Math.min(Math.max(input.limit ?? 20, 1), 50);
     const allowed = input.sourceRefs ? new Set(input.sourceRefs) : undefined;
     if (allowed) {
-      for (const ref of allowed) if (!/^S[1-9]\\d*$/.test(ref)) throw new Error(`Invalid source reference ${ref}.`);
+      for (const ref of allowed) if (!/^S[1-9]\d*$/.test(ref)) throw new Error(`Invalid source reference ${ref}.`);
     }
     const candidates: Array<SourceIndexResult & { matchedCount: number; totalMatches: number }> = [];
     for (const source of await this.list()) {

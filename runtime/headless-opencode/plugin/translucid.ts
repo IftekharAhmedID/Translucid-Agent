@@ -99,6 +99,7 @@ const plugin: Plugin = async () => {
   const assignments = new Map<string, string>();
   const sessionWaves = new Map<string, Wave>();
   const deepSearchCounts = new Map<string, { deep: number; deepReasoning: number }>();
+  const leadDeepSearchCounts = new Map<string, { deep: number; deepReasoning: number }>();
   const sessionSourceRefs = new Map<string, Set<string>>();
   const publicationSessions = new Set<string>();
   let totalChildren = 0;
@@ -128,6 +129,17 @@ const plugin: Plugin = async () => {
         if (mode === "deep") counts.deep += 1;
         if (mode === "deep-reasoning") counts.deepReasoning += 1;
         deepSearchCounts.set(context.sessionID, counts);
+      }
+    }
+    if (name === "web.search" && context.agent === "lead-researcher") {
+      const mode = (args as { mode?: string }).mode ?? "auto";
+      if (mode === "deep" || mode === "deep-reasoning") {
+        const counts = leadDeepSearchCounts.get(context.sessionID) ?? { deep: 0, deepReasoning: 0 };
+        if (mode === "deep" && counts.deep >= 2) throw new Error("The lead may use at most two deep searches.");
+        if (mode === "deep-reasoning" && (counts.deepReasoning >= 1 || counts.deep < 1)) throw new Error("Lead deep-reasoning requires one prior deep search and is allowed at most once.");
+        if (mode === "deep") counts.deep += 1;
+        if (mode === "deep-reasoning") counts.deepReasoning += 1;
+        leadDeepSearchCounts.set(context.sessionID, counts);
       }
     }
     const response = await fetch(`${configuredGatewayUrl}/internal/tools/execute`, {

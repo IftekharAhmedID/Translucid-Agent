@@ -35,7 +35,7 @@ export function draftingPrompt(): string {
 3. Walk /workspace/case/input/document.json from the first page to the last. Register every important factual résumé assertion with report.finding.upsert. There is no target count.
 4. Use one coherent assertion per finding: combine employer, title, location, and interval when they share one evidence conclusion; split unrelated duties, projects, talks, credentials, affiliations, awards, or publications.
 5. Use stable IDs F001, F002, and so on. On repair, reuse the same ID.
-6. Copy anchor.exact from the specified page and line range. Cite only captured S references already present in this investigation.
+6. Copy anchor.exact from the specified page and line range. Use source.index for local recovery when a useful captured source was omitted from a memo, then use source.excerpts for exact wording. Cite only captured S references.
 7. Write a direct evidence synthesis, not a bibliography dump. Use notes only for a useful caveat.
 8. Assign exactly one investigator-owned status: 2 fully corroborated; 1 corroborated with a minor caveat; 0 unclear or insufficient credible public evidence; -1 materially inconsistent; -2 directly contradicted by multiple credible sources. Unresolved is not false.
 9. Call report.progress.get again and compare it with your research coverage checklist and every résumé section. Repair omissions, duplicates, over-broad findings, anchors, and source references with upsert/remove.
@@ -51,7 +51,7 @@ export function publishingPrompt(): string {
 export function auditingPrompt(): string {
   return `Research is complete and the draft is complete. Perform a separate adversarial audit in this same lead session. Do not call providers, delegate, or restart research.
 
-1. Call report.progress.get and inspect every draft finding against /workspace/case/input/document.json, the durable specialist memos, and the captured S references already in context.
+1. Call report.progress.get and inspect every draft finding against /workspace/case/input/document.json, the durable specialist memos, the complete notebook/ledgers, and the frozen captured-source corpus. Use source.index and source.excerpts for local recovery only.
 2. Split any compound finding whose material facets have different evidence, especially entity, role, dates, present status, location, duties, skills, and credentials.
 3. Treat résumé, LinkedIn, personal-site, and candidate-written institutional pages as one candidate-origin family unless institutional authorship is evident. Do not call repeated URLs independent corroboration.
 4. Challenge every status 2. Require direct authoritative support or genuinely independent strong evidence for every material facet. Downgrade incomplete identity/date fit or candidate-family-only support to 0.
@@ -64,9 +64,9 @@ The backend validates structure and captured references only. You own the semant
 }
 
 export function recoveryPublishingPrompt(): string {
-  return `This is publishing-only recovery from completed immutable research. No provider executor is available and no provider, search, delegation, or new research call is permitted.
+  return `This is publishing-only recovery from completed immutable research. No provider executor is available and no provider, network search, delegation, or new research call is permitted. Local source.index and source.excerpts reads against the frozen corpus are permitted.
 
-Read /workspace/case/input/document.json, every completed /workspace/case/.work/memos/*.md file, and /workspace/case/sources/manifest.json. These durable artifacts replace the unavailable original conversation. Use source.excerpts only when a captured S reference needs local detail. Ignore discarded historical report artifacts and use only the current research materials plus the durable report draft.
+Read /workspace/case/input/document.json, /workspace/case/.work/investigation-recovery.md, every completed /workspace/case/.work/memos/*.md file, every /workspace/case/.work/evidence-ledgers/*.json file, and /workspace/case/sources/manifest.json. These durable artifacts replace the unavailable original conversation. Use source.index for frozen-corpus discovery and source.excerpts for exact local detail. Ignore discarded historical report artifacts and use only the current research materials plus the durable report draft.
 
 ${draftingPrompt()}`;
 }
@@ -216,13 +216,14 @@ export async function readCompletedResearchMemos(memoDirectory: string, children
     try {
       const sidecar = JSON.parse(await readFile(join(memoDirectory, file.replace(/\.md$/, ".sources.json")), "utf8")) as Record<string, unknown>;
       const ledgerPath = typeof sidecar.ledgerPath === "string" ? sidecar.ledgerPath : "";
-      const ledgerAbsolute = join(memoDirectory, "..", ledgerPath.replace(/^\.work\//, ""));
-      const ledger = await readFile(ledgerAbsolute);
+      const ledgerIsSafe = /^\.work\/evidence-ledgers\/[A-Za-z0-9_-]+\.json$/.test(ledgerPath);
+      const ledger = ledgerIsSafe ? await readFile(join(memoDirectory, "..", ledgerPath.replace(/^\.work\//, ""))) : undefined;
       accepted = sidecar.schemaVersion === 2
         && sidecar.role === memoRole
         && sidecar.sessionId === memoSessionId
         && sidecar.memoSha256 === createHash("sha256").update(memo).digest("hex")
-        && /^\.work\/evidence-ledgers\/[A-Za-z0-9_-]+\.json$/.test(ledgerPath)
+        && ledgerIsSafe
+        && ledger !== undefined
         && sidecar.ledgerSha256 === createHash("sha256").update(ledger).digest("hex")
         && Number.isInteger(sidecar.ledgerEntryCount) && Number(sidecar.ledgerEntryCount) >= 0;
     } catch {

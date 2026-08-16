@@ -36,6 +36,9 @@ test("compaction context is bounded and contains only the session's encountered 
     await search.execute({ query: "first query", mode: "fast", resultLimit: 5 }, { sessionID: "session-one", agent: "professional-researcher", abort: new AbortController().signal } as never);
     await search.execute({ query: "second query", mode: "fast", resultLimit: 5 }, { sessionID: "session-two", agent: "web-records-researcher", abort: new AbortController().signal } as never);
     await excerpts.execute({ sourceRef: "S7", queries: ["missing"] }, { sessionID: "session-one", agent: "professional-researcher", abort: new AbortController().signal } as never);
+    await mkdir(join(process.env.CASE_ROOT!, ".work"), { recursive: true });
+    await writeFile(join(process.env.CASE_ROOT!, ".work", "investigation.md"), "FULL NOTEBOOK SECRET");
+    await writeFile(join(process.env.CASE_ROOT!, ".work", "investigation-recovery.md"), "## Active claim lanes\nRecovery-only summary");
 
     const first = { context: [] as string[] };
     const second = { context: [] as string[] };
@@ -48,6 +51,8 @@ test("compaction context is bounded and contains only the session's encountered 
     assert.match(firstText, /S1/);
     assert.match(firstText, /S3/);
     assert.match(firstText, /S7/);
+    assert.match(firstText, /Recovery-only summary/);
+    assert.doesNotMatch(firstText, /FULL NOTEBOOK SECRET/);
     assert.doesNotMatch(firstText, /S2/);
     assert.match(secondText, /S2/);
     assert.doesNotMatch(secondText, /S1|S3/);
@@ -144,6 +149,24 @@ test("initial specialists cannot use deep search and targeted depth is bounded",
     await search.execute({ query: "deep once", mode: "deep" }, { sessionID: "targeted-session", agent: "web-records-researcher", abort: new AbortController().signal } as never);
     await search.execute({ query: "reason once", mode: "deep-reasoning" }, { sessionID: "targeted-session", agent: "web-records-researcher", abort: new AbortController().signal } as never);
     await assert.rejects(search.execute({ query: "deep twice", mode: "deep" }, { sessionID: "targeted-session", agent: "web-records-researcher", abort: new AbortController().signal } as never), /at most one deep/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("lead direct web escalation is bounded to two deep searches and one deep-reasoning search", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) => new Response(JSON.stringify({ sourceRefs: [], evidenceEligibleSourceRefs: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  try {
+    const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
+    const hooks = await plugin({} as Parameters<typeof plugin>[0]);
+    const search = hooks.tool!["web.search"]!;
+    const context = { sessionID: "lead-deep-session", agent: "lead-researcher", abort: new AbortController().signal } as never;
+    await search.execute({ query: "first", mode: "deep" }, context);
+    await search.execute({ query: "second", mode: "deep" }, context);
+    await search.execute({ query: "reason", mode: "deep-reasoning" }, context);
+    await assert.rejects(search.execute({ query: "third", mode: "deep" }, context), /at most two deep/i);
+    await assert.rejects(search.execute({ query: "reason again", mode: "deep-reasoning" }, context), /at most once/i);
   } finally {
     globalThis.fetch = originalFetch;
   }
