@@ -4,11 +4,16 @@ import { request as httpsRequest } from "node:https";
 import { decodeJsonToolNames, encodeModelToolNames, SseToolNameDecoder } from "./model-tool-names.ts";
 import { writeFixtureCompletion, type Completion } from "./fixture-model.ts";
 
+const modelRates: Record<string, { inputUsdPerMillion: number; outputUsdPerMillion: number }> = {
+  "deepseek-v4-flash": { inputUsdPerMillion: 0.14, outputUsdPerMillion: 0.28 },
+  "gpt-5.6-luna": { inputUsdPerMillion: 0.20, outputUsdPerMillion: 1.20 },
+};
+
 export function modelCostReservation(body: Record<string, unknown>, model: string): number {
   const estimatedInputTokens = estimateModelInputTokens(body);
   const maximumOutputTokens = Math.min(Number(body.max_tokens ?? body.max_completion_tokens ?? 32_000), 384_000);
-  void model;
-  const rates = { inputUsdPerMillion: 0.14, outputUsdPerMillion: 0.28 };
+  const rates = modelRates[model];
+  if (!rates) throw new Error(`Unsupported model pricing: ${model}`);
   return (estimatedInputTokens * rates.inputUsdPerMillion + maximumOutputTokens * rates.outputUsdPerMillion) / 1_000_000;
 }
 

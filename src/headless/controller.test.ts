@@ -42,6 +42,7 @@ test("drafts and audits in separate bounded turns", async () => {
   assert.equal(ready.state, "READY");
   assert.equal(prompts.length, 3);
   assert.match(prompts[0] ?? "", /draft/i);
+  assert.match(prompts[1] ?? "", /Continue drafting/i);
   assert.match(prompts[2] ?? "", /adversarial audit/i);
   assert.deepEqual(phases, ["DRAFTING", "AUDITING"]);
 });
@@ -60,7 +61,7 @@ test("fails closed after bounded drafting prompts", async () => {
       findings: [],
     }),
   }), /structurally complete report draft/i);
-  assert.equal(launches, 3);
+  assert.equal(launches, 2);
 });
 
 test("fails the handoff for every launched child session without exactly one accepted memo", async () => {

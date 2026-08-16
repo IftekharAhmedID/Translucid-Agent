@@ -9,10 +9,12 @@ test("model requests use one bounded timeout with a run-time safety reserve", ()
   assert.equal(modelRequestTimeoutMs(10_000), 1);
 });
 
-test("model cost reservation is model-agnostic during publishing", () => {
+test("model cost reservation uses the exact Luna and Flash rates", () => {
   const body = { messages: [{ role: "user", content: "x" }], max_tokens: 1_000 };
-  const expected = (Math.ceil(JSON.stringify(body.messages).length / 4) * 0.14 + 1_000 * 0.28) / 1_000_000;
-  assert.equal(modelCostReservation(body, "any-lead-model"), expected);
+  const inputTokens = Math.ceil(JSON.stringify(body.messages).length / 4);
+  assert.equal(modelCostReservation(body, "deepseek-v4-flash"), (inputTokens * 0.14 + 1_000 * 0.28) / 1_000_000);
+  assert.equal(modelCostReservation(body, "gpt-5.6-luna"), (inputTokens * 0.20 + 1_000 * 1.20) / 1_000_000);
+  assert.throws(() => modelCostReservation(body, "unknown-model"), /Unsupported model pricing: unknown-model/);
 });
 
 test("upstream headers use the host API key", () => {

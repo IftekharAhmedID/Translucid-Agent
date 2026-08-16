@@ -33,14 +33,11 @@ const contextSchema = z.object({
 
 const searchText = z.string().trim().min(2).max(1_000);
 const httpUrl = z.url().refine((value) => ["http:", "https:"].includes(new URL(value).protocol));
-const searchDomainPattern = /^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/;
+const searchDomainPattern = /^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/;
 const includeDomainsSchema = z.array(z.string().trim().min(1).max(500).regex(searchDomainPattern))
   .min(1)
   .max(10)
-  .transform((values) => [...new Set(values.map((value) => {
-    const slash = value.indexOf("/");
-    return slash < 0 ? value.toLocaleLowerCase("en-US") : `${value.slice(0, slash).toLocaleLowerCase("en-US")}${value.slice(slash)}`;
-  }))].sort());
+  .transform((values) => [...new Set(values.map((value) => value.toLocaleLowerCase("en-US")))].sort());
 const webSearchSchema = contextSchema.extend({
   query: searchText,
   mode: webSearchModeSchema.default("auto"),

@@ -28,17 +28,17 @@ test("headless provider requests contain only network-semantic arguments", () =>
   }));
 });
 
-test("web search normalizes a bounded official-domain filter", () => {
+test("web search accepts only normalized hostnames in official-domain filters", () => {
   const parsed = parseHeadlessToolRequest({
     tool: "web.search",
     arguments: {
       query: "Exact Candidate Name",
-      includeDomains: ["Directory.Example.EDU/faculty", "*.example.edu", "directory.example.edu/faculty"],
+      includeDomains: ["Directory.Example.EDU", "*.example.edu", "directory.example.edu"],
     },
   });
   assert.equal(parsed.tool, "web.search");
-  assert.deepEqual(parsed.arguments.includeDomains, ["*.example.edu", "directory.example.edu/faculty"]);
-  for (const includeDomains of [[], ["https://example.edu"], ["example.edu?query=x"], ["not a hostname"], Array.from({ length: 11 }, (_, index) => `d${index}.example.edu`)]) {
+  assert.deepEqual(parsed.arguments.includeDomains, ["*.example.edu", "directory.example.edu"]);
+  for (const includeDomains of [[], ["https://example.edu"], ["example.edu/faculty"], ["example.edu?query=x"], ["not a hostname"], Array.from({ length: 11 }, (_, index) => `d${index}.example.edu`)]) {
     assert.throws(() => parseHeadlessToolRequest({ tool: "web.search", arguments: { query: "Exact Candidate Name", includeDomains } }));
   }
 });

@@ -81,12 +81,12 @@ export async function driveReportPublishing(input: {
   let progress = await input.progress();
   if (progress.state !== "OPEN") return progress;
   input.beginDrafting?.();
-  for (let attempt = 0; attempt < 3 && !draftReady(progress); attempt += 1) {
+  for (let attempt = 0; attempt < 2 && !draftReady(progress); attempt += 1) {
     await input.launch(attempt === 0 ? input.initialPrompt ?? draftingPrompt() : "Continue drafting the existing report. Call report.progress.get, complete the summary and remaining résumé findings, repair anchors and sources, and stop without report.finalize. Do not restart research or call providers.");
     await input.waitUntilIdle();
     progress = await input.progress();
   }
-  if (!draftReady(progress)) throw new Error("Lead investigator did not produce a structurally complete report draft after three bounded drafting prompts.");
+  if (!draftReady(progress)) throw new Error("Lead investigator did not produce a structurally complete report draft after two bounded drafting prompts.");
   input.beginAuditing?.();
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await input.launch(attempt === 0 ? auditingPrompt() : "Continue the adversarial audit. Repair remaining findings and summary issues, call report.progress.get, and call report.finalize when the draft is calibrated. Do not restart research or call providers.");
