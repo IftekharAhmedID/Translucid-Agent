@@ -132,4 +132,6 @@ test("latches terminal Exa failures and prevents repeated web calls", async () =
   assert.equal((await executor.executeHeadless({ tool: "web.search", arguments: { query: "first" } }, context)).status, "BUDGET_EXHAUSTED");
   assert.equal((await executor.executeHeadless({ tool: "web.search", arguments: { query: "second" } }, context)).status, "BUDGET_EXHAUSTED");
   assert.equal(calls, 1);
+  assert.equal(executor.terminalProviderFailure?.route, "exa.search");
+  assert.equal(executor.terminalProviderFailure?.mode, "auto");
 });

@@ -67,6 +67,7 @@ export class ProviderHttpError extends Error {
 export type TerminalProviderFailure = {
   provider: string;
   route: string;
+  mode?: WebSearchMode;
   status: number;
   requestId?: string;
   tag?: string;
@@ -201,7 +202,7 @@ function terminalFailure(error: unknown, provider: string, route: string): Termi
   const errorProvider = (error as { provider?: unknown })?.provider;
   if (typeof errorProvider === "string" && errorProvider !== provider) return undefined;
   if (!(error instanceof ProviderHttpError) || !terminalProviderStatuses.has(error.status)) return undefined;
-  return { provider, route, status: error.status, requestId: error.requestId, tag: error.tag, message: error.message };
+  return { provider, route: error.route ?? route, ...(error.mode ? { mode: error.mode } : {}), status: error.status, requestId: error.requestId, tag: error.tag, message: error.message };
 }
 
 async function apiFetch(url: string, init: RequestInit, onAttempt?: (attempt: number) => void): Promise<unknown> {
