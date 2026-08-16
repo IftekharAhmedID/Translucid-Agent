@@ -47,6 +47,8 @@ export class ProviderHttpError extends Error {
   readonly tag?: string;
   readonly retryAfter?: string;
   readonly detail?: string;
+  route?: string;
+  mode?: WebSearchMode;
 
   constructor(input: { status: number; requestId?: string; tag?: string; retryAfter?: string; detail?: string }) {
     const suffix = [input.tag && `tag=${input.tag}`, input.requestId && `requestId=${input.requestId}`, input.detail && `detail=${input.detail}`]
@@ -381,6 +383,20 @@ export class ProviderExecutor {
     const capability = capabilityForRequest(request);
     const entry = this.registry[capability];
     if (!["READY", "READY_FIXTURE", "DEGRADED"].includes(entry.state)) return unavailableResult(capability);
+    if (this.terminalFailure?.provider === "exa" && request.tool.startsWith("web.")) {
+      const terminal = this.terminalFailure;
+      return {
+        status: terminal.status === 402 ? "BUDGET_EXHAUSTED" : "CAPABILITY_UNAVAILABLE",
+        capability,
+        provider: "gateway",
+        data: { message: `Provider readiness failed; Exa calls are latched off. ${terminal.message}` },
+        artifactIds: [],
+        evidenceEligibleArtifactIds: [],
+        observedAt: new Date().toISOString(),
+        costUsd: 0,
+        costSource: "UNKNOWN",
+      };
+    }
     if (request.tool === "social.profile" && !shouldAllowSocialResearch(request.arguments.reason)) return unavailableResult(capability);
     const pool = this.pools.get(request.tool);
     if (!pool) throw new Error("Provider semaphore is missing.");
@@ -714,7 +730,16 @@ export class ProviderExecutor {
   }
 
   private async executeProviderCall(input: Parameters<ProviderCallBackend>[0]): Promise<ConcreteProviderResult> {
-    return this.callBackend(input);
+    try {
+      return await this.callBackend(input);
+    } catch (error) {
+      if (error instanceof ProviderHttpError) {
+        error.route = input.providerRoute;
+        const mode = input.networkArguments.type;
+        if (mode === "fast" || mode === "auto" || mode === "deep" || mode === "deep-reasoning") error.mode = mode;
+      }
+      throw error;
+    }
   }
 
   private combine(results: ConcreteProviderResult[], data: unknown): ConcreteProviderResult {

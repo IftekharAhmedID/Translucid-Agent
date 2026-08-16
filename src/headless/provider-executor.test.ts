@@ -120,3 +120,16 @@ test("fails the live readiness probe closed on terminal Exa errors", async () =>
   assert.equal(executor.terminalProviderFailure?.status, 402);
   assert.throws(() => executor.assertReadyForPublication(), /Provider readiness failed/);
 });
+
+test("latches terminal Exa failures and prevents repeated web calls", async () => {
+  let calls = 0;
+  const backend: ProviderCallBackend = async () => {
+    calls += 1;
+    throw new ProviderHttpError({ status: 402, requestId: "req_credits", tag: "NO_CREDITS", detail: "credits exhausted" });
+  };
+  const executor = new ProviderExecutor({ PROVIDER_MODE: "live", EXA_API_KEY: "test-key" }, backend);
+  const context = { runId: "run", agent: "web-records-researcher", sessionId: "session" };
+  assert.equal((await executor.executeHeadless({ tool: "web.search", arguments: { query: "first" } }, context)).status, "BUDGET_EXHAUSTED");
+  assert.equal((await executor.executeHeadless({ tool: "web.search", arguments: { query: "second" } }, context)).status, "BUDGET_EXHAUSTED");
+  assert.equal(calls, 1);
+});
