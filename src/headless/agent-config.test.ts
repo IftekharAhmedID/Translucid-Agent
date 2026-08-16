@@ -28,7 +28,7 @@ test("headless runtime loads one plugin and keeps shell/edit tools disabled", as
   assert.equal(config.tools.edit, false);
   assert.equal(config.tools.write, false);
   assert.ok(config.provider.translucid.options.timeout >= 360_000);
-  assert.equal(config.provider.translucid.models["gpt-5.6-luna"].npm, "@ai-sdk/openai");
+  assert.equal(config.provider.translucid.models["gpt-5.6-luna"].provider.npm, "@ai-sdk/openai");
   assert.equal(config.provider.translucid.npm, "@ai-sdk/openai-compatible");
   assert.deepEqual(config.provider.translucid.models["gpt-5.6-luna"].variants, { xhigh: { reasoningEffort: "xhigh" } });
   assert.deepEqual(config.provider.translucid.models["deepseek-v4-flash"].variants, { xhigh: { reasoningEffort: "xhigh" } });
