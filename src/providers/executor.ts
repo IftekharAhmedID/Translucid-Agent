@@ -56,6 +56,19 @@ const defaultToolCeilings: Record<ToolName, number> = {
   "security_records.search": 100,
 };
 
+const deepSearchSystemPrompt = `Professional verification research.
+
+Prioritize distinct primary, institutional, employer,
+technical, governance, contemporaneous, and independent
+records.
+
+Prefer original records over summaries and contemporaneous
+records for historical claims. Avoid duplicate, mirrored,
+syndicated, or biography-derived sources where independence
+is requested.
+
+Return materially different evidence routes, not repetitions.`;
+
 const ceilingEnvironmentKeys: Record<ToolName, string> = {
   "web.search": "WEB_SEARCH_CEILING",
   "web.fetch": "WEB_FETCH_CEILING",
@@ -341,6 +354,11 @@ export class ProviderExecutor {
       type: request.arguments.mode,
       numResults: request.arguments.resultLimit,
       ...(request.arguments.includeDomains ? { includeDomains: request.arguments.includeDomains } : {}),
+      ...(request.arguments.additionalQueries ? { additionalQueries: request.arguments.additionalQueries } : {}),
+      ...(request.arguments.excludeDomains ? { excludeDomains: request.arguments.excludeDomains } : {}),
+      ...(request.arguments.startPublishedDate ? { startPublishedDate: request.arguments.startPublishedDate } : {}),
+      ...(request.arguments.endPublishedDate ? { endPublishedDate: request.arguments.endPublishedDate } : {}),
+      ...(["deep", "deep-reasoning"].includes(request.arguments.mode) ? { systemPrompt: deepSearchSystemPrompt } : {}),
       contents: {
         highlights: { query: request.arguments.highlightQuery, maxCharacters: 800 },
       },

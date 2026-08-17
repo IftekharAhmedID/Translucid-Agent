@@ -3,6 +3,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { tool } from "@opencode-ai/plugin";
 
 process.env.CASE_GATEWAY_URL = "http://gateway.test";
 process.env.CASE_TOKEN = "test-token";
@@ -44,7 +45,7 @@ test("compaction context preserves refs and route history and directs ledger rec
   }
 });
 
-test("web fetch forwards optional focus and search defaults to ten results", async () => {
+test("web fetch forwards optional focus and the plugin forwards material search controls", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ tool: string; arguments?: Record<string, unknown> }> = [];
   globalThis.fetch = async (_input, init) => {
@@ -55,9 +56,14 @@ test("web fetch forwards optional focus and search defaults to ten results", asy
   try {
     const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
     const hooks = await plugin({} as Parameters<typeof plugin>[0]);
-    await hooks.tool!["web.search"]!.execute({ query: "ten results", mode: "auto", resultLimit: 10 }, { sessionID: "search-session", agent: "lead-researcher", abort: new AbortController().signal } as never);
+    const searchValues = tool.schema.object(hooks.tool!["web.search"]!.args).parse({ query: "ten results", mode: "deep", resultLimit: 10, additionalQueries: ["ten results history"], excludeDomains: ["LinkedIn.COM"], startPublishedDate: "2020-01-01T00:00:00Z", endPublishedDate: "2021-01-01T00:00:00.000Z" });
+    await hooks.tool!["web.search"]!.execute(searchValues, { sessionID: "search-session", agent: "lead-researcher", abort: new AbortController().signal } as never);
     await hooks.tool!["web.fetch"]!.execute({ url: "https://example.test/record", focus: "employment date" }, { sessionID: "fetch-session", agent: "lead-researcher", abort: new AbortController().signal } as never);
     assert.equal(calls[0]?.arguments?.resultLimit, 10);
+    assert.deepEqual(calls[0]?.arguments?.additionalQueries, ["ten results history"]);
+    assert.deepEqual(calls[0]?.arguments?.excludeDomains, ["linkedin.com"]);
+    assert.equal(calls[0]?.arguments?.startPublishedDate, "2020-01-01T00:00:00.000Z");
+    assert.equal(calls[0]?.arguments?.endPublishedDate, "2021-01-01T00:00:00.000Z");
     assert.equal(calls[1]?.arguments?.focus, "employment date");
   } finally {
     globalThis.fetch = originalFetch;

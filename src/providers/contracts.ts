@@ -32,29 +32,95 @@ const contextSchema = z.object({
 const searchText = z.string().trim().min(2).max(1_000);
 const httpUrl = z.url().refine((value) => ["http:", "https:"].includes(new URL(value).protocol));
 const searchDomainPattern = /^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/;
-const includeDomainsSchema = z.array(z.string().trim().min(1).max(500).regex(searchDomainPattern))
-  .min(1)
-  .max(10)
-  .transform((values) => [...new Set(values.map((value) => {
+const searchModeSchema = z.enum(["fast", "auto", "deep", "deep-reasoning"]);
+
+function normalizeSearchDomains(values: string[]): string[] {
+  return [...new Set(values.map((value) => {
     const slash = value.indexOf("/");
     return slash < 0 ? value.toLocaleLowerCase("en-US") : `${value.slice(0, slash).toLocaleLowerCase("en-US")}${value.slice(slash)}`;
-  }))].sort());
-const webSearchSchema = contextSchema.extend({
+  }))].sort();
+}
+
+const searchDomainsSchema = z.array(z.string().trim().min(1).max(500).regex(searchDomainPattern))
+  .min(1)
+  .max(10)
+  .transform(normalizeSearchDomains);
+const utcTimestampSchema = z.iso.datetime({ offset: true })
+  .refine((value) => value.endsWith("Z") && !Number.isNaN(Date.parse(value)), "Expected an ISO-8601 UTC timestamp.")
+  .refine((value) => {
+    const date = new Date(value);
+    return date.toISOString().slice(0, 10) === value.slice(0, 10);
+  }, "Expected a valid UTC calendar date.")
+  .transform((value) => new Date(value).toISOString());
+
+type SearchRoute = {
+  query: string;
+  mode: z.infer<typeof searchModeSchema>;
+  additionalQueries?: string[];
+  includeDomains?: string[];
+  excludeDomains?: string[];
+  startPublishedDate?: string;
+  endPublishedDate?: string;
+};
+
+function normalizedSearchQuery(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
+}
+
+function domainsOverlap(left: string, right: string): boolean {
+  const split = (value: string) => {
+    const slash = value.indexOf("/");
+    return { host: slash < 0 ? value : value.slice(0, slash), path: slash < 0 ? "" : value.slice(slash) };
+  };
+  const leftParts = split(left);
+  const rightParts = split(right);
+  const matches = (pattern: string, host: string) => pattern.startsWith("*.") ? host.endsWith(`.${pattern.slice(2)}`) : pattern === host;
+  const hostsOverlap = matches(leftParts.host, rightParts.host) || matches(rightParts.host, leftParts.host);
+  const pathsOverlap = !leftParts.path || !rightParts.path || leftParts.path === rightParts.path
+    || leftParts.path.startsWith(`${rightParts.path}/`) || rightParts.path.startsWith(`${leftParts.path}/`);
+  return hostsOverlap && pathsOverlap;
+}
+
+function searchRouteErrors(value: SearchRoute): Array<{ path: string[]; message: string }> {
+  const errors: Array<{ path: string[]; message: string }> = [];
+  if (value.additionalQueries && !["deep", "deep-reasoning"].includes(value.mode)) {
+    errors.push({ path: ["additionalQueries"], message: "additionalQueries require deep or deep-reasoning mode." });
+  }
+  if (value.additionalQueries?.some((query) => normalizedSearchQuery(query) === normalizedSearchQuery(value.query))) {
+    errors.push({ path: ["additionalQueries"], message: "additionalQueries cannot duplicate the primary query." });
+  }
+  if (value.includeDomains?.some((domain) => value.excludeDomains?.some((excluded) => domainsOverlap(domain, excluded)))) {
+    errors.push({ path: ["excludeDomains"], message: "includeDomains and excludeDomains cannot overlap." });
+  }
+  if (value.startPublishedDate && value.endPublishedDate && value.startPublishedDate > value.endPublishedDate) {
+    errors.push({ path: ["endPublishedDate"], message: "endPublishedDate must not precede startPublishedDate." });
+  }
+  return errors;
+}
+
+function validateSearchRoute(value: SearchRoute, context: { addIssue(issue: { code: "custom"; path: string[]; message: string }): void }): void {
+  for (const issue of searchRouteErrors(value)) context.addIssue({ code: "custom", ...issue });
+}
+
+const webSearchArguments = {
   query: searchText,
-  mode: z.enum(["fast", "auto", "deep", "deep-reasoning"]).default("auto"),
+  mode: searchModeSchema.default("auto"),
   highlightQuery: searchText.optional(),
   resultLimit: z.number().int().min(1).max(10).default(10),
-  includeDomains: includeDomainsSchema.optional(),
-}).transform((value) => ({ ...value, highlightQuery: value.highlightQuery ?? value.query }));
+  includeDomains: searchDomainsSchema.optional(),
+  additionalQueries: z.array(searchText).min(1).max(6).optional(),
+  excludeDomains: searchDomainsSchema.optional(),
+  startPublishedDate: utcTimestampSchema.optional(),
+  endPublishedDate: utcTimestampSchema.optional(),
+};
+const webSearchSchema = contextSchema.extend(webSearchArguments)
+  .superRefine((value, context) => validateSearchRoute(value, context))
+  .transform((value) => ({ ...value, highlightQuery: value.highlightQuery ?? value.query }));
 
 const headlessSchemas = {
-  "web.search": z.object({
-    query: searchText,
-    mode: z.enum(["fast", "auto", "deep", "deep-reasoning"]).default("auto"),
-    highlightQuery: searchText.optional(),
-    resultLimit: z.number().int().min(1).max(10).default(10),
-    includeDomains: includeDomainsSchema.optional(),
-  }).strict().transform((value) => ({ ...value, highlightQuery: value.highlightQuery ?? value.query })),
+  "web.search": z.object(webSearchArguments).strict()
+    .superRefine((value, context) => validateSearchRoute(value, context))
+    .transform((value) => ({ ...value, highlightQuery: value.highlightQuery ?? value.query })),
   "web.fetch": z.object({ url: httpUrl, focus: searchText.optional() }).strict(),
   "professional.profile": z.object({ username: z.string().trim().min(2).max(200), requiredMaterialField: professionalMaterialFieldSchema.default("IDENTITY") }).strict(),
   "professional.activity": z.object({ username: z.string().trim().min(2).max(200) }).strict(),

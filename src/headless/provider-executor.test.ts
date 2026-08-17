@@ -37,7 +37,7 @@ test("runs provider adapters headlessly without database or research-state argum
   }
 });
 
-test("forwards normalized includeDomains to the Exa search request only when supplied", async () => {
+test("forwards normalized Exa material-route controls and a host-owned deep prompt", async () => {
   const networkArguments: Array<Record<string, unknown>> = [];
   const backend: ProviderCallBackend = async (input) => {
     networkArguments.push(input.networkArguments);
@@ -56,12 +56,26 @@ test("forwards normalized includeDomains to the Exa search request only when sup
   const executor = new ProviderExecutor({ PROVIDER_MODE: "live", EXA_API_KEY: "test-key" }, backend);
   const context = { runId: "run-headless", agent: "lead-researcher", sessionId: "session-headless" };
 
-  await executor.executeHeadless({ tool: "web.search", arguments: { query: "Exact Candidate Name", mode: "deep", includeDomains: ["Rowan.Example.EDU", "*.example.edu"] } }, context);
+  await executor.executeHeadless({ tool: "web.search", arguments: {
+    query: "Exact Candidate Name",
+    mode: "deep",
+    additionalQueries: ["Exact Candidate Name Arm"],
+    includeDomains: ["Rowan.Example.EDU", "*.example.edu"],
+    excludeDomains: ["LinkedIn.COM"],
+    startPublishedDate: "2020-01-02T03:04:05Z",
+    endPublishedDate: "2021-01-02T03:04:05.123Z",
+  } }, context);
   await executor.executeHeadless({ tool: "web.search", arguments: { query: "Exact Candidate Name without filter" } }, context);
 
   assert.deepEqual(networkArguments[0]?.includeDomains, ["*.example.edu", "rowan.example.edu"]);
+  assert.deepEqual(networkArguments[0]?.additionalQueries, ["Exact Candidate Name Arm"]);
+  assert.deepEqual(networkArguments[0]?.excludeDomains, ["linkedin.com"]);
+  assert.equal(networkArguments[0]?.startPublishedDate, "2020-01-02T03:04:05.000Z");
+  assert.equal(networkArguments[0]?.endPublishedDate, "2021-01-02T03:04:05.123Z");
+  assert.equal(networkArguments[0]?.systemPrompt, "Professional verification research.\n\nPrioritize distinct primary, institutional, employer,\ntechnical, governance, contemporaneous, and independent\nrecords.\n\nPrefer original records over summaries and contemporaneous\nrecords for historical claims. Avoid duplicate, mirrored,\nsyndicated, or biography-derived sources where independence\nis requested.\n\nReturn materially different evidence routes, not repetitions.");
   assert.equal(networkArguments[0]?.type, "deep");
   assert.equal("includeDomains" in networkArguments[1]!, false);
+  assert.equal("systemPrompt" in networkArguments[1]!, false);
 });
 
 test("qualification mode removes per-tool numeric provider ceilings", async () => {

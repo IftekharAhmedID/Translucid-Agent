@@ -2,11 +2,15 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 
 const z = tool.schema;
-const includeDomains = z.array(z.string().trim().min(1).max(500).regex(/^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/)).min(1).max(10)
+const searchDomains = z.array(z.string().trim().min(1).max(500).regex(/^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/)).min(1).max(10)
   .transform((values) => [...new Set(values.map((value) => {
     const slash = value.indexOf("/");
     return slash < 0 ? value.toLocaleLowerCase("en-US") : `${value.slice(0, slash).toLocaleLowerCase("en-US")}${value.slice(slash)}`;
   }))].sort());
+const utcTimestamp = z.iso.datetime({ offset: true })
+  .refine((value) => value.endsWith("Z") && !Number.isNaN(Date.parse(value)), "Expected an ISO-8601 UTC timestamp.")
+  .refine((value) => new Date(value).toISOString().slice(0, 10) === value.slice(0, 10), "Expected a valid UTC calendar date.")
+  .transform((value) => new Date(value).toISOString());
 const gatewayUrl = process.env.CASE_GATEWAY_URL;
 const token = process.env.CASE_TOKEN;
 const runId = process.env.RUN_ID;
@@ -111,7 +115,7 @@ const plugin: Plugin = async () => {
   }
 
   const tools = {
-    "web.search": gatewayTool("web.search", "Search public sources. Every captured result has an immutable S reference; search results are leads and not report citations.", { query: z.string().min(2).max(1000), mode: z.enum(["fast", "auto", "deep", "deep-reasoning"]).default("auto"), highlightQuery: z.string().min(2).max(1000).optional(), resultLimit: z.number().int().min(1).max(10).default(10), includeDomains: includeDomains.optional() }),
+    "web.search": gatewayTool("web.search", "Search public sources. Every captured result has an immutable S reference; search results are leads and not report citations.", { query: z.string().trim().min(2).max(1000), mode: z.enum(["fast", "auto", "deep", "deep-reasoning"]).default("auto"), highlightQuery: z.string().trim().min(2).max(1000).optional(), resultLimit: z.number().int().min(1).max(10).default(10), includeDomains: searchDomains.optional(), additionalQueries: z.array(z.string().trim().min(2).max(1000)).min(1).max(6).optional(), excludeDomains: searchDomains.optional(), startPublishedDate: utcTimestamp.optional(), endPublishedDate: utcTimestamp.optional() }),
     "web.fetch": gatewayTool("web.fetch", "Capture one direct investigation lead as an immutable source. Add focus when a claim or gap should guide the returned preview.", { url: z.string().url(), focus: z.string().min(2).max(1000).optional() }),
     "professional.profile": gatewayTool("professional.profile", "Retrieve one professional profile for a material identity or chronology question.", { username: z.string().min(2).max(200), requiredMaterialField: z.enum(["IDENTITY", "CURRENT_POSITION", "EMPLOYMENT_HISTORY", "EDUCATION"]).default("IDENTITY") }),
     "professional.activity": gatewayTool("professional.activity", "Retrieve professional activity only for a material chronology or ownership gap.", { username: z.string().min(2).max(200) }),

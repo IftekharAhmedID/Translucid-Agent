@@ -42,3 +42,14 @@ test("domain-restricted searches have distinct provider fingerprints", () => {
   const restricted = providerRequestFingerprint("exa.search", { query: "Exact Candidate Name", includeDomains: ["example.edu"] });
   assert.notEqual(unrestricted, restricted);
 });
+
+test("material-route controls alter Exa request fingerprints", () => {
+  const base = { query: "Exact Candidate Name", type: "deep" };
+  const fingerprint = providerRequestFingerprint("exa.search", base);
+  for (const arguments_ of [
+    { ...base, additionalQueries: ["Exact Candidate Name Arm"] },
+    { ...base, excludeDomains: ["linkedin.com"] },
+    { ...base, startPublishedDate: "2020-01-01T00:00:00.000Z" },
+    { ...base, endPublishedDate: "2021-01-01T00:00:00.000Z" },
+  ]) assert.notEqual(providerRequestFingerprint("exa.search", arguments_), fingerprint);
+});

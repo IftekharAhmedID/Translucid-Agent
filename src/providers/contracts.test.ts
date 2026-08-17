@@ -68,6 +68,50 @@ test("web search normalizes a bounded official-domain filter", () => {
   }
 });
 
+test("web search restricts deep material routes and normalizes UTC date bounds", () => {
+  const deepArguments = {
+    query: "Exact Candidate Name",
+    mode: "deep" as const,
+    additionalQueries: ["Exact Candidate Name Arm", "Exact Candidate Name CPython"],
+    includeDomains: ["Arm.COM", "python.org"],
+    excludeDomains: ["LinkedIn.COM", "candidate.example"],
+    startPublishedDate: "2020-01-02T03:04:05Z",
+    endPublishedDate: "2021-01-02T03:04:05.123Z",
+  };
+  const headless = parseHeadlessToolRequest({ tool: "web.search", arguments: deepArguments });
+  if (headless.tool !== "web.search") throw new Error("Unexpected parsed tool.");
+  assert.deepEqual(headless.arguments.additionalQueries, ["Exact Candidate Name Arm", "Exact Candidate Name CPython"]);
+  assert.deepEqual(headless.arguments.excludeDomains, ["candidate.example", "linkedin.com"]);
+  assert.equal(headless.arguments.startPublishedDate, "2020-01-02T03:04:05.000Z");
+  assert.equal(headless.arguments.endPublishedDate, "2021-01-02T03:04:05.123Z");
+
+  const standard = parseToolRequest({
+    tool: "web.search",
+    arguments: {
+      ...deepArguments,
+      questionId: "11111111-1111-4111-8111-111111111111",
+      claimIds: [],
+      publicRationale: "Checking a material professional-history route.",
+    },
+  });
+  if (standard.tool !== "web.search") throw new Error("Unexpected parsed tool.");
+  assert.deepEqual(standard.arguments, { ...headless.arguments, questionId: "11111111-1111-4111-8111-111111111111", claimIds: [], publicRationale: "Checking a material professional-history route." });
+
+  const invalid = [
+    { mode: "auto", additionalQueries: ["Alternative route"] },
+    { mode: "fast", additionalQueries: ["Alternative route"] },
+    { mode: "deep", additionalQueries: [] },
+    { mode: "deep", additionalQueries: Array.from({ length: 7 }, (_, index) => `Alternative route ${index}`) },
+    { mode: "deep", additionalQueries: [" exact   candidate name "] },
+    { includeDomains: ["example.edu"], excludeDomains: ["Example.EDU"] },
+    { includeDomains: ["*.example.edu"], excludeDomains: ["team.example.edu"] },
+    { startPublishedDate: "2023-01-01T00:00:00+00:00" },
+    { startPublishedDate: "2023-02-30T00:00:00.000Z" },
+    { startPublishedDate: "2024-01-01T00:00:00.000Z", endPublishedDate: "2023-01-01T00:00:00.000Z" },
+  ];
+  for (const arguments_ of invalid) assert.throws(() => parseHeadlessToolRequest({ tool: "web.search", arguments: { query: "Exact Candidate Name", ...arguments_ } }));
+});
+
 test("tool requests require a durable question and public rationale", () => {
   assert.throws(() =>
     parseToolRequest({
