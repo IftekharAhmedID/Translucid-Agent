@@ -212,6 +212,16 @@ function nonEmpty(value: unknown): boolean {
   return Boolean(value && typeof value === "object" && Object.keys(value as Record<string, unknown>).length > 0);
 }
 
+function publicHttpUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function profileHasMaterialField(profile: Record<string, unknown>, field: ProfessionalMaterialField): boolean {
   if (field === "IDENTITY") return [profile.fullName, profile.name, profile.username, profile.publicIdentifier].some(nonEmpty);
   if (field === "CURRENT_POSITION") return [profile.currentPositions, profile.currentPosition, profile.position, profile.headline].some(nonEmpty);
@@ -371,20 +381,21 @@ export class ProviderExecutor {
       for (const candidate of results) {
         if (!candidate || typeof candidate !== "object") continue;
         const result = candidate as Record<string, unknown>;
-        if (typeof result.url !== "string" || (!nonEmpty(result.text) && !nonEmpty(result.highlights))) continue;
+        const sourceUrl = publicHttpUrl(result.url);
+        if (!sourceUrl) continue;
         const highlight = typeof result.highlights === "string"
           ? result.highlights
           : Array.isArray(result.highlights)
             ? result.highlights.filter((value): value is string => typeof value === "string").join("\n")
             : undefined;
         artifacts.push({
-          kind: "SOURCE_CONTENT",
-          sourceUrl: result.url,
+          kind: "SEARCH_DISCOVERY",
+          sourceUrl,
           ...(typeof result.title === "string" ? { title: result.title } : {}),
           ...(typeof result.publishedDate === "string" ? { date: result.publishedDate } : {}),
           ...(highlight ? { highlight } : {}),
-          content: { title: result.title, url: result.url, highlights: result.highlights, publishedDate: result.publishedDate, author: result.author },
-          provenance: { captureMethod: "EXA_INLINE_CONTENTS" },
+          content: { title: result.title, url: sourceUrl, highlights: result.highlights, publishedDate: result.publishedDate, author: result.author },
+          provenance: { captureMethod: "EXA_SEARCH_DISCOVERY" },
         });
       }
       return { data, sourceUrl: "https://api.exa.ai/search", ...this.exaCost(data), artifacts };

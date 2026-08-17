@@ -78,6 +78,59 @@ test("forwards normalized Exa material-route controls and a host-owned deep prom
   assert.equal("systemPrompt" in networkArguments[1]!, false);
 });
 
+test("keeps Exa search leads non-citable until a direct fetch captures the same URL", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-search-fetch-transition-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    const budget = new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 10, repositoryClones: 3, socialProfiles: 1 });
+    const executor = new ProviderExecutor(
+      { PROVIDER_MODE: "live", EXA_API_KEY: "test-key" },
+      createFileProviderBackend({ sourceStore, budget, deadlineAt: Date.now() + 60_000 }),
+    );
+    globalThis.fetch = async (input) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://api.exa.ai/search") {
+        return new Response(JSON.stringify({
+          results: [
+            { url: "https://example.test/a", title: "A", highlights: ["A lead"] },
+            { url: "https://example.test/b", title: "B" },
+            { url: "https://example.test/c" },
+          ],
+          output: { content: "Deep synthesis" },
+        }), { headers: { "content-type": "application/json" } });
+      }
+      if (url === "https://api.exa.ai/contents") {
+        return new Response(JSON.stringify({ results: [{ url: "https://example.test/b", title: "B", text: "Directly fetched source content" }] }), { headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    };
+
+    const context = { runId: "run-search-fetch", agent: "lead-researcher", sessionId: "session-search-fetch" };
+    const search = await executor.executeHeadless({ tool: "web.search", arguments: { query: "Exact Candidate Name", mode: "deep" } }, context);
+    assert.deepEqual(search.sourceRefs, ["S1", "S2", "S3", "S4"]);
+    assert.deepEqual(search.evidenceEligibleSourceRefs, []);
+    assert.deepEqual((await sourceStore.list()).map((source) => ({ ref: source.ref, kind: source.kind, url: source.sourceUrl })), [
+      { ref: "S1", kind: "SEARCH_DISCOVERY", url: "https://api.exa.ai/search" },
+      { ref: "S2", kind: "SEARCH_DISCOVERY", url: "https://example.test/a" },
+      { ref: "S3", kind: "SEARCH_DISCOVERY", url: "https://example.test/b" },
+      { ref: "S4", kind: "SEARCH_DISCOVERY", url: "https://example.test/c" },
+    ]);
+
+    const fetched = await executor.executeHeadless({ tool: "web.fetch", arguments: { url: "https://example.test/b" } }, context);
+    assert.deepEqual(fetched.sourceRefs, ["S5"]);
+    assert.deepEqual(fetched.evidenceEligibleSourceRefs, ["S5"]);
+    const inventory = await sourceStore.inventory();
+    assert.deepEqual(inventory.sources.filter((source) => source.url === "https://example.test/b").map((source) => ({ ref: source.ref, sourceKind: source.sourceKind, citationEligible: source.citationEligible })), [
+      { ref: "S3", sourceKind: "SEARCH_DISCOVERY", citationEligible: false },
+      { ref: "S5", sourceKind: "SOURCE_CONTENT", citationEligible: true },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("qualification mode removes per-tool numeric provider ceilings", async () => {
   let countCeiling: number | undefined;
   const backend: ProviderCallBackend = async (input) => {
