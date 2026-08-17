@@ -42,7 +42,23 @@ test("headless runtime keeps a tool-free report writer separate from its one inv
   assert.doesNotMatch(plugin, /task-memo|research\.memo\.persist|tool\.execute\.before/);
 });
 
-test("headless runtime loads the five research skills", async () => {
+test("headless runtime loads the material-investigation skills and requires the initial method", async () => {
   const skills = (await readdir(join(root, "skills"))).sort();
-  assert.deepEqual(skills, ["employment-chronology", "entity-resolution", "public-record-verification", "source-evaluation", "technical-contribution"]);
+  assert.deepEqual(skills, ["historical-footprint", "professional-investigation"]);
+
+  const lead = await readFile(join(root, "agents", "lead-researcher.md"), "utf8");
+  const contract = await readFile(join(process.cwd(), "src", "headless", "prompt-contracts.ts"), "utf8");
+  const professional = await readFile(join(root, "skills", "professional-investigation", "SKILL.md"), "utf8");
+  const historical = await readFile(join(root, "skills", "historical-footprint", "SKILL.md"), "utf8");
+
+  assert.match(lead, /load `professional-investigation`/i);
+  assert.match(contract, /load `professional-investigation`/i);
+  assert.match(professional, /at most one\s+logical employment-history baseline/i);
+  assert.match(professional, /Tier C[\s\S]*never initiate a dedicated search[\s\S]*Preserve incidental evidence/i);
+  assert.match(professional, /plausible material counter-hypothesis/i);
+  assert.match(professional, /dispositive[\s\S]*alternative would not change the judgment[\s\S]*Tier-B\/C/i);
+  assert.match(historical, /remaining Tier-A historical gap/i);
+  assert.doesNotMatch(lead, /exhaustive factual coverage checklist/i);
+  assert.doesNotMatch(contract, /complete claim checklist/i);
+  assert.doesNotMatch(professional, /at most four provider calls/i);
 });
