@@ -52,6 +52,48 @@ test("returns bounded JSON and text excerpts from captured local material", asyn
   }
 });
 
+test("keeps persisted excerpts within the durable ledger bound", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-source-long-excerpt-"));
+  try {
+    const store = await FileSourceStore.open(directory);
+    await store.capture({ kind: "SOURCE_CONTENT", provider: "fixture", providerRoute: "fixture.record", sourceUrl: "https://example.test/long", mimeType: "application/json", content: { biography: "x".repeat(10_000) }, provenance: {} });
+    const result = await store.excerpts({ sourceRef: "S1", queries: ["x"], maxCharacters: 60_000 });
+    assert.ok(result.excerpts.every(({ text }) => text.length <= 1_000));
+    const reopened = await FileSourceStore.open(directory);
+    assert.equal((await reopened.excerpts({ sourceRef: "S1", queries: ["x"], maxCharacters: 60_000 })).excerpts.length > 0, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("inventories every source kind with explicit citation eligibility and pagination", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-source-inventory-"));
+  try {
+    const store = await FileSourceStore.open(directory);
+    await store.capture({ kind: "SEARCH_DISCOVERY", provider: "exa", providerRoute: "exa.search", sourceUrl: "https://api.exa.ai/search", mimeType: "application/json", content: { query: "candidate" }, provenance: {}, title: "Search response", date: "2026-08-16", highlight: "Candidate lead" });
+    await store.capture({ kind: "SOURCE_CONTENT", provider: "exa", providerRoute: "exa.contents", sourceUrl: "https://example.test/record", mimeType: "text/plain", content: "Authoritative record", provenance: {}, title: "Record", date: "2026-08-15", highlight: "Authoritative" });
+
+    const first = await store.inventory({ limit: 1 });
+    assert.deepEqual(first.sources[0], {
+      ref: "S1",
+      url: "https://api.exa.ai/search",
+      title: "Search response",
+      date: "2026-08-16",
+      route: "exa.search",
+      highlight: "Candidate lead",
+      sourceKind: "SEARCH_DISCOVERY",
+      citationEligible: false,
+    });
+    assert.equal(first.nextCursor, "S1");
+    const second = await store.inventory({ cursor: first.nextCursor ?? undefined });
+    assert.equal(second.sources[0]?.ref, "S2");
+    assert.equal(second.sources[0]?.citationEligible, true);
+    assert.equal(second.nextCursor, null);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("loads historical manifests while ignoring extra semantic fields", async () => {
   const directory = await mkdtemp(join(tmpdir(), "translucid-source-historical-"));
   try {

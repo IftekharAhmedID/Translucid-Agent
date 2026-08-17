@@ -43,7 +43,7 @@ const webSearchSchema = contextSchema.extend({
   query: searchText,
   mode: z.enum(["fast", "auto", "deep", "deep-reasoning"]).default("auto"),
   highlightQuery: searchText.optional(),
-  resultLimit: z.number().int().min(1).max(10).default(5),
+  resultLimit: z.number().int().min(1).max(10).default(10),
   includeDomains: includeDomainsSchema.optional(),
 }).transform((value) => ({ ...value, highlightQuery: value.highlightQuery ?? value.query }));
 
@@ -52,10 +52,10 @@ const headlessSchemas = {
     query: searchText,
     mode: z.enum(["fast", "auto", "deep", "deep-reasoning"]).default("auto"),
     highlightQuery: searchText.optional(),
-    resultLimit: z.number().int().min(1).max(10).default(5),
+    resultLimit: z.number().int().min(1).max(10).default(10),
     includeDomains: includeDomainsSchema.optional(),
   }).strict().transform((value) => ({ ...value, highlightQuery: value.highlightQuery ?? value.query })),
-  "web.fetch": z.object({ url: httpUrl }).strict(),
+  "web.fetch": z.object({ url: httpUrl, focus: searchText.optional() }).strict(),
   "professional.profile": z.object({ username: z.string().trim().min(2).max(200), requiredMaterialField: professionalMaterialFieldSchema.default("IDENTITY") }).strict(),
   "professional.activity": z.object({ username: z.string().trim().min(2).max(200) }).strict(),
   "social.profile": z.object({
@@ -79,7 +79,7 @@ const headlessSchemas = {
 
 const schemas = {
   "web.search": webSearchSchema,
-  "web.fetch": contextSchema.extend({ url: httpUrl }),
+  "web.fetch": contextSchema.extend({ url: httpUrl, focus: searchText.optional() }),
   "professional.profile": contextSchema.extend({ username: z.string().trim().min(2).max(200), requiredMaterialField: professionalMaterialFieldSchema.default("IDENTITY") }),
   "professional.activity": contextSchema.extend({ username: z.string().trim().min(2).max(200) }),
   "social.profile": contextSchema.extend({

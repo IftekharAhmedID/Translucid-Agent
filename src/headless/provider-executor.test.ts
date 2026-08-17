@@ -18,7 +18,7 @@ test("runs provider adapters headlessly without database or research-state argum
     const backend = createFileProviderBackend({ sourceStore, budget, deadlineAt: Date.now() + 60_000 });
     const executor = new ProviderExecutor({ PROVIDER_MODE: "fixture" }, backend);
     const raw = { tool: "web.search", arguments: { query: "Synthetic Candidate Principal Engineer" } };
-    const context = { runId: "run-headless", agent: "web-records-researcher", sessionId: "session-headless" };
+    const context = { runId: "run-headless", agent: "lead-researcher", sessionId: "session-headless" };
 
     const first = await executor.executeHeadless(raw, context);
     const second = await executor.executeHeadless(raw, { ...context, sessionId: "session-cache" });
@@ -54,7 +54,7 @@ test("forwards normalized includeDomains to the Exa search request only when sup
     };
   };
   const executor = new ProviderExecutor({ PROVIDER_MODE: "live", EXA_API_KEY: "test-key" }, backend);
-  const context = { runId: "run-headless", agent: "web-records-researcher", sessionId: "session-headless" };
+  const context = { runId: "run-headless", agent: "lead-researcher", sessionId: "session-headless" };
 
   await executor.executeHeadless({ tool: "web.search", arguments: { query: "Exact Candidate Name", mode: "deep", includeDomains: ["Rowan.Example.EDU", "*.example.edu"] } }, context);
   await executor.executeHeadless({ tool: "web.search", arguments: { query: "Exact Candidate Name without filter" } }, context);

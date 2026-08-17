@@ -80,6 +80,9 @@ export function createFileProviderBackend(options: Options): ProviderCallBackend
           provider: input.provider,
           providerRoute: input.providerRoute,
           sourceUrl: artifact.sourceUrl,
+          ...(artifact.title ? { title: artifact.title } : {}),
+          ...(artifact.date ? { date: artifact.date } : {}),
+          ...(artifact.highlight ? { highlight: artifact.highlight } : {}),
           mimeType: artifact.mimeType ?? "application/json",
           content: artifact.content,
           provenance: {

@@ -1,6 +1,6 @@
 # Translucid Investigator
 
-Translucid runs one isolated OpenCode investigator per résumé investigation. Research happens in the lead session with bounded specialist tasks and immutable, file-backed source captures. After research, the same lead session publishes one summary and an ordered list of coherent résumé findings through five typed native tools.
+Translucid runs one isolated OpenCode investigator per résumé investigation. A single `gpt-5.6-luna` xhigh session owns research, gap closure, claim state, and publication while the host durably captures every provider result in immutable, file-backed sources. After research freezes, that same session publishes one summary and an ordered list of coherent résumé findings through typed native tools.
 
 The host backend owns only structure, durability, source-reference resolution, résumé-anchor validation, and deterministic rendering. It does not decide whether evidence proves a claim, whether a source is authoritative, whether a claim is complete, or which status the investigator should assign.
 
@@ -26,7 +26,7 @@ npm run investigate -- \
 npm run attach -- <active-run-id>
 ```
 
-The run directory contains the immutable input, captured sources, specialist memos, durable `.work` state, `report.pdf`, and `result.json`. Successful cleanup removes disposable runtime caches but preserves `.work`, so `npm run finalize -- --run /absolute/path/to/run --watch` can resume publishing without repeating research. `result.json` is written last and is the success marker.
+The run directory contains the immutable input, captured sources, durable `.work` state (including `research-state.json` and `research-snapshot.json`), `report.pdf`, and `result.json`. Successful cleanup removes disposable runtime caches but preserves the research corpus for same-session publication or read-only inspection. Unfinished historical cases are re-researched through `npm run investigate`; there is no legacy memo/finalizer recovery path. `result.json` is written last and is the success marker.
 
 For a text or JSON submission:
 
@@ -53,9 +53,9 @@ The lead uses:
 
 Finding IDs are idempotency keys. The anchor stores a PDF page, line range, and exact text and is bound to the immutable input SHA-256. Sources are references such as `S12`; URLs are resolved from the captured manifest. Status values are investigator-authored: `2`, `1`, `0`, `-1`, and `-2`.
 
-## Recovery boundary
+## Research and publication boundary
 
-The supported crash-recovery boundary is host-persisted specialist memos plus `.work/report-draft.json`. OpenCode’s disposable session database is intentionally not part of the authoritative run. A resumed publishing session is seeded from the résumé, lead context, specialist memos, source manifest, and existing draft. Publishing cannot call providers, search, delegate, or create new network activity.
+Provider calls are captured before their results are returned to Luna. Use `source.inventory({ cursor, limit })` to recover every captured reference, including non-citable `SEARCH_DISCOVERY` leads, and `source.excerpts` for exact local text without a network refetch. Luna saves explicit claim state through `research.state.set`; the host validates schema and source-reference existence but does not adjudicate evidence. At the research freeze, external providers are disabled, local recall remains available, and one bounded publication continuation produces the PDF before `result.json`.
 
 ## Development checks
 

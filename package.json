@@ -8,7 +8,6 @@
   },
   "scripts": {
     "investigate": "node --env-file-if-exists=.env --import tsx src/headless/cli.ts",
-    "finalize": "node --env-file-if-exists=.env --import tsx src/headless/finalize-cli.ts",
     "attach": "node --env-file-if-exists=.env --import tsx scripts/attach-headless.ts",
     "runtime:manifest": "node --env-file-if-exists=.env --import tsx scripts/runtime-manifest.ts",
     "e2b:build-template": "node --env-file-if-exists=.env --import tsx scripts/build-e2b-template.ts",

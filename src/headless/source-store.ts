@@ -10,6 +10,8 @@ const sourceSchema = z.object({
   providerRoute: z.string().min(1),
   sourceUrl: z.string().optional(),
   title: z.string().optional(),
+  date: z.string().optional(),
+  highlight: z.string().max(4_000).optional(),
   retrievedAt: z.string(),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   byteLength: z.number().int().nonnegative(),
@@ -43,6 +45,8 @@ export type SourceCaptureInput = {
   providerRoute: string;
   sourceUrl?: string;
   title?: string;
+  date?: string;
+  highlight?: string;
   mimeType: string;
   content: unknown;
   provenance: Record<string, unknown>;
@@ -75,6 +79,8 @@ function publicSource(source: CapturedSource): CapturedSource {
     providerRoute: source.providerRoute,
     ...(source.sourceUrl ? { sourceUrl: source.sourceUrl } : {}),
     ...(source.title ? { title: source.title } : {}),
+    ...(source.date ? { date: source.date } : {}),
+    ...(source.highlight ? { highlight: source.highlight } : {}),
     retrievedAt: source.retrievedAt,
     sha256: source.sha256,
     byteLength: source.byteLength,
@@ -206,6 +212,8 @@ export class FileSourceStore {
         providerRoute: input.providerRoute,
         ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
         ...(input.title ? { title: input.title } : {}),
+        ...(input.date ? { date: input.date } : {}),
+        ...(input.highlight ? { highlight: input.highlight.slice(0, 4_000) } : {}),
         retrievedAt: input.retrievedAt ?? new Date().toISOString(),
         sha256: digest,
         byteLength: bytes.byteLength,
@@ -233,6 +241,40 @@ export class FileSourceStore {
     return this.manifest.sources.map(publicSource);
   }
 
+  async inventory(input: { cursor?: string; limit?: number } = {}): Promise<{
+    sources: Array<{
+      ref: string;
+      url: string | null;
+      title: string | null;
+      date: string | null;
+      route: string;
+      highlight: string | null;
+      sourceKind: string;
+      citationEligible: boolean;
+    }>;
+    nextCursor: string | null;
+  }> {
+    await this.pending;
+    const limit = Math.min(Math.max(Math.floor(input.limit ?? 100), 1), 100);
+    const start = input.cursor ? this.manifest.sources.findIndex((source) => source.ref === input.cursor) + 1 : 0;
+    if (input.cursor && start === 0) throw new Error(`Unknown source inventory cursor ${input.cursor}.`);
+    const page = this.manifest.sources.slice(start, start + limit);
+    const next = start + limit < this.manifest.sources.length ? page.at(-1)?.ref ?? null : null;
+    return {
+      sources: page.map((source) => ({
+        ref: source.ref,
+        url: source.sourceUrl ?? null,
+        title: source.title ?? null,
+        date: source.date ?? null,
+        route: source.providerRoute,
+        highlight: source.highlight ?? null,
+        sourceKind: source.kind,
+        citationEligible: source.kind !== "SEARCH_DISCOVERY",
+      })),
+      nextCursor: next,
+    };
+  }
+
   async excerpts(input: SourceExcerptRequest): Promise<SourceExcerptResult> {
     if (input.queries.length < 1 || input.queries.length > 12) throw new Error("Source excerpts require between one and twelve queries.");
     const maximum = Math.min(Math.max(input.maxCharacters ?? 60_000, 1), 300_000);
@@ -244,7 +286,7 @@ export class FileSourceStore {
     const previousCount = this.excerptIndex.size;
     const add = (path: string, text: string, offsetStart: number, offsetEnd: number) => {
       if (!text || remaining <= 0 || excerpts.some((item) => item.path === path && item.text === text)) return;
-      const bounded = text.slice(0, remaining);
+      const bounded = text.slice(0, Math.min(remaining, 1_000));
       const item = { ref: excerptRef(source.ref, path, offsetStart, offsetStart + bounded.length, bounded), sourceRef: source.ref, path, offsetStart, offsetEnd: offsetStart + bounded.length, text: bounded };
       this.excerptIndex.set(item.ref, item);
       excerpts.push({ ref: item.ref, path: item.path, offsetStart: item.offsetStart, offsetEnd: item.offsetEnd, text: item.text });

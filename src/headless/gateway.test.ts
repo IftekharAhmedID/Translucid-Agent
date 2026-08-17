@@ -25,29 +25,38 @@ async function listen(gateway: ReturnType<typeof createHeadlessGateway>): Promis
   };
 }
 
-test("persists specialist memos during research and denies them during publishing", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "translucid-memo-gateway-"));
+test("freezes providers only after model-authored claim state is durably set", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-state-gateway-"));
   try {
     const sourceStore = await FileSourceStore.open(directory);
-    const persisted: unknown[] = [];
+    await sourceStore.capture({ kind: "SOURCE_CONTENT", provider: "fixture", providerRoute: "fixture.record", sourceUrl: "https://example.test/record", mimeType: "text/plain", content: "Record", provenance: {} });
+    const { ResearchStateStore } = await import("./research-state.ts");
+    const researchState = await ResearchStateStore.open(directory, sourceStore);
+    const runBudget = budget();
+    const executor = new ProviderExecutor({ PROVIDER_MODE: "fixture" }, createFileProviderBackend({ sourceStore, budget: runBudget, deadlineAt: Date.now() + 60_000 }));
+    let snapshots = 0;
     const gateway = createHeadlessGateway({
-      runId: "run-memo",
+      runId: "run-state",
       deadlineAt: Date.now() + 60_000,
-      allowedTools: new Set(["research.memo.persist"]),
+      allowedTools: new Set(["research.state.set", "web.search", "report.progress.get"]),
       allowedModels: new Set(),
-      agentTools: new Map([["github-researcher", new Set(["research.memo.persist"])] ]),
-      persistResearchMemo: async (value) => { persisted.push(value); return { ok: true }; },
+      agentTools: new Map([["lead-researcher", new Set(["research.state.set", "web.search", "report.progress.get"])] ]),
+      researchState,
+      onResearchStateSet: () => { snapshots += 1; },
+      executor,
       sourceStore,
-      budget: budget(),
+      budget: runBudget,
       providerMode: "fixture",
     });
     const server = await listen(gateway);
-    const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-memo", "x-opencode-agent": "github-researcher" };
-    const response = () => fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "research.memo.persist", arguments: { sessionId: "ses_1", memo: "Finding [S1]." } }) });
-    assert.equal((await response()).status, 200);
-    assert.deepEqual(persisted, [{ sessionId: "ses_1", memo: "Finding [S1]." }]);
-    gateway.setPhase("PUBLISHING");
-    assert.equal((await response()).status, 403);
+    const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-state", "x-opencode-agent": "lead-researcher" };
+    const execute = (tool: string, args: unknown) => fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool, arguments: args, operational: { sessionId: "lead-session" } }) });
+    assert.equal((await execute("web.search", { query: "blocked before fixture" })).status, 200);
+    gateway.freezeResearch();
+    assert.equal((await execute("web.search", { query: "blocked after freeze" })).status, 403);
+    assert.equal((await execute("report.progress.get", {})).status, 403);
+    assert.equal((await execute("research.state.set", { claims: [{ id: "F001", claim: "Record exists", provisionalStatus: "established", supportingRefs: ["S1"], conflictingRefs: [], remainingGap: null, importance: "material" }] })).status, 200);
+    assert.equal(snapshots, 1);
     gateway.cancel();
     await server.close();
   } finally {
@@ -69,7 +78,7 @@ test("allows only the lead to publish structurally valid findings", async () => 
       deadlineAt: Date.now() + 60_000,
       allowedTools: new Set([...reportTools, "web.search"]),
       allowedModels: new Set(),
-      agentTools: new Map([["lead-researcher", new Set(reportTools)], ["web-records-researcher", new Set()]]),
+      agentTools: new Map([["lead-researcher", new Set(reportTools)], ["other-agent", new Set()]]),
       reportStore,
       sourceStore,
       budget: budget(),
@@ -81,7 +90,7 @@ test("allows only the lead to publish structurally valid findings", async () => 
     assert.equal((await execute("report.summary.set", { summary: "Summary" })).status, 403);
     gateway.setPhase("PUBLISHING");
     assert.equal((await execute("web.search", { query: "must not run" })).status, 403);
-    assert.equal((await execute("report.summary.set", { summary: "Summary" }, { ...headers, "x-opencode-agent": "web-records-researcher" })).status, 403);
+    assert.equal((await execute("report.summary.set", { summary: "Summary" }, { ...headers, "x-opencode-agent": "other-agent" })).status, 403);
     assert.equal((await execute("report.summary.set", { summary: "Summary" })).status, 200);
     assert.equal((await execute("report.finding.upsert", { findingId: "F001", section: "Career", claim: "Current role", anchor: { kind: "PDF_TEXT", page: 1, lineStart: 1, lineEnd: 1, exact: "Wrong text" }, evidence: "Evidence", status: 2, sourceRefs: [source.ref] })).status, 422);
     assert.equal((await execute("report.finding.upsert", { findingId: "F001", section: "Career", claim: "Current role", anchor: { kind: "PDF_TEXT", page: 1, lineStart: 1, lineEnd: 1, exact: "Principal Software Engineer" }, evidence: "Evidence", status: 2, sourceRefs: [source.ref] })).status, 200);
@@ -101,17 +110,55 @@ test("routes research providers and local excerpts, then blocks providers in pub
     const sourceStore = await FileSourceStore.open(directory);
     const runBudget = budget();
     const executor = new ProviderExecutor({ PROVIDER_MODE: "fixture" }, createFileProviderBackend({ sourceStore, budget: runBudget, deadlineAt: Date.now() + 60_000 }));
-    const gateway = createHeadlessGateway({ runId: "run-gateway", deadlineAt: Date.now() + 60_000, allowedTools: new Set(["web.search", "source.excerpts"]), allowedModels: new Set(), agentTools: new Map([["lead-researcher", new Set(["web.search", "source.excerpts"])]]), executor, sourceStore, budget: runBudget, providerMode: "fixture" });
+    const gateway = createHeadlessGateway({ runId: "run-gateway", deadlineAt: Date.now() + 60_000, allowedTools: new Set(["web.search", "source.inventory", "source.excerpts"]), allowedModels: new Set(), agentTools: new Map([["lead-researcher", new Set(["web.search", "source.inventory", "source.excerpts"])]]), executor, sourceStore, budget: runBudget, providerMode: "fixture" });
     const server = await listen(gateway);
     const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-gateway", "x-opencode-agent": "lead-researcher" };
     const provider = await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "web.search", arguments: { query: "Synthetic Candidate Principal Engineer" }, operational: { agent: "lead-researcher", sessionId: "session-a" } }) });
     assert.equal(provider.status, 200);
     assert.deepEqual((await provider.json() as { sourceRefs: string[] }).sourceRefs, ["S1"]);
+    const inventory = await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "source.inventory", arguments: { limit: 100 }, operational: { sessionId: "session-a" } }) });
+    assert.equal(inventory.status, 200);
+    assert.deepEqual((await inventory.json() as { sources: Array<Record<string, unknown>> }).sources, [{ ref: "S1", url: "https://example.test/fixtures/web.search", title: null, date: null, route: "fixture.web.search", highlight: null, sourceKind: "PROVIDER_RESPONSE", citationEligible: true }]);
     const excerpt = await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "source.excerpts", arguments: { sourceRef: "S1", queries: ["Principal Engineer"] } }) });
     assert.equal(excerpt.status, 200);
     assert.match((await excerpt.json() as { excerpts: Array<{ text: string }> }).excerpts[0]?.text ?? "", /Principal Engineer/);
     gateway.setPhase("PUBLISHING");
     assert.equal((await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "web.search", arguments: { query: "blocked" } }) })).status, 403);
+    gateway.cancel();
+    await server.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("freezing waits for an in-flight provider and rejects new external calls", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-provider-freeze-"));
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    let started = false;
+    let release!: () => void;
+    const executor = {
+      executeHeadless: async () => {
+        started = true;
+        await new Promise<void>((resolve) => { release = resolve; });
+        return { status: "OK", capability: "WEB_SEARCH", provider: "fixture", sourceRefs: [], evidenceEligibleSourceRefs: [], preview: "", observedAt: new Date().toISOString(), costUsd: 0, costSource: "FREE_PUBLIC", cache: "MISS" };
+      },
+    } as unknown as ProviderExecutor;
+    const gateway = createHeadlessGateway({ runId: "run-freeze", deadlineAt: Date.now() + 60_000, allowedTools: new Set(["web.search"]), allowedModels: new Set(), agentTools: new Map([["lead-researcher", new Set(["web.search"])]]), executor, sourceStore, budget: budget(), providerMode: "fixture" });
+    const server = await listen(gateway);
+    const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-freeze", "x-opencode-agent": "lead-researcher" };
+    const provider = fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "web.search", arguments: { query: "in flight" }, operational: { sessionId: "session-freeze" } }) });
+    while (!started) await new Promise((resolve) => setTimeout(resolve, 1));
+    const freezing = gateway.freezeResearch();
+    assert.equal((await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "web.search", arguments: { query: "blocked" } }) })).status, 403);
+    let drained = false;
+    void freezing.then(() => { drained = true; });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(drained, false);
+    release();
+    await freezing;
+    assert.equal(drained, true);
+    assert.equal((await provider).status, 200);
     gateway.cancel();
     await server.close();
   } finally {

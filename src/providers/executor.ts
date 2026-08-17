@@ -159,7 +159,28 @@ function preview(value: unknown): string {
   let serialized: string;
   try { serialized = typeof value === "string" ? value : JSON.stringify(value); }
   catch { serialized = "Provider returned a non-serializable response."; }
-  return serialized.length <= 20_000 ? serialized : `${serialized.slice(0, 20_000)}\n[preview truncated; use source.excerpts]`;
+  const maximum = 12_000;
+  return serialized.length <= maximum ? serialized : `${serialized.slice(0, maximum)}\n[preview truncated; use source.inventory/source.excerpts]`;
+}
+
+function exaContentMetadata(value: unknown, sourceUrl: string): Pick<ProviderArtifactInput, "title" | "date" | "highlight"> {
+  if (!value || typeof value !== "object") return {};
+  const envelope = value as { results?: unknown };
+  const results = Array.isArray(envelope.results) ? envelope.results : [];
+  const candidate = results.find((item) => item && typeof item === "object" && (item as { url?: unknown }).url === sourceUrl)
+    ?? results[0];
+  if (!candidate || typeof candidate !== "object") return {};
+  const result = candidate as { title?: unknown; publishedDate?: unknown; highlights?: unknown };
+  const highlight = typeof result.highlights === "string"
+    ? result.highlights
+    : Array.isArray(result.highlights)
+      ? result.highlights.filter((item): item is string => typeof item === "string").join("\n")
+      : undefined;
+  return {
+    ...(typeof result.title === "string" ? { title: result.title } : {}),
+    ...(typeof result.publishedDate === "string" ? { date: result.publishedDate } : {}),
+    ...(highlight ? { highlight } : {}),
+  };
 }
 
 export function unwrapLinkdProfileResponse(value: unknown): Record<string, unknown> | undefined {
@@ -321,7 +342,7 @@ export class ProviderExecutor {
       numResults: request.arguments.resultLimit,
       ...(request.arguments.includeDomains ? { includeDomains: request.arguments.includeDomains } : {}),
       contents: {
-        highlights: { query: request.arguments.highlightQuery, maxCharacters: 4_000 },
+        highlights: { query: request.arguments.highlightQuery, maxCharacters: 800 },
       },
     };
     return this.call(request, context, capability, "exa", "exa.search", body, async (signal, onAttempt) => {
@@ -333,9 +354,17 @@ export class ProviderExecutor {
         if (!candidate || typeof candidate !== "object") continue;
         const result = candidate as Record<string, unknown>;
         if (typeof result.url !== "string" || (!nonEmpty(result.text) && !nonEmpty(result.highlights))) continue;
+        const highlight = typeof result.highlights === "string"
+          ? result.highlights
+          : Array.isArray(result.highlights)
+            ? result.highlights.filter((value): value is string => typeof value === "string").join("\n")
+            : undefined;
         artifacts.push({
           kind: "SOURCE_CONTENT",
           sourceUrl: result.url,
+          ...(typeof result.title === "string" ? { title: result.title } : {}),
+          ...(typeof result.publishedDate === "string" ? { date: result.publishedDate } : {}),
+          ...(highlight ? { highlight } : {}),
           content: { title: result.title, url: result.url, highlights: result.highlights, publishedDate: result.publishedDate, author: result.author },
           provenance: { captureMethod: "EXA_INLINE_CONTENTS" },
         });
@@ -346,13 +375,16 @@ export class ProviderExecutor {
 
   private webFetch(request: RequestOf<"web.fetch">, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
     const url = request.arguments.url;
+    const contents = request.arguments.focus
+      ? { text: true, highlights: { query: request.arguments.focus, maxCharacters: 2_000 } }
+      : { text: true, highlights: true };
     if (this.environment.EXA_API_KEY) {
-      return this.call(request, context, capability, "exa", "exa.contents", { urls: [url], text: true, highlights: true }, async (signal, onAttempt) => {
-        const data = await apiFetch("https://api.exa.ai/contents", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.environment.EXA_API_KEY! }, body: JSON.stringify({ urls: [url], text: true, highlights: true }), signal }, onAttempt);
-        return { data, sourceUrl: url, ...this.exaCost(data), artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: data, provenance: { captureMethod: "EXA_CONTENTS" } }] };
+      return this.call(request, context, capability, "exa", "exa.contents", { urls: [url], ...contents }, async (signal, onAttempt) => {
+        const data = await apiFetch("https://api.exa.ai/contents", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.environment.EXA_API_KEY! }, body: JSON.stringify({ urls: [url], ...contents }), signal }, onAttempt);
+        return { data, sourceUrl: url, ...this.exaCost(data), artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, ...exaContentMetadata(data, url), content: data, provenance: { captureMethod: "EXA_CONTENTS" } }] };
       });
     }
-    return this.call(request, context, capability, "public-fetch", "public-fetch", { url }, async (signal) => {
+    return this.call(request, context, capability, "public-fetch", "public-fetch", { url, ...(request.arguments.focus ? { focus: request.arguments.focus } : {}) }, async (signal) => {
       const response = await safePublicFetch(url, { headers: { "user-agent": this.publicUserAgent() }, signal });
       const data = await readResponse(response);
       return { data, sourceUrl: url, status: response.status, costUsd: 0, costSource: "FREE_PUBLIC", artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, content: data, status: response.status }] };

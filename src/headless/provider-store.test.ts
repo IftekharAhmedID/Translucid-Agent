@@ -11,7 +11,7 @@ import { FileSourceStore } from "./source-store.ts";
 
 function request(run: ProviderCallInput["run"], sessionId: string): ProviderCallInput {
   return {
-    context: { runId: "run-provider", agent: "web-records-researcher", sessionId },
+    context: { runId: "run-provider", agent: "lead-researcher", sessionId },
     capability: "WEB_SEARCH",
     semanticTool: "web.fetch",
     provider: "fixture",
@@ -88,6 +88,19 @@ test("does not cache failures and never writes secrets into request telemetry", 
     const telemetry = await readFile(join(directory, "sources", "requests.jsonl"), "utf8");
     assert.doesNotMatch(telemetry, /secret-token-value/);
     assert.match(telemetry, /REDACTED/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("does not disclose a provider result when durable source capture fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-provider-capture-failure-"));
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    const budget = new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 3, repositoryClones: 3, socialProfiles: 1 });
+    const backend = createFileProviderBackend({ sourceStore, budget, deadlineAt: Date.now() + 60_000 });
+    sourceStore.capture = async () => { throw new Error("durable capture failed"); };
+    await assert.rejects(backend(request(async () => ({ data: { secret: "must-not-leak" }, sourceUrl: "https://example.test/secret", costUsd: 0, costSource: "FREE_PUBLIC" }), "capture-failure")), /durable capture failed/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

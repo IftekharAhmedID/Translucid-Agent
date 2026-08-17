@@ -11,6 +11,9 @@ export type ProviderExecutionContext = {
 export type ProviderArtifactInput = {
   kind: string;
   sourceUrl: string;
+  title?: string;
+  date?: string;
+  highlight?: string;
   mimeType?: string;
   content: unknown;
   status?: number;

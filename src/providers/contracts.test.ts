@@ -15,7 +15,7 @@ test("headless provider requests contain only network-semantic arguments", () =>
     arguments: { query: "Casey Morgan Project Atlas", mode: "fast" },
   });
   assert.equal(parsed.tool, "web.search");
-  assert.equal(parsed.arguments.resultLimit, 5);
+  assert.equal(parsed.arguments.resultLimit, 10);
   assert.equal(parsed.arguments.highlightQuery, "Casey Morgan Project Atlas");
   assert.equal("questionId" in parsed.arguments, false);
 
@@ -87,8 +87,17 @@ test("tool requests require a durable question and public rationale", () => {
     },
   });
   assert.equal(parsed.tool, "web.search");
-  assert.equal(parsed.arguments.resultLimit, 5);
+  assert.equal(parsed.arguments.resultLimit, 10);
   assert.equal(parsed.arguments.highlightQuery, "Casey Morgan Project Atlas");
+});
+
+test("web fetch accepts optional claim focus without requiring it", () => {
+  const focused = parseHeadlessToolRequest({ tool: "web.fetch", arguments: { url: "https://example.test/record", focus: "employment date" } });
+  const unfocused = parseHeadlessToolRequest({ tool: "web.fetch", arguments: { url: "https://example.test/record" } });
+  assert.equal(focused.tool, "web.fetch");
+  if (focused.tool !== "web.fetch" || unfocused.tool !== "web.fetch") throw new Error("Unexpected parsed tool.");
+  assert.equal(focused.arguments.focus, "employment date");
+  assert.equal(unfocused.arguments.focus, undefined);
 });
 
 test("professional profile requests require one normalized material-field enum", () => {

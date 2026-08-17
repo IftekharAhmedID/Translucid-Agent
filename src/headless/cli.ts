@@ -10,19 +10,19 @@ import { getPinnedLocalManifestHash, LocalDockerRuntime } from "../runtime/local
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
 import { headlessBudgetCeilings, MemoryRunBudget } from "./budget.ts";
 import { parseInvestigationArguments } from "./cli-options.ts";
-import { classifyInvestigationFailure, HeadlessInvestigationController, ResearchHandoffError } from "./controller.ts";
+import { classifyInvestigationFailure, HeadlessInvestigationController } from "./controller.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 import { createHeadlessGateway } from "./gateway.ts";
-import { persistResearchMemo } from "./recovery.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
 import { reportToolNames, ReportStore } from "./report-store.ts";
+import { ResearchStateStore, writeResearchSnapshot } from "./research-state.ts";
 import { renderLeanReport, verifyInvestigationReport } from "./report.ts";
 import { createRunWorkspace, removeRunDiagnostics, sealRunFailure, type RunWorkspace } from "./run-workspace.ts";
 import { attachOpenCodeTui } from "./visible-tui.ts";
 
-const RUN_TIMEOUT_MS = 60 * 60_000;
-const PUBLISHING_RESERVE_MS = 12 * 60_000;
-const SPECIALIST_MODEL = "deepseek-v4-flash";
+const RUN_TIMEOUT_MS = 30 * 60_000;
+const PUBLISHING_RESERVE_MS = 6 * 60_000;
+const RESEARCH_MODEL = "gpt-5.6-luna";
 
 async function atomicWrite(path: string, bytes: Uint8Array | string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -45,11 +45,7 @@ function providerEnvironment(mode: "fixture" | "live"): Record<string, string | 
 
 function agentToolAllowlist(): Map<string, Set<string>> {
   return new Map([
-    ["lead-researcher", new Set(["web.search", "web.fetch", "archives.search", "source.excerpts", ...reportToolNames])],
-    ["professional-researcher", new Set(["professional.profile", "professional.activity", "web.search", "web.fetch", "archives.search", "source.excerpts", "research.memo.persist"])],
-    ["github-researcher", new Set(["github.graphql", "github.rest", "github.clone", "web.fetch", "source.excerpts", "research.memo.persist"])],
-    ["web-records-researcher", new Set(["web.search", "web.fetch", "archives.search", "public_records.search", "scholarly.search", "packages.inspect", "security_records.search", "source.excerpts", "research.memo.persist"])],
-    ["social-researcher", new Set(["social.profile", "source.excerpts", "research.memo.persist"])],
+    ["lead-researcher", new Set([...toolNames, "source.inventory", "source.excerpts", "research.state.set", ...reportToolNames])],
   ]);
 }
 
@@ -97,7 +93,7 @@ async function main(): Promise<void> {
       runId,
     });
     const expectedManifestHash = await getPinnedLocalManifestHash();
-    const researchModel = process.env.RESEARCH_MODEL ?? "deepseek-v4-flash";
+    const researchModel = RESEARCH_MODEL;
     const budget = new MemoryRunBudget(headlessBudgetCeilings(), { onChange: () => undefined });
     const reportStore = await ReportStore.open(workspace.root, {
       runId,
@@ -107,23 +103,37 @@ async function main(): Promise<void> {
       model: researchModel,
       sourceStore: workspace.sourceStore,
     });
+    const researchState = await ResearchStateStore.open(workspace.root, workspace.sourceStore);
+    const activity = { lastProgressAt: Date.now(), modelStartedAt: undefined as number | undefined };
+    const persistSnapshot = async () => {
+      await researchState.refresh();
+      const integrity = await workspace!.sourceStore.verify();
+      if (!integrity.valid) throw new Error(`Source integrity failed before research snapshot: ${integrity.invalidSourceRefs.join(", ")}.`);
+      await writeResearchSnapshot(workspace!.root, { runtime: options.runtime, researchModel }, workspace!.sourceStore);
+    };
     const providerExecutor = new ProviderExecutor(providerEnvironment(options.providerMode), createFileProviderBackend({ sourceStore: workspace.sourceStore, budget, deadlineAt: deadlineAt.getTime() }));
     const researchProvider = process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
     const fixture = createHeadlessFixtureCompletion();
     gateway = createHeadlessGateway({
       runId,
       deadlineAt: deadlineAt.getTime(),
-      allowedTools: new Set([...toolNames, "source.excerpts", "research.memo.persist", ...reportToolNames]),
-      allowedModels: new Set([researchModel, SPECIALIST_MODEL]),
+      allowedTools: new Set([...toolNames, "source.inventory", "source.excerpts", "research.state.set", ...reportToolNames]),
+      allowedModels: new Set([researchModel]),
       agentTools: agentToolAllowlist(),
       reportStore,
-      persistResearchMemo: (value) => persistResearchMemo(workspace!.root, value),
+      researchState,
+      onResearchStateSet: persistSnapshot,
       executor: providerExecutor,
       sourceStore: workspace.sourceStore,
       budget,
       providerMode: options.providerMode,
       researchUpstreamFamily: researchProvider,
       fixtureCompletion: (body, agent) => fixture(body, agent),
+      onActivity: (event) => {
+        activity.lastProgressAt = event.at;
+        if (event.kind === "model-start") activity.modelStartedAt = event.at;
+        if (event.kind === "model-end") activity.modelStartedAt = undefined;
+      },
     });
     const gatewayPort = await listen(gateway.server, options.runtime === "E2B" ? integerEnvironment("HEADLESS_GATEWAY_PORT", 3001) : 0);
     const localGatewayUrl = `http://127.0.0.1:${gatewayPort}`;
@@ -163,7 +173,10 @@ async function main(): Promise<void> {
       runtime: options.runtime,
       researchModel,
       reportStore,
-      beginPublishing: () => gateway!.setPhase("PUBLISHING"),
+      researchState,
+      activity,
+      beginPublishing: () => gateway!.freezeResearch(),
+      persistResearchSnapshot: persistSnapshot,
       onLeadStarted: async (sessionId) => {
         process.stderr.write(`Run ${runId}: lead session ${sessionId} is visible${options.watch ? " in the attached TUI" : ` with npm run attach -- ${runId}`}.\n`);
         if (options.watch && handle) watchProcess = attachOpenCodeTui(handle, password, sessionId);
@@ -182,7 +195,24 @@ async function main(): Promise<void> {
     handle = undefined;
     await mkdir(join(workspace.root, "provenance"), { recursive: true });
     const progress = await reportStore.progress();
-    await atomicWrite(join(workspace.root, "provenance", "report.json"), `${JSON.stringify({ schemaVersion: 1, runId, inputSha256: workspace.inputSha256, reportDraftRevision: progress.revision, sourceRefs: [...new Set(output.result.findings.flatMap(({ sources }) => sources.map(({ sourceRef }) => sourceRef)))].sort() }, null, 2)}\n`);
+    const citedSourceRefs = [...new Set(output.result.findings.flatMap(({ sources }) => sources.map(({ sourceRef }) => sourceRef)))].sort();
+    const capturedSources = await workspace.sourceStore.list();
+    const eligibleSources = capturedSources.filter(({ kind, sourceUrl }) => kind !== "SEARCH_DISCOVERY" && Boolean(sourceUrl));
+    const citedRefSet = new Set(citedSourceRefs);
+    const eligibleUrls = [...new Set(eligibleSources.flatMap(({ sourceUrl }) => sourceUrl ? [sourceUrl] : []))].sort();
+    const citedUrls = [...new Set(eligibleSources.filter(({ ref }) => citedRefSet.has(ref)).flatMap(({ sourceUrl }) => sourceUrl ? [sourceUrl] : []))].sort();
+    const uncitedEligibleUrls = eligibleUrls.filter((url) => !citedUrls.includes(url));
+    await atomicWrite(join(workspace.root, "provenance", "report.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      runId,
+      leadSessionId: output.leadSessionId,
+      researchAgent: "lead-researcher",
+      researchModel,
+      inputSha256: workspace.inputSha256,
+      reportDraftRevision: progress.revision,
+      sourceRefs: citedSourceRefs,
+      coverage: { eligibleUrlCount: eligibleUrls.length, citedUrlCount: citedUrls.length, uncitedEligibleUrls },
+    }, null, 2)}\n`);
     await rename(reportTemporaryPath, reportPath);
     reportTemporaryPath = undefined;
     await reportStore.markPublished();
@@ -203,7 +233,6 @@ async function main(): Promise<void> {
         diagnostics: {
           ...(handle?.kind === "E2B" ? { sandboxId: handle.id } : {}),
           ...(handle?.kind === "LOCAL" ? { sessionId: handle.id } : {}),
-          ...(error instanceof ResearchHandoffError ? { researchHandoff: JSON.stringify(error.failures) } : {}),
         },
       }).catch(() => undefined);
     }

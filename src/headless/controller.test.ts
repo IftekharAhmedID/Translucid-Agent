@@ -1,21 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 
-import { classifyInvestigationFailure, describeSdkError, driveReportPublishing, publishingPrompt, recoveryPublishingPrompt, readCompletedResearchMemos, ResearchHandoffError, waitForResearchIdle } from "./controller.ts";
+import { canPublishAfterResearchFailure, classifyInvestigationFailure, driveReportPublishing, InvestigationStallError, publishingPrompt, waitForResearchIdle } from "./controller.ts";
 
-test("publishing prompt assigns report semantics to the lead and structure to the backend", () => {
-  const prompt = recoveryPublishingPrompt();
-  assert.match(prompt, /report\.progress\.get/);
-  assert.match(prompt, /report\.finding\.upsert/);
-  assert.match(prompt, /discarded historical report artifacts/i);
-  assert.match(prompt, /no provider/i);
-  assert.match(publishingPrompt(), /There is no target count/);
+test("publishing starts by persisting explicit claim state and never enables providers", () => {
+  const prompt = publishingPrompt();
+  assert.match(prompt, /research\.state\.set/);
+  assert.match(prompt, /SEARCH_DISCOVERY/);
+  assert.match(prompt, /report\.finalize/);
+  assert.match(prompt, /External provider tools are disabled/i);
 });
 
-test("publishes in the existing lead session with at most two continuation prompts", async () => {
+test("publishes with one bounded continuation", async () => {
   const prompts: string[] = [];
   let reads = 0;
   const ready = await driveReportPublishing({
@@ -23,7 +19,7 @@ test("publishes in the existing lead session with at most two continuation promp
     waitUntilIdle: async () => undefined,
     progress: async () => ({
       schemaVersion: 1,
-      run: { id: "run-1", inputSha256: "a".repeat(64), startedAt: "2026-08-14T00:00:00.000Z", runtime: "LOCAL", model: "research-model" },
+      run: { id: "run-1", inputSha256: "a".repeat(64), startedAt: "2026-08-14T00:00:00.000Z", runtime: "LOCAL", model: "gpt-5.6-luna" },
       state: reads++ >= 2 ? "READY" : "OPEN",
       revision: 0,
       summary: "",
@@ -32,83 +28,58 @@ test("publishes in the existing lead session with at most two continuation promp
   });
   assert.equal(ready.state, "READY");
   assert.equal(prompts.length, 2);
-  assert.match(prompts[1] ?? "", /report\.progress\.get/);
 });
 
-test("fails closed after the bounded publishing continuations", async () => {
+test("fails closed after the single publishing continuation", async () => {
   let launches = 0;
   await assert.rejects(driveReportPublishing({
     launch: async () => { launches += 1; },
     waitUntilIdle: async () => undefined,
     progress: async () => ({
       schemaVersion: 1,
-      run: { id: "run-1", inputSha256: "a".repeat(64), startedAt: "2026-08-14T00:00:00.000Z", runtime: "LOCAL", model: "research-model" },
+      run: { id: "run-1", inputSha256: "a".repeat(64), startedAt: "2026-08-14T00:00:00.000Z", runtime: "LOCAL", model: "gpt-5.6-luna" },
       state: "OPEN",
       revision: launches,
       summary: "",
       findings: [],
     }),
-  }), /did not finalize/i);
-  assert.equal(launches, 3);
+  }), /one bounded continuation/i);
+  assert.equal(launches, 2);
 });
 
-test("fails the handoff for every launched child session without exactly one accepted memo", async () => {
-  const root = await mkdtemp(join(tmpdir(), "translucid-memos-"));
-  try {
-    const memoDirectory = join(root, ".work", "memos");
-    await mkdir(memoDirectory, { recursive: true });
-    await writeFile(join(memoDirectory, "professional-researcher-child-1.md"), "# professional-researcher memo\n\nSession: child-1\n\nCompleted finding [S1].\n");
-    const children = [
-      { id: "child-1", agent: "professional-researcher" },
-      { id: "child-2", agent: "professional-researcher" },
-      { id: "vision-1", agent: "document-vision" },
-    ];
-    await assert.rejects(readCompletedResearchMemos(memoDirectory, children), (error: unknown) => {
-      assert.ok(error instanceof ResearchHandoffError);
-      assert.equal(error.code, "RESEARCH_HANDOFF_FAILED");
-      assert.equal(error.phase, "RESEARCH_HANDOFF");
-      assert.deepEqual(error.failures, [{ sessionId: "child-2", role: "professional-researcher", acceptedMemoCount: 0 }]);
-      return true;
-    });
-
-    await writeFile(join(memoDirectory, "professional-researcher-child-2.md"), "# professional-researcher memo\n\nSession: child-2\n\nSearch completed with no credible public evidence.\n");
-    const result = await readCompletedResearchMemos(memoDirectory, children);
-    assert.equal(result.memos.length, 2);
-    assert.deepEqual(result.completedSessionIds, new Set(["child-1", "child-2"]));
-
-    await writeFile(join(memoDirectory, "duplicate-child-2.md"), "# professional-researcher memo\n\nSession: child-2\n\nDuplicate handoff.\n");
-    await assert.rejects(readCompletedResearchMemos(memoDirectory, children), (error: unknown) => {
-      assert.ok(error instanceof ResearchHandoffError);
-      assert.deepEqual(error.failures, [{ sessionId: "child-2", role: "professional-researcher", acceptedMemoCount: 2 }]);
-      return true;
-    });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+test("stops a busy session after meaningful progress stalls", async () => {
+  const signal = new AbortController().signal;
+  await assert.rejects(waitForResearchIdle({
+    readStatus: async () => "busy",
+    deadlineAt: 1_000_000,
+    signal,
+    intervalMs: 0,
+    now: (() => { let value = 0; return () => value += 181_000; })(),
+    readActivity: () => ({ lastProgressAt: 0, modelStartedAt: undefined }),
+  }), /meaningful progress/i);
 });
 
-test("typed research handoff failures override generic investigation failure classification", () => {
-  const error = new ResearchHandoffError([{ sessionId: "child-2", role: "github-researcher", acceptedMemoCount: 0 }]);
-  assert.deepEqual(classifyInvestigationFailure(error, false, true), { code: "RESEARCH_HANDOFF_FAILED", phase: "RESEARCH_HANDOFF" });
-  assert.deepEqual(classifyInvestigationFailure(error, true, true), { code: "RESEARCH_HANDOFF_FAILED", phase: "RESEARCH_HANDOFF" });
+test("does not wait through the startup grace after a model has completed", async () => {
+  let now = 0;
+  await waitForResearchIdle({
+    readStatus: async () => undefined,
+    deadlineAt: 100_000,
+    signal: new AbortController().signal,
+    intervalMs: 0,
+    now: () => now += 100,
+    initialGraceMs: 30_000,
+    readActivity: () => ({ lastProgressAt: 1, modelStartedAt: undefined }),
+  });
+});
+
+test("classifies cancellation and ordinary failures without specialist handoff states", () => {
+  assert.deepEqual(classifyInvestigationFailure(new Error("cancelled"), true, true), { code: "CANCELLED_OR_TIMED_OUT", phase: "INVESTIGATION" });
   assert.deepEqual(classifyInvestigationFailure(new Error("provider failed"), false, true), { code: "INVESTIGATION_FAILED", phase: "INVESTIGATION" });
 });
 
-test("waits for an asynchronously prompted session to become idle", async () => {
-  const statuses = ["busy", "busy", undefined] as const;
-  let index = 0;
-  await waitForResearchIdle({
-    readStatus: async () => statuses[Math.min(index++, statuses.length - 1)],
-    deadlineAt: Date.now() + 1_000,
-    signal: new AbortController().signal,
-    intervalMs: 0,
-  });
-  assert.equal(index, 3);
-});
-
-test("describes SDK errors with non-enumerable details", () => {
-  const error = new Error("upstream request timed out");
-  Object.defineProperty(error, "data", { value: { ref: "err_123" }, enumerable: false });
-  assert.match(describeSdkError(error), /Error: upstream request timed out/);
-  assert.match(describeSdkError(error), /err_123/);
+test("only publishes after a stalled research stage when valid claim state already exists", () => {
+  const stalled = new InvestigationStallError("RESEARCH", "no progress");
+  assert.equal(canPublishAfterResearchFailure(stalled, false), false);
+  assert.equal(canPublishAfterResearchFailure(stalled, true), true);
+  assert.equal(canPublishAfterResearchFailure(new Error("deadline"), false), true);
 });

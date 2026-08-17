@@ -208,7 +208,7 @@ test("seals a failure record with bounded diagnostics", async () => {
 test("successful cleanup preserves durable work artifacts and removes disposable runtime files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "translucid-run-cleanup-"));
   try {
-    for (const path of [".bun/install", ".cache/opencode", ".config/opencode", ".local/share/opencode", ".npm/_cacache", ".opencode", ".work/memos", "output"]) {
+    for (const path of [".bun/install", ".cache/opencode", ".config/opencode", ".local/share/opencode", ".npm/_cacache", ".opencode", ".work", "output"]) {
       await mkdir(join(directory, path), { recursive: true });
       await writeFile(join(directory, path, "diagnostic"), "temporary");
     }
@@ -219,7 +219,7 @@ test("successful cleanup preserves durable work artifacts and removes disposable
     await removeRunDiagnostics(directory);
 
     assert.deepEqual((await import("node:fs/promises").then(({ readdir }) => readdir(directory))).sort(), [".work", "input", "report.pdf", "result.json", "sources"]);
-    assert.equal(await readFile(join(directory, ".work", "memos", "diagnostic"), "utf8"), "temporary");
+    assert.equal(await readFile(join(directory, ".work", "diagnostic"), "utf8"), "temporary");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -7,6 +7,7 @@ import type { ProviderExecutor } from "../providers/executor.ts";
 import type { MemoryRunBudget } from "./budget.ts";
 import { SessionExcerptAllowances } from "./excerpt-allowance.ts";
 import { reportToolNames, ReportStoreError, type ReportStore } from "./report-store.ts";
+import type { ResearchStateStore } from "./research-state.ts";
 import type { FileSourceStore } from "./source-store.ts";
 
 const MAX_TOOL_BODY = 1024 * 1024;
@@ -51,10 +52,12 @@ type GatewayInput = {
   providerMode: "fixture" | "live";
   agentTools?: Map<string, Set<string>>;
   reportStore?: ReportStore;
-  persistResearchMemo?: (value: unknown) => Promise<unknown>;
+  researchState?: ResearchStateStore;
+  onResearchStateSet?: () => Promise<void> | void;
   researchUpstreamFamily?: ResearchUpstreamFamily;
   fixtureCompletion?: (body: Record<string, unknown>, agent: string, model: string) => Promise<{ content?: string; toolCall?: { name: string; arguments: Record<string, unknown> } }>;
   onModelRequest?: (request: { agent: string; estimatedInputTokens: number }) => void;
+  onActivity?: (event: { kind: "model-start" | "model-end" | "tool-start" | "tool-end"; name: string; at: number }) => void;
 };
 
 export function createHeadlessGateway(input: GatewayInput) {
@@ -63,7 +66,19 @@ export function createHeadlessGateway(input: GatewayInput) {
   const excerptAllowances = new SessionExcerptAllowances();
   const reportTools = new Set<string>(reportToolNames);
   let active = true;
-  let phase: "RESEARCHING" | "PUBLISHING" = "RESEARCHING";
+  let phase: "RESEARCHING" | "FREEZING" | "PUBLISHING" = "RESEARCHING";
+  let providersInFlight = 0;
+  const providerDrainWaiters: Array<() => void> = [];
+
+  function waitForProviderDrain(): Promise<void> {
+    if (providersInFlight === 0) return Promise.resolve();
+    return new Promise((resolve) => providerDrainWaiters.push(resolve));
+  }
+
+  function finishProviderCall(): void {
+    providersInFlight -= 1;
+    if (providersInFlight === 0) while (providerDrainWaiters.length) providerDrainWaiters.shift()!();
+  }
 
   const authorize = (request: IncomingMessage, kind: "tool" | "model", name: string): void => {
     const header = request.headers.authorization;
@@ -81,8 +96,11 @@ export function createHeadlessGateway(input: GatewayInput) {
       if (!input.agentTools.get(agent)?.has(name)) throw new GatewayError(403, `Agent ${agent} cannot use ${name}.`);
     }
     if (kind === "tool") {
-      if (phase === "RESEARCHING" && reportTools.has(name)) throw new GatewayError(403, "Report tools are unavailable until publishing begins.");
-      if (phase === "PUBLISHING" && !reportTools.has(name) && name !== "source.excerpts") throw new GatewayError(403, `Publishing phase denies ${name}.`);
+      if (reportTools.has(name) && phase !== "PUBLISHING") throw new GatewayError(403, "Report tools are unavailable until publishing begins.");
+      if (name === "research.state.set" && phase === "PUBLISHING") throw new GatewayError(403, "Research state is immutable after publication begins.");
+      if (name !== "source.excerpts" && name !== "source.inventory" && name !== "research.state.set" && !reportTools.has(name) && phase !== "RESEARCHING") {
+        throw new GatewayError(403, `Publishing phase denies ${name}.`);
+      }
     }
   };
 
@@ -93,9 +111,22 @@ export function createHeadlessGateway(input: GatewayInput) {
         const body = await readJson(request, MAX_TOOL_BODY);
         const name = typeof body.tool === "string" ? body.tool : "";
         authorize(request, "tool", name);
-        if (name === "research.memo.persist") {
-          if (!input.persistResearchMemo) throw new GatewayError(403, "Host memo persistence is unavailable in this run.");
-          return json(response, 200, await input.persistResearchMemo(body.arguments));
+        if (name === "source.inventory") {
+          if (!input.sourceStore) throw new GatewayError(403, "Source inventory is unavailable in this run.");
+          const args = body.arguments && typeof body.arguments === "object" ? body.arguments as { cursor?: unknown; limit?: unknown } : {};
+          return json(response, 200, await input.sourceStore.inventory({
+            ...(typeof args.cursor === "string" ? { cursor: args.cursor } : {}),
+            ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
+          }));
+        }
+        if (name === "research.state.set") {
+          if (!input.researchState) throw new GatewayError(403, "Research state is unavailable in this run.");
+          const result = await input.researchState.set(body.arguments);
+          if (phase === "FREEZING") {
+            await input.onResearchStateSet?.();
+            phase = "PUBLISHING";
+          }
+          return json(response, 200, result);
         }
         if (reportTools.has(name)) {
           if (!input.reportStore) throw new GatewayError(403, "Report publishing is unavailable in this run.");
@@ -133,14 +164,27 @@ export function createHeadlessGateway(input: GatewayInput) {
           return json(response, 200, excerpt);
         }
         if (!toolNames.includes(name as (typeof toolNames)[number])) throw new GatewayError(403, "State and database tools are unavailable in headless runs.");
-        if (!input.executor) throw new GatewayError(403, "Research providers are unavailable during publishing-only recovery.");
+        if (!input.executor) throw new GatewayError(403, "Research providers are unavailable after publication begins.");
         const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
-        const result = await input.executor.executeHeadless({ tool: name, arguments: body.arguments }, {
-          runId: input.runId,
-          agent: typeof operational.agent === "string" ? operational.agent : "unknown-agent",
-          sessionId: typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session",
-        });
-        return json(response, 200, result);
+        input.researchState?.recordRoute(name);
+        providersInFlight += 1;
+        input.onActivity?.({ kind: "tool-start", name, at: Date.now() });
+        try {
+          const result = await input.executor.executeHeadless({ tool: name, arguments: body.arguments }, {
+            runId: input.runId,
+            agent: typeof operational.agent === "string" ? operational.agent : "unknown-agent",
+            sessionId: typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session",
+          });
+          return json(response, 200, { ...result, timing: {
+            convergeAt: input.deadlineAt - 10 * 60_000,
+            researchDeadlineAt: input.deadlineAt - 6 * 60_000,
+            totalDeadlineAt: input.deadlineAt,
+            convergeNow: Date.now() >= input.deadlineAt - 10 * 60_000,
+          } });
+        } finally {
+          input.onActivity?.({ kind: "tool-end", name, at: Date.now() });
+          finishProviderCall();
+        }
       }
       if (request.method === "POST" && (url.pathname === "/internal/llm/v1/chat/completions" || url.pathname === "/internal/llm/v1/responses")) {
         const body = await readJson(request, MAX_MODEL_BODY);
@@ -154,19 +198,24 @@ export function createHeadlessGateway(input: GatewayInput) {
         const remainingMs = input.deadlineAt - Date.now();
         if (remainingMs <= 0) throw new GatewayError(401, "Investigation deadline reached.");
         input.onModelRequest?.({ agent, estimatedInputTokens: estimateModelInputTokens(body) });
-        await input.budget.reserveModel(modelCostReservation(body, model));
-        await proxyModelCompletion({
-          request,
-          response,
-          body,
-          agent,
-          model,
-          remainingMs,
-          providerMode: input.providerMode,
-          upstreamKey: process.env.OPENCODE_API_KEY,
-          researchUpstreamFamily: input.researchUpstreamFamily ?? "ZEN",
-          fixtureCompletion: () => input.fixtureCompletion?.(body, agent, model) ?? Promise.resolve({ content: "Headless fixture model completed." }),
-        });
+        input.onActivity?.({ kind: "model-start", name: model, at: Date.now() });
+        try {
+          await input.budget.reserveModel(modelCostReservation(body, model));
+          await proxyModelCompletion({
+            request,
+            response,
+            body,
+            agent,
+            model,
+            remainingMs,
+            providerMode: input.providerMode,
+            upstreamKey: process.env.OPENCODE_API_KEY,
+            researchUpstreamFamily: input.researchUpstreamFamily ?? "ZEN",
+            fixtureCompletion: () => input.fixtureCompletion?.(body, agent, model) ?? Promise.resolve({ content: "Headless fixture model completed." }),
+          });
+        } finally {
+          input.onActivity?.({ kind: "model-end", name: model, at: Date.now() });
+        }
         return;
       }
       json(response, 404, { error: { code: "NOT_FOUND", message: "Not found." } });
@@ -187,7 +236,8 @@ export function createHeadlessGateway(input: GatewayInput) {
     server,
     token,
     registerExcerptAllowance: (sessionId: string, characters: number) => excerptAllowances.register(sessionId, characters),
-    setPhase: (value: "RESEARCHING" | "PUBLISHING") => { phase = value; },
+    setPhase: (value: "RESEARCHING" | "FREEZING" | "PUBLISHING") => { phase = value; },
+    freezeResearch: async () => { phase = "FREEZING"; await waitForProviderDrain(); },
     cancel: () => { active = false; },
   };
 }
