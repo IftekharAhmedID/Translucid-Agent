@@ -90,7 +90,7 @@ export class ResearchStateStore {
   private pending: Promise<void> = Promise.resolve();
   private pendingFailure: unknown;
 
-  private constructor(private readonly root: string, private readonly sourceStore: FileSourceStore, state?: ResearchState) {
+  private constructor(private readonly root: string, private readonly sourceStore: FileSourceStore, state?: ResearchState, private readonly legacy = false) {
     this.state = state;
     for (const route of state?.attemptedRoutes ?? []) this.attemptedRoutes.add(route);
   }
@@ -98,13 +98,15 @@ export class ResearchStateStore {
   static async open(rootPath: string, sourceStore: FileSourceStore): Promise<ResearchStateStore> {
     const root = resolve(rootPath);
     let state: ResearchState | undefined;
+    let legacy = false;
     try {
       const parsed = researchStateSchema.parse(JSON.parse(await readFile(join(root, ".work", "research-state.json"), "utf8")));
       state = { ...parsed, publicationReady: parsed.schemaVersion === 2 ? parsed.publicationReady : false };
+      legacy = parsed.schemaVersion === 1;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") state = undefined;
     }
-    return new ResearchStateStore(root, sourceStore, state);
+    return new ResearchStateStore(root, sourceStore, state, legacy);
   }
 
   recordRoute(route: string): void {
@@ -112,6 +114,7 @@ export class ResearchStateStore {
   }
 
   async set(input: unknown): Promise<{ ok: true; claimCount: number; sourceRefs: string[] }> {
+    if (this.legacy) throw new Error("Legacy research ledgers are read-only and cannot be rewritten.");
     const value = researchStateInputSchema.parse(input);
     const sourceRefs = sortedRefs((await this.sourceStore.list()).map(({ ref }) => ref));
     const known = new Set(sourceRefs);

@@ -204,8 +204,9 @@ export class HeadlessInvestigationController {
         });
       } catch (error) {
         if (input.signal.aborted) throw error;
-        researchFailure = error;
-        input.onProgress?.(`Research is being frozen: ${error instanceof Error ? error.message : String(error)}`);
+        const deadlineFailure = researchAbort.signal.aborted && researchAbort.signal.reason instanceof ResearchDeadlineError ? researchAbort.signal.reason : undefined;
+        researchFailure = deadlineFailure ?? error;
+        input.onProgress?.(`Research is being frozen: ${researchFailure instanceof Error ? researchFailure.message : String(researchFailure)}`);
         await client.session.abort({ sessionID: leadId, directory }).catch(() => undefined);
       } finally {
         clearTimeout(timeout);

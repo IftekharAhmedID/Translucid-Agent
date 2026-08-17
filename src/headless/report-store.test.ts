@@ -10,7 +10,7 @@ import { ResearchStateStore } from "./research-state.ts";
 
 const INPUT_SHA256 = "a".repeat(64);
 
-async function fixture() {
+async function fixture(bindSnapshot = true) {
   const root = await mkdtemp(join(tmpdir(), "translucid-report-store-"));
   await mkdir(join(root, "input"), { recursive: true });
   await mkdir(join(root, "sources", "blobs"), { recursive: true });
@@ -60,7 +60,7 @@ async function fixture() {
     researchState,
   };
   const store = await ReportStore.open(root, options);
-  await store.bindResearchSnapshot("c".repeat(64));
+  if (bindSnapshot) await store.bindResearchSnapshot("c".repeat(64));
   return { root, options, researchState, store };
 }
 
@@ -181,4 +181,46 @@ test("finding status accepts only the five documented values", () => {
   for (const status of [-2, -1, 0, 1, 2]) assert.equal(reportFindingInputSchema.parse({ ...finding, status }).status, status);
   assert.throws(() => reportFindingInputSchema.parse({ ...finding, status: 3 }));
   assert.throws(() => reportFindingInputSchema.parse({ ...finding, status: 0.5 }));
+});
+
+test("legacy report drafts are inspectable but cannot be migrated or republished", async () => {
+  const { root, options } = await fixture();
+  try {
+    await writeFile(join(root, ".work", "report-draft.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      run: { id: options.runId, inputSha256: options.inputSha256, startedAt: options.startedAt, runtime: options.runtime, model: options.model },
+      state: "OPEN",
+      revision: 2,
+      summary: "Legacy summary",
+      findings: [],
+    })}\n`);
+    const legacy = await ReportStore.open(root, options);
+    assert.equal((await legacy.progress()).schemaVersion, 1);
+    await assert.rejects(legacy.setSummary({ summary: "No rewrite", researchClaimIds: ["C1"] }), (error: unknown) => error instanceof ReportStoreError && error.code === "LEGACY_DRAFT_READ_ONLY");
+    await assert.rejects(legacy.result("2026-08-14T01:00:00.000Z"), (error: unknown) => error instanceof ReportStoreError && error.code === "LEGACY_DRAFT_READ_ONLY");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("report mappings reject unknown, duplicate, and unlinked research references", async () => {
+  const { root, options, store } = await fixture();
+  try {
+    await assert.rejects(store.setSummary({ summary: "Unknown", researchClaimIds: ["MISSING"] }), (error: unknown) => error instanceof ReportStoreError && error.code === "UNKNOWN_RESEARCH_CLAIM");
+    await assert.rejects(store.setSummary({ summary: "Duplicate", researchClaimIds: ["C1", "C1"] }), (error: unknown) => error instanceof ReportStoreError && error.code === "DUPLICATE_RESEARCH_CLAIM");
+    const other = await options.sourceStore.capture({ kind: "SOURCE_CONTENT", provider: "fixture", providerRoute: "fixture.other", sourceUrl: "https://example.com/other", mimeType: "text/plain", content: "Other", provenance: {} });
+    await assert.rejects(store.upsertFinding({ ...finding, sourceRefs: [other.ref], researchClaimIds: ["C1"] }), (error: unknown) => error instanceof ReportStoreError && error.code === "UNLINKED_SOURCE");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("new report mutations and finalization require host snapshot binding", async () => {
+  const { root, store } = await fixture(false);
+  try {
+    await assert.rejects(store.setSummary({ summary: "Unbound", researchClaimIds: ["C1"] }), (error: unknown) => error instanceof ReportStoreError && error.code === "RESEARCH_SNAPSHOT_REQUIRED");
+    await assert.rejects(store.finalize(), (error: unknown) => error instanceof ReportStoreError && error.code === "RESEARCH_SNAPSHOT_REQUIRED");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

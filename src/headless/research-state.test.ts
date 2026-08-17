@@ -84,3 +84,28 @@ test("requires publication readiness, rejects duplicate claim IDs, and pages dur
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("legacy research ledgers remain readable and read-only", async () => {
+  const root = await mkdtemp(join(tmpdir(), "translucid-research-state-legacy-"));
+  try {
+    const sourceStore = await FileSourceStore.open(root);
+    await mkdir(join(root, ".work"), { recursive: true });
+    const legacy = {
+      schemaVersion: 1,
+      updatedAt: "2026-08-14T00:00:00.000Z",
+      identityAnchors: ["candidate@example.test"],
+      sourceRefs: [],
+      attemptedRoutes: [],
+      claims: [{ id: "L001", claim: "Historical claim", provisionalStatus: "unresolved", supportingRefs: [], conflictingRefs: [], remainingGap: "Need evidence.", importance: "material" }],
+    };
+    const path = join(root, ".work", "research-state.json");
+    await writeFile(path, `${JSON.stringify(legacy)}\n`);
+    const state = await ResearchStateStore.open(root, sourceStore);
+    assert.equal((await state.get()).state?.publicationReady, false);
+    assert.equal(await state.hasValidState(), false);
+    await assert.rejects(state.set({ publicationReady: true, claims: legacy.claims }), /read-only/i);
+    assert.equal(await readFile(path, "utf8"), `${JSON.stringify(legacy)}\n`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
