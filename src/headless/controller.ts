@@ -101,6 +101,8 @@ function unwrap<T>(result: { data?: T; error?: unknown }, action: string): T {
   return result.data;
 }
 
+const ledgerRecoveryPrompt = "The host has not observed a durable research.state.set result after your research turn. Resume from your current investigation context, complete any final gap check needed for a publication-ready ledger, then call research.state.set exactly once with every material claim and its exact captured S references. Set publicationReady true only when the evidence is sufficient. Make the tool call now; do not answer with prose. Never invent a source reference.";
+
 type Input = {
   root: string;
   handle: RunHandle;
@@ -173,6 +175,17 @@ export class HeadlessInvestigationController {
           readActivity: () => input.activity,
           phase: "RESEARCH",
         });
+        const stateAfterResearch = await input.researchState.current();
+        if (!stateAfterResearch || !stateAfterResearch.publicationReady) {
+          unwrap(await client.session.prompt({
+            sessionID: leadId,
+            directory,
+            agent: "lead-researcher",
+            model: { providerID: "translucid", modelID: input.researchModel },
+            variant: "xhigh",
+            parts: [{ type: "text", text: ledgerRecoveryPrompt }],
+          }, { signal: researchAbort.signal }), "research ledger recovery prompt");
+        }
       } catch (error) {
         if (input.signal.aborted) throw error;
         const deadlineFailure = researchAbort.signal.aborted && researchAbort.signal.reason instanceof ResearchDeadlineError ? researchAbort.signal.reason : undefined;
