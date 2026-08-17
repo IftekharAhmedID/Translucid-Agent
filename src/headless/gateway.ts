@@ -53,7 +53,6 @@ type GatewayInput = {
   agentTools?: Map<string, Set<string>>;
   reportStore?: ReportStore;
   researchState?: ResearchStateStore;
-  onResearchStateSet?: () => Promise<void> | void;
   researchUpstreamFamily?: ResearchUpstreamFamily;
   fixtureCompletion?: (body: Record<string, unknown>, agent: string, model: string) => Promise<{ content?: string; toolCall?: { name: string; arguments: Record<string, unknown> } }>;
   onModelRequest?: (request: { agent: string; estimatedInputTokens: number }) => void;
@@ -67,6 +66,7 @@ export function createHeadlessGateway(input: GatewayInput) {
   const reportTools = new Set<string>(reportToolNames);
   let active = true;
   let phase: "RESEARCHING" | "FREEZING" | "PUBLISHING" = "RESEARCHING";
+  let leadSessionId: string | undefined;
   let providersInFlight = 0;
   const providerDrainWaiters: Array<() => void> = [];
 
@@ -78,6 +78,14 @@ export function createHeadlessGateway(input: GatewayInput) {
   function finishProviderCall(): void {
     providersInFlight -= 1;
     if (providersInFlight === 0) while (providerDrainWaiters.length) providerDrainWaiters.shift()!();
+  }
+
+  function authorizeOperationalSession(body: Record<string, unknown>): Record<string, unknown> {
+    const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
+    const sessionId = typeof operational.sessionId === "string" ? operational.sessionId : "";
+    if (!leadSessionId) throw new GatewayError(403, "Lead session is not registered.");
+    if (sessionId !== leadSessionId) throw new GatewayError(403, "Tool session does not match the registered lead session.");
+    return operational;
   }
 
   const authorize = (request: IncomingMessage, kind: "tool" | "model", name: string): void => {
@@ -97,8 +105,8 @@ export function createHeadlessGateway(input: GatewayInput) {
     }
     if (kind === "tool") {
       if (reportTools.has(name) && phase !== "PUBLISHING") throw new GatewayError(403, "Report tools are unavailable until publishing begins.");
-      if (name === "research.state.set" && phase === "PUBLISHING") throw new GatewayError(403, "Research state is immutable after publication begins.");
-      if (name !== "source.excerpts" && name !== "source.inventory" && name !== "research.state.set" && !reportTools.has(name) && phase !== "RESEARCHING") {
+      if (name === "research.state.set" && phase !== "RESEARCHING") throw new GatewayError(403, "Research state is immutable after research ends.");
+      if (name !== "source.excerpts" && name !== "source.inventory" && name !== "research.state.set" && name !== "research.state.get" && !reportTools.has(name) && phase !== "RESEARCHING") {
         throw new GatewayError(403, `Publishing phase denies ${name}.`);
       }
     }
@@ -111,6 +119,7 @@ export function createHeadlessGateway(input: GatewayInput) {
         const body = await readJson(request, MAX_TOOL_BODY);
         const name = typeof body.tool === "string" ? body.tool : "";
         authorize(request, "tool", name);
+        const operational = authorizeOperationalSession(body);
         if (name === "source.inventory") {
           if (!input.sourceStore) throw new GatewayError(403, "Source inventory is unavailable in this run.");
           const args = body.arguments && typeof body.arguments === "object" ? body.arguments as { cursor?: unknown; limit?: unknown } : {};
@@ -121,12 +130,15 @@ export function createHeadlessGateway(input: GatewayInput) {
         }
         if (name === "research.state.set") {
           if (!input.researchState) throw new GatewayError(403, "Research state is unavailable in this run.");
-          const result = await input.researchState.set(body.arguments);
-          if (phase === "FREEZING") {
-            await input.onResearchStateSet?.();
-            phase = "PUBLISHING";
-          }
-          return json(response, 200, result);
+          return json(response, 200, await input.researchState.set(body.arguments));
+        }
+        if (name === "research.state.get") {
+          if (!input.researchState) throw new GatewayError(403, "Research state is unavailable in this run.");
+          const args = body.arguments && typeof body.arguments === "object" ? body.arguments as { cursor?: unknown; limit?: unknown } : {};
+          return json(response, 200, await input.researchState.get({
+            ...(typeof args.cursor === "string" ? { cursor: args.cursor } : {}),
+            ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
+          }));
         }
         if (reportTools.has(name)) {
           if (!input.reportStore) throw new GatewayError(403, "Report publishing is unavailable in this run.");
@@ -136,7 +148,6 @@ export function createHeadlessGateway(input: GatewayInput) {
           else if (name === "report.finding.remove") result = await input.reportStore.removeFinding(body.arguments);
           else if (name === "report.progress.get") result = await input.reportStore.progress();
           else if (name === "report.finalize") result = await input.reportStore.finalize();
-          const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
           await input.reportStore.recordToolCall({
             tool: name,
             sessionId: typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session",
@@ -147,7 +158,6 @@ export function createHeadlessGateway(input: GatewayInput) {
         }
         if (name === "source.excerpts") {
           const args = body.arguments && typeof body.arguments === "object" ? body.arguments as Record<string, unknown> : {};
-          const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
           const sessionId = typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session";
           const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
           const sourceRef = typeof args.sourceRef === "string" ? args.sourceRef : "";
@@ -165,7 +175,6 @@ export function createHeadlessGateway(input: GatewayInput) {
         }
         if (!toolNames.includes(name as (typeof toolNames)[number])) throw new GatewayError(403, "State and database tools are unavailable in headless runs.");
         if (!input.executor) throw new GatewayError(403, "Research providers are unavailable after publication begins.");
-        const operational = body.operational && typeof body.operational === "object" ? body.operational as Record<string, unknown> : {};
         input.researchState?.recordRoute(name);
         providersInFlight += 1;
         input.onActivity?.({ kind: "tool-start", name, at: Date.now() });
@@ -236,8 +245,17 @@ export function createHeadlessGateway(input: GatewayInput) {
     server,
     token,
     registerExcerptAllowance: (sessionId: string, characters: number) => excerptAllowances.register(sessionId, characters),
+    setLeadSession: (sessionId: string) => {
+      if (!sessionId.trim()) throw new Error("Lead session ID is required.");
+      if (leadSessionId && leadSessionId !== sessionId) throw new Error("Lead session ID cannot be changed.");
+      leadSessionId = sessionId;
+    },
     setPhase: (value: "RESEARCHING" | "FREEZING" | "PUBLISHING") => { phase = value; },
-    freezeResearch: async () => { phase = "FREEZING"; await waitForProviderDrain(); },
+    freezeResearch: async () => {
+      phase = "FREEZING";
+      await waitForProviderDrain();
+      await input.researchState?.current();
+    },
     cancel: () => { active = false; },
   };
 }

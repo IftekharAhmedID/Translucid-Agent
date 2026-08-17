@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { ReportStore, ReportStoreError, reportFindingInputSchema } from "./report-store.ts";
 import { FileSourceStore } from "./source-store.ts";
+import { ResearchStateStore } from "./research-state.ts";
 
 const INPUT_SHA256 = "a".repeat(64);
 
@@ -47,6 +48,8 @@ async function fixture() {
   }));
   await writeFile(join(root, "sources", "blobs", "source.txt"), "x");
   const sourceStore = await FileSourceStore.open(root);
+  const researchState = await ResearchStateStore.open(root, sourceStore);
+  await researchState.set({ publicationReady: true, claims: [{ id: "C1", claim: "Arm role and employment interval", provisionalStatus: "established", supportingRefs: ["S1"], conflictingRefs: [], remainingGap: null, importance: "material" }] });
   const options = {
     runId: "run-1",
     inputSha256: INPUT_SHA256,
@@ -54,8 +57,11 @@ async function fixture() {
     runtime: "LOCAL" as const,
     model: "research-model",
     sourceStore,
+    researchState,
   };
-  return { root, options, store: await ReportStore.open(root, options) };
+  const store = await ReportStore.open(root, options);
+  await store.bindResearchSnapshot("c".repeat(64));
+  return { root, options, researchState, store };
 }
 
 const finding = {
@@ -73,17 +79,18 @@ const finding = {
   notes: "",
   status: 2 as const,
   sourceRefs: ["S1"],
+  researchClaimIds: ["C1"],
 };
 
 test("persists summary and idempotent finding upserts across restart", async () => {
   const { root, options, store } = await fixture();
   try {
-    await store.setSummary({ summary: "The investigation corroborated the current role." });
+    await store.setSummary({ summary: "The investigation corroborated the current role.", researchClaimIds: ["C1"] });
     await store.upsertFinding(finding);
     await store.upsertFinding({ ...finding, evidence: "Updated evidence synthesis." });
 
     const progress = await store.progress();
-    assert.equal(progress.revision, 3);
+    assert.equal(progress.revision, 4);
     assert.equal(progress.findings.length, 1);
     assert.equal(progress.findings[0]?.order, 1);
     assert.equal(progress.findings[0]?.evidence, "Updated evidence synthesis.");
@@ -124,7 +131,7 @@ test("returns actionable errors for invalid anchors and source references", asyn
       store.upsertFinding({ ...finding, sourceRefs: ["S999"] }),
       (error: unknown) => error instanceof ReportStoreError && error.code === "UNKNOWN_SOURCE" && error.field === "sourceRefs",
     );
-    assert.equal((await store.progress()).revision, 0);
+    assert.equal((await store.progress()).revision, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -135,12 +142,17 @@ test("rejects discovery-only sources while accepting captured provider responses
   try {
     const discovery = await options.sourceStore.capture({ kind: "SEARCH_DISCOVERY", provider: "exa", providerRoute: "exa.search", sourceUrl: "https://api.exa.ai/search", mimeType: "application/json", content: { results: [] }, provenance: {} });
     const providerResponse = await options.sourceStore.capture({ kind: "PROVIDER_RESPONSE", provider: "github", providerRoute: "github.graphql", sourceUrl: "https://api.github.com/graphql", mimeType: "application/json", content: { data: { viewer: "Synthetic Candidate" } }, provenance: {} });
+    await options.researchState!.set({ publicationReady: true, claims: [
+      { id: "C1", claim: "Arm role and employment interval", provisionalStatus: "established", supportingRefs: ["S1"], conflictingRefs: [], remainingGap: null, importance: "material" },
+      { id: "C2", claim: "Discovery lead", provisionalStatus: "unresolved", supportingRefs: [discovery.ref], conflictingRefs: [], remainingGap: "Need a citable record.", importance: "material" },
+      { id: "C3", claim: "Provider corroboration", provisionalStatus: "established", supportingRefs: [providerResponse.ref], conflictingRefs: [], remainingGap: null, importance: "material" },
+    ] });
 
     await assert.rejects(
-      store.upsertFinding({ ...finding, sourceRefs: [discovery.ref] }),
+      store.upsertFinding({ ...finding, sourceRefs: [discovery.ref], researchClaimIds: ["C2"] }),
       (error: unknown) => error instanceof ReportStoreError && error.code === "INELIGIBLE_SOURCE" && error.field === "sourceRefs",
     );
-    await store.upsertFinding({ ...finding, sourceRefs: [providerResponse.ref] });
+    await store.upsertFinding({ ...finding, sourceRefs: [providerResponse.ref], researchClaimIds: ["C3"] });
     assert.deepEqual((await store.progress()).findings[0]?.sources, [{ sourceRef: providerResponse.ref, url: "https://api.github.com/graphql" }]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -151,12 +163,13 @@ test("publishing requires basic structure and makes the report immutable", async
   const { root, store } = await fixture();
   try {
     await assert.rejects(store.finalize(), (error: unknown) => error instanceof ReportStoreError && error.code === "INCOMPLETE_REPORT");
-    await store.setSummary({ summary: "Summary" });
+    await store.setSummary({ summary: "Summary", researchClaimIds: ["C1"] });
     await store.upsertFinding(finding);
     await store.finalize();
     await assert.rejects(store.removeFinding({ findingId: "F001" }), (error: unknown) => error instanceof ReportStoreError && error.code === "REPORT_IMMUTABLE");
     const result = await store.result("2026-08-14T01:00:00.000Z");
-    assert.equal(result.schemaVersion, 2);
+    assert.equal(result.schemaVersion, 3);
+    assert.equal(result.researchSnapshotSha256, "c".repeat(64));
     assert.equal(result.run.inputSha256, INPUT_SHA256);
     assert.equal(result.findings[0]?.sources[0]?.url, "https://example.com/profile");
   } finally {

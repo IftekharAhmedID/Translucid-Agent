@@ -50,7 +50,7 @@ const snapshotSchema = z.object({
   schemaVersion: z.literal(1),
   research: z.object({
     artifacts: z.record(z.string(), z.string().regex(/^[a-f0-9]{64}$/)),
-    config: z.object({ runtime: z.enum(["LOCAL", "E2B"]), researchModel: z.string().min(1) }).loose(),
+    config: z.object({ runtime: z.enum(["LOCAL", "E2B"]), researchModel: z.string().min(1), leadSessionId: z.string().min(1).optional() }).loose(),
     completedAt: z.string().min(1),
   }).strict(),
 }).strict();
@@ -88,6 +88,7 @@ export class ResearchStateStore {
   private state: ResearchState | undefined;
   private readonly attemptedRoutes = new Set<string>();
   private pending: Promise<void> = Promise.resolve();
+  private pendingFailure: unknown;
 
   private constructor(private readonly root: string, private readonly sourceStore: FileSourceStore, state?: ResearchState) {
     this.state = state;
@@ -101,7 +102,7 @@ export class ResearchStateStore {
       const parsed = researchStateSchema.parse(JSON.parse(await readFile(join(root, ".work", "research-state.json"), "utf8")));
       state = { ...parsed, publicationReady: parsed.schemaVersion === 2 ? parsed.publicationReady : false };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") state = undefined;
     }
     return new ResearchStateStore(root, sourceStore, state);
   }
@@ -129,14 +130,16 @@ export class ResearchStateStore {
     const operation = this.pending.then(async () => {
       await atomicWrite(join(this.root, ".work", "research-state.json"), next);
       this.state = next;
+      this.pendingFailure = undefined;
     });
-    this.pending = operation.catch(() => undefined);
+    this.pending = operation.catch((error) => { this.pendingFailure = error; });
     await operation;
     return { ok: true, claimCount: next.claims.length, sourceRefs: next.sourceRefs };
   }
 
   async current(): Promise<ResearchState | undefined> {
     await this.pending;
+    if (this.pendingFailure) throw this.pendingFailure;
     return this.state ? structuredClone(this.state) : undefined;
   }
 
@@ -175,8 +178,9 @@ export class ResearchStateStore {
     const operation = this.pending.then(async () => {
       await atomicWrite(join(this.root, ".work", "research-state.json"), next);
       this.state = next;
+      this.pendingFailure = undefined;
     });
-    this.pending = operation.catch(() => undefined);
+    this.pending = operation.catch((error) => { this.pendingFailure = error; });
     await operation;
   }
 }
@@ -212,16 +216,22 @@ async function snapshotFiles(root: string, sourceStore: FileSourceStore): Promis
   return [...new Set(present)].sort();
 }
 
-export async function writeResearchSnapshot(rootPath: string, config: { runtime: "LOCAL" | "E2B"; researchModel: string }, sourceStore: FileSourceStore): Promise<void> {
+export async function writeResearchSnapshot(rootPath: string, config: { runtime: "LOCAL" | "E2B"; researchModel: string; leadSessionId?: string }, sourceStore: FileSourceStore): Promise<string> {
   const root = resolve(rootPath);
   const state = await readFile(join(root, ".work", "research-state.json"), "utf8");
   researchStateSchema.parse(JSON.parse(state));
   const files = await snapshotFiles(root, sourceStore);
   const artifacts = Object.fromEntries(await Promise.all(files.map(async (path) => [path, sha256(await readFile(join(root, path)))])));
-  await atomicWrite(join(root, ".work", "research-snapshot.json"), {
+  const snapshotPath = join(root, ".work", "research-snapshot.json");
+  await atomicWrite(snapshotPath, {
     schemaVersion: 1,
     research: { artifacts, config, completedAt: new Date().toISOString() },
   });
+  return sha256(await readFile(snapshotPath));
+}
+
+export async function researchSnapshotSha256(rootPath: string): Promise<string> {
+  return sha256(await readFile(join(resolve(rootPath), ".work", "research-snapshot.json")));
 }
 
 export async function verifyResearchSnapshot(rootPath: string): Promise<{

@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { canPublishAfterResearchFailure, classifyInvestigationFailure, driveReportPublishing, InvestigationStallError, publishingPrompt, waitForResearchIdle } from "./controller.ts";
+import { canPublishAfterResearchFailure, classifyInvestigationFailure, driveReportPublishing, InvestigationStallError, publishingPrompt, ResearchDeadlineError, waitForResearchIdle } from "./controller.ts";
 
-test("publishing starts by persisting explicit claim state and never enables providers", () => {
+test("publishing starts by recovering frozen claim state and never enables providers", () => {
   const prompt = publishingPrompt();
-  assert.match(prompt, /research\.state\.set/);
+  assert.match(prompt, /research\.state\.get/);
+  assert.doesNotMatch(prompt, /1\. First call research\.state\.set/);
+  assert.match(prompt, /researchClaimIds/);
   assert.match(prompt, /SEARCH_DISCOVERY/);
   assert.match(prompt, /report\.finalize/);
   assert.match(prompt, /External provider tools are disabled/i);
@@ -77,9 +79,11 @@ test("classifies cancellation and ordinary failures without specialist handoff s
   assert.deepEqual(classifyInvestigationFailure(new Error("provider failed"), false, true), { code: "INVESTIGATION_FAILED", phase: "INVESTIGATION" });
 });
 
-test("only publishes after a stalled research stage when valid claim state already exists", () => {
+test("only whitelisted research termination can publish with a ready ledger", () => {
   const stalled = new InvestigationStallError("RESEARCH", "no progress");
   assert.equal(canPublishAfterResearchFailure(stalled, false), false);
   assert.equal(canPublishAfterResearchFailure(stalled, true), true);
-  assert.equal(canPublishAfterResearchFailure(new Error("deadline"), false), true);
+  assert.equal(canPublishAfterResearchFailure(new ResearchDeadlineError(), true), true);
+  assert.equal(canPublishAfterResearchFailure(new Error("provider integrity failure"), true), false);
+  assert.equal(canPublishAfterResearchFailure(undefined, true), true);
 });

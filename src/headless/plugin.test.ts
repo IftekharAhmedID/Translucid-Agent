@@ -12,7 +12,7 @@ process.env.CASE_ROOT = join(tmpdir(), `translucid-plugin-${process.pid}`);
 
 after(async () => rm(process.env.CASE_ROOT!, { recursive: true, force: true }));
 
-test("compaction context preserves complete captured refs, claim state, and route history", async () => {
+test("compaction context preserves refs and route history and directs ledger recovery through state.get", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (_input, init) => {
     const body = JSON.parse(String(init?.body)) as { tool: string; arguments?: unknown; operational: { sessionId: string } };
@@ -29,13 +29,14 @@ test("compaction context preserves complete captured refs, claim state, and rout
     const state = hooks.tool!["research.state.set"]!;
     await chat({ sessionID: "session-one" }, { message: {} as never, parts: [{ type: "text", text: "Investigate candidate chronology" }] as never });
     await search.execute({ query: "first query", mode: "fast", resultLimit: 10 }, { sessionID: "session-one", agent: "lead-researcher", abort: new AbortController().signal } as never);
-    await state.execute({ claims: [{ id: "F001", claim: "A claim", provisionalStatus: "established", supportingRefs: ["S3"], conflictingRefs: [], remainingGap: null, importance: "material" }], identityAnchors: ["candidate@example.test"] }, { sessionID: "session-one", agent: "lead-researcher", abort: new AbortController().signal } as never);
+    await state.execute({ publicationReady: true, claims: [{ id: "F001", claim: "A claim", provisionalStatus: "established", supportingRefs: ["S3"], conflictingRefs: [], remainingGap: null, importance: "material" }], identityAnchors: ["candidate@example.test"] }, { sessionID: "session-one", agent: "lead-researcher", abort: new AbortController().signal } as never);
     const output = { context: [] as string[] };
     await compact({ sessionID: "session-one" }, output);
     const text = output.context.join("\n");
     assert.match(text, /S1/);
     assert.match(text, /S3/);
-    assert.match(text, /F001|established/);
+    assert.match(text, /research\.state\.get/);
+    assert.doesNotMatch(text, /Latest claim state:/);
     assert.match(text, /web\.search/);
     assert.ok(Buffer.byteLength(text, "utf8") <= 8 * 1024);
   } finally {

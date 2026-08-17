@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { type ChildProcess } from "node:child_process";
-import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { toolNames } from "../providers/contracts.ts";
@@ -14,8 +14,8 @@ import { classifyInvestigationFailure, HeadlessInvestigationController } from ".
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 import { createHeadlessGateway } from "./gateway.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
-import { reportToolNames, ReportStore } from "./report-store.ts";
-import { ResearchStateStore, writeResearchSnapshot } from "./research-state.ts";
+import { leanReportResultSchema, reportToolNames, ReportStore } from "./report-store.ts";
+import { ResearchStateStore, researchSnapshotSha256, verifyResearchSnapshot, writeResearchSnapshot } from "./research-state.ts";
 import { renderLeanReport, verifyInvestigationReport } from "./report.ts";
 import { createRunWorkspace, removeRunDiagnostics, sealRunFailure, type RunWorkspace } from "./run-workspace.ts";
 import { attachOpenCodeTui } from "./visible-tui.ts";
@@ -45,7 +45,7 @@ function providerEnvironment(mode: "fixture" | "live"): Record<string, string | 
 
 function agentToolAllowlist(): Map<string, Set<string>> {
   return new Map([
-    ["lead-researcher", new Set([...toolNames, "source.inventory", "source.excerpts", "research.state.set", ...reportToolNames])],
+    ["lead-researcher", new Set([...toolNames, "source.inventory", "source.excerpts", "research.state.set", "research.state.get", ...reportToolNames])],
   ]);
 }
 
@@ -95,6 +95,7 @@ async function main(): Promise<void> {
     const expectedManifestHash = await getPinnedLocalManifestHash();
     const researchModel = RESEARCH_MODEL;
     const budget = new MemoryRunBudget(headlessBudgetCeilings(), { onChange: () => undefined });
+    const researchState = await ResearchStateStore.open(workspace.root, workspace.sourceStore);
     const reportStore = await ReportStore.open(workspace.root, {
       runId,
       inputSha256: workspace.inputSha256,
@@ -102,14 +103,35 @@ async function main(): Promise<void> {
       runtime: options.runtime,
       model: researchModel,
       sourceStore: workspace.sourceStore,
+      researchState,
     });
-    const researchState = await ResearchStateStore.open(workspace.root, workspace.sourceStore);
     const activity = { lastProgressAt: Date.now(), modelStartedAt: undefined as number | undefined };
+    let leadSessionId = "";
     const persistSnapshot = async () => {
-      await researchState.refresh();
       const integrity = await workspace!.sourceStore.verify();
-      if (!integrity.valid) throw new Error(`Source integrity failed before research snapshot: ${integrity.invalidSourceRefs.join(", ")}.`);
-      await writeResearchSnapshot(workspace!.root, { runtime: options.runtime, researchModel }, workspace!.sourceStore);
+      if (!integrity.valid) {
+        const error = new Error(`Source integrity failed before research snapshot: ${integrity.invalidSourceRefs.join(", ")}.`);
+        error.name = "RESEARCH_SOURCE_INTEGRITY_FAILED";
+        throw error;
+      }
+      let sha256: string;
+      try {
+        sha256 = await writeResearchSnapshot(workspace!.root, { runtime: options.runtime, researchModel, leadSessionId }, workspace!.sourceStore);
+      } catch (error) {
+        const wrapped = new Error(`Research snapshot could not be written: ${error instanceof Error ? error.message : String(error)}`);
+        wrapped.name = "RESEARCH_SNAPSHOT_WRITE_FAILED";
+        throw wrapped;
+      }
+      try {
+        await verifyResearchSnapshot(workspace!.root);
+        const verifiedSha256 = await researchSnapshotSha256(workspace!.root);
+        if (verifiedSha256 !== sha256) throw new Error("Snapshot digest changed during immediate verification.");
+      } catch (error) {
+        const wrapped = new Error(`Research snapshot verification failed: ${error instanceof Error ? error.message : String(error)}`);
+        wrapped.name = "RESEARCH_SNAPSHOT_VERIFY_FAILED";
+        throw wrapped;
+      }
+      return sha256;
     };
     const providerExecutor = new ProviderExecutor(providerEnvironment(options.providerMode), createFileProviderBackend({ sourceStore: workspace.sourceStore, budget, deadlineAt: deadlineAt.getTime() }));
     const researchProvider = process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
@@ -117,12 +139,11 @@ async function main(): Promise<void> {
     gateway = createHeadlessGateway({
       runId,
       deadlineAt: deadlineAt.getTime(),
-      allowedTools: new Set([...toolNames, "source.inventory", "source.excerpts", "research.state.set", ...reportToolNames]),
+      allowedTools: new Set([...toolNames, "source.inventory", "source.excerpts", "research.state.set", "research.state.get", ...reportToolNames]),
       allowedModels: new Set([researchModel]),
       agentTools: agentToolAllowlist(),
       reportStore,
       researchState,
-      onResearchStateSet: persistSnapshot,
       executor: providerExecutor,
       sourceStore: workspace.sourceStore,
       budget,
@@ -177,14 +198,31 @@ async function main(): Promise<void> {
       activity,
       beginPublishing: () => gateway!.freezeResearch(),
       persistResearchSnapshot: persistSnapshot,
+      bindResearchSnapshot: (sha256) => reportStore.bindResearchSnapshot(sha256).then(() => undefined),
+      enterPublishing: () => gateway!.setPhase("PUBLISHING"),
       onLeadStarted: async (sessionId) => {
+        leadSessionId = sessionId;
+        gateway?.setLeadSession(sessionId);
         process.stderr.write(`Run ${runId}: lead session ${sessionId} is visible${options.watch ? " in the attached TUI" : ` with npm run attach -- ${runId}`}.\n`);
         if (options.watch && handle) watchProcess = attachOpenCodeTui(handle, password, sessionId);
       },
       onProgress: (message) => { if (!options.watch) process.stderr.write(`Run ${runId}: ${message}\n`); },
     });
     const integrity = await workspace.sourceStore.verify();
-    if (!integrity.valid) throw new Error(`Source integrity failed for ${integrity.invalidSourceRefs.join(", ")}.`);
+    if (!integrity.valid) {
+      const error = new Error(`Source integrity failed for ${integrity.invalidSourceRefs.join(", ")}.`);
+      error.name = "RESEARCH_SOURCE_INTEGRITY_FAILED";
+      throw error;
+    }
+    if (output.result.schemaVersion !== 3) throw new Error("Only result-v3 may be published by a new run.");
+    await verifyResearchSnapshot(workspace.root);
+    const actualSnapshotSha256 = await researchSnapshotSha256(workspace.root);
+    const draft = await reportStore.progress();
+    if (draft.schemaVersion !== 2 || draft.researchSnapshotSha256 !== actualSnapshotSha256 || output.result.researchSnapshotSha256 !== actualSnapshotSha256) {
+      const error = new Error("Bound research snapshot SHA-256 does not match the verified snapshot.");
+      error.name = "RESEARCH_SNAPSHOT_VERIFY_FAILED";
+      throw error;
+    }
     const resultPath = join(workspace.root, "result.json");
     const reportPath = join(workspace.root, "report.pdf");
     reportTemporaryPath = `${reportPath}.tmp`;
@@ -208,6 +246,7 @@ async function main(): Promise<void> {
       leadSessionId: output.leadSessionId,
       researchAgent: "lead-researcher",
       researchModel,
+      researchSnapshotSha256: actualSnapshotSha256,
       inputSha256: workspace.inputSha256,
       reportDraftRevision: progress.revision,
       sourceRefs: citedSourceRefs,
@@ -218,6 +257,10 @@ async function main(): Promise<void> {
     await reportStore.markPublished();
     if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
     await atomicWrite(resultPath, `${JSON.stringify(output.result, null, 2)}\n`);
+    const writtenResult = leanReportResultSchema.parse(JSON.parse(await readFile(resultPath, "utf8")));
+    const pdfMtime = (await stat(reportPath)).mtimeMs;
+    const resultMtime = (await stat(resultPath)).mtimeMs;
+    if (writtenResult.schemaVersion !== 3 || writtenResult.researchSnapshotSha256 !== actualSnapshotSha256 || resultMtime < pdfMtime) throw new Error("Published result failed final digest or ordering validation.");
     process.stdout.write(`${JSON.stringify({ runId, result: resultPath, report: reportPath, sources: join(workspace.root, "sources") }, null, 2)}\n`);
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error("Unknown headless investigation failure.");

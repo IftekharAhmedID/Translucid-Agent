@@ -10,7 +10,7 @@ test("headless runtime exposes one Luna investigator with local recall and no ta
   const cli = await readFile(join(process.cwd(), "src", "headless", "cli.ts"), "utf8");
   const config = JSON.parse(await readFile(join(root, "opencode.json"), "utf8"));
   assert.match(lead, /model: translucid\/gpt-5\.6-luna/);
-  for (const name of ["source.inventory", "source.excerpts", "research.state.set", "report.summary.set", "report.finding.upsert", "report.finding.remove", "report.progress.get", "report.finalize"]) assert.match(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
+  for (const name of ["source.inventory", "source.excerpts", "research.state.set", "research.state.get", "report.summary.set", "report.finding.upsert", "report.finding.remove", "report.progress.get", "report.finalize"]) assert.match(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
   for (const name of ["professional.profile", "github.rest", "public_records.search", "scholarly.search", "packages.inspect", "security_records.search"]) assert.match(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
   assert.doesNotMatch(lead, /\btask:/);
   assert.doesNotMatch(lead, /specialist|delegate/i);

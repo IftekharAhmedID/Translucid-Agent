@@ -45,17 +45,17 @@ npm run investigate -- \
 
 The lead uses:
 
-- `report.summary.set({ summary })`
-- `report.finding.upsert({ findingId, section, claim, anchor, evidence, notes, status, sourceRefs })`
+- `report.summary.set({ summary, researchClaimIds })`
+- `report.finding.upsert({ findingId, section, claim, anchor, evidence, notes, status, sourceRefs, researchClaimIds })`
 - `report.finding.remove({ findingId })`
 - `report.progress.get()`
 - `report.finalize()`
 
-Finding IDs are idempotency keys. The anchor stores a PDF page, line range, and exact text and is bound to the immutable input SHA-256. Sources are references such as `S12`; URLs are resolved from the captured manifest. Status values are investigator-authored: `2`, `1`, `0`, `-1`, and `-2`.
+Finding IDs are idempotency keys. Every new draft is bound to a verified research snapshot SHA-256, and every summary/finding maps to unique frozen research claim IDs. The anchor stores a PDF page, line range, and exact text and is bound to the immutable input SHA-256. Sources are references such as `S12`; URLs are resolved from the captured manifest. Status values are investigator-authored: `2`, `1`, `0`, `-1`, and `-2`.
 
 ## Research and publication boundary
 
-Provider calls are captured before their results are returned to Luna. Use `source.inventory({ cursor, limit })` to recover every captured reference, including non-citable `SEARCH_DISCOVERY` leads, and `source.excerpts` for exact local text without a network refetch. Luna saves explicit claim state through `research.state.set`; the host validates schema and source-reference existence but does not adjudicate evidence. At the research freeze, external providers are disabled, local recall remains available, and one bounded publication continuation produces the PDF before `result.json`.
+Provider calls are captured before their results are returned to Luna. Use `source.inventory({ cursor, limit })` to recover every captured reference, including non-citable `SEARCH_DISCOVERY` leads, and `source.excerpts` for exact local text without a network refetch. Luna saves explicit publication-ready claim state through `research.state.set`; after freeze, recover it with read-only `research.state.get({ cursor, limit })`. The host validates schema and source-reference existence but does not adjudicate evidence. At the research freeze, external providers are disabled, local recall remains available, and one bounded publication continuation produces the PDF before `result.json`.
 
 ## Development checks
 

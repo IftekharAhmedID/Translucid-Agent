@@ -80,7 +80,6 @@ const plugin: Plugin = async () => {
   const assignments = new Map<string, string>();
   const sessionSourceRefs = new Map<string, Set<string>>();
   const routeHistory = new Map<string, string[]>();
-  const claimStates = new Map<string, string>();
 
   async function execute(name: string, args: unknown, context: { sessionID: string; agent: string; callID?: string; abort: AbortSignal }) {
     const response = await fetch(`${configuredGatewayUrl}/internal/tools/execute`, {
@@ -99,12 +98,11 @@ const plugin: Plugin = async () => {
     const refs = sessionSourceRefs.get(context.sessionID) ?? new Set<string>();
     for (const ref of returnedSourceRefs(body)) refs.add(ref);
     sessionSourceRefs.set(context.sessionID, refs);
-    if (name !== "source.excerpts" && name !== "source.inventory" && name !== "research.state.set" && !name.startsWith("report.")) {
+    if (name !== "source.excerpts" && name !== "source.inventory" && name !== "research.state.set" && name !== "research.state.get" && !name.startsWith("report.")) {
       const routes = routeHistory.get(context.sessionID) ?? [];
       routes.push(`${name} ${safeJson(args, 400)}`);
       routeHistory.set(context.sessionID, routes.slice(-100));
     }
-    if (name === "research.state.set") claimStates.set(context.sessionID, safeJson(args, 4_000));
     return body;
   }
 
@@ -128,9 +126,10 @@ const plugin: Plugin = async () => {
     "security_records.search": gatewayTool("security_records.search", "Search one relevant public vulnerability route.", { ecosystem: z.string().max(100).optional(), package: z.string().max(300).optional(), cve: z.string().max(40).optional() }),
     "source.inventory": gatewayTool("source.inventory", "List every captured source reference, including discovery leads. Discovery records are not citable.", { cursor: z.string().regex(/^S[1-9]\d*$/).optional(), limit: z.number().int().min(1).max(100).default(100) }),
     "source.excerpts": gatewayTool("source.excerpts", "Search one immutable local source for exact detail without a network call.", { sourceRef: z.string().regex(/^S[1-9]\d*$/), queries: z.array(z.string().min(1).max(500)).min(1).max(12), maxCharacters: z.number().int().min(1).max(60000).optional() }),
-    "research.state.set": gatewayTool("research.state.set", "Persist the investigation's current machine-readable claim state before publication.", { claims: z.array(z.object(claim).strict()).min(1).max(500), identityAnchors: z.array(z.string().min(1).max(500)).max(100).default([]) }),
-    "report.summary.set": gatewayTool("report.summary.set", "Set the final investigation summary.", { summary: z.string().min(1).max(50000) }),
-    "report.finding.upsert": gatewayTool("report.finding.upsert", "Register or repair one résumé finding with exact PDF anchors and captured eligible sources.", { findingId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/), section: z.string().min(1).max(200), claim: z.string().min(1).max(6000), anchor: z.object({ kind: z.literal("PDF_TEXT"), page: z.number().int().positive(), lineStart: z.number().int().positive(), lineEnd: z.number().int().positive(), exact: z.string().min(1).max(6000) }).strict(), evidence: z.string().min(1).max(12000), notes: z.string().max(6000).optional(), status: z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2)]), sourceRefs: z.array(z.string().regex(/^S[1-9]\d*$/)).max(200) }),
+    "research.state.set": gatewayTool("research.state.set", "Persist the final machine-readable claim ledger. Set publicationReady true only after the final gap pass is genuinely complete.", { publicationReady: z.boolean(), claims: z.array(z.object(claim).strict()).min(1).max(500), identityAnchors: z.array(z.string().min(1).max(500)).max(100).default([]) }),
+    "research.state.get": gatewayTool("research.state.get", "Recover the frozen durable claim ledger in deterministic pages of at most 25 claims. This is read-only.", { cursor: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/).optional(), limit: z.number().int().min(1).max(25).default(25) }),
+    "report.summary.set": gatewayTool("report.summary.set", "Set the final investigation summary and link it to frozen research claims.", { summary: z.string().min(1).max(50000), researchClaimIds: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).min(1).max(500) }),
+    "report.finding.upsert": gatewayTool("report.finding.upsert", "Register or repair one résumé finding with exact PDF anchors, linked frozen claims, and captured eligible sources.", { findingId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/), section: z.string().min(1).max(200), claim: z.string().min(1).max(6000), anchor: z.object({ kind: z.literal("PDF_TEXT"), page: z.number().int().positive(), lineStart: z.number().int().positive(), lineEnd: z.number().int().positive(), exact: z.string().min(1).max(6000) }).strict(), evidence: z.string().min(1).max(12000), notes: z.string().max(6000).optional(), status: z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2)]), sourceRefs: z.array(z.string().regex(/^S[1-9]\d*$/)).max(200), researchClaimIds: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).min(1).max(500) }),
     "report.finding.remove": gatewayTool("report.finding.remove", "Remove one obsolete finding during final coverage repair.", { findingId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/) }),
     "report.progress.get": gatewayTool("report.progress.get", "Read the durable report draft and coverage state.", {}),
     "report.finalize": gatewayTool("report.finalize", "Lock the report after the final coverage and source review.", {}),
@@ -150,9 +149,8 @@ const plugin: Plugin = async () => {
     "experimental.session.compacting": async (input, output) => {
       const refs = [...(sessionSourceRefs.get(input.sessionID) ?? [])].sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
       const routes = routeHistory.get(input.sessionID) ?? [];
-      const state = claimStates.get(input.sessionID) ?? "none saved yet; save research.state.set before publication";
       const references = `Complete captured S references (contiguous ranges are exact): ${compactRefs(refs)}`;
-      const context = `${references}\nHeadless durable investigation state:\n- Assignment: ${assignments.get(input.sessionID) ?? "Continue the current input scope."}\n- Hard deadline: ${deadlineAt ?? "host controlled"}\n- Attempted routes: ${safeJson(routes, 2_000)}\n- Latest claim state: ${state}\n- Use source.inventory/source.excerpts for local recovery; never repeat a provider call merely to recover captured content.\n- Consequential claims: accept a dispositive authoritative primary record, authoritative evidence plus independent corroboration, or exhausted materially different public routes. Subject-controlled material is a lead and cannot alone establish a consequential claim unless it is itself the authoritative system of record. Discovery records are leads, not report citations.`;
+      const context = `${references}\nHeadless durable investigation state:\n- Assignment: ${assignments.get(input.sessionID) ?? "Continue the current input scope."}\n- Hard deadline: ${deadlineAt ?? "host controlled"}\n- Attempted routes: ${safeJson(routes, 2_000)}\n- Recover the claim ledger with research.state.get (paged, read-only); do not inject or reconstruct serialized claim state.\n- Use source.inventory/source.excerpts for local recovery; never repeat a provider call merely to recover captured content.\n- Consequential claims: accept a dispositive authoritative primary record, authoritative evidence plus independent corroboration, or exhausted materially different public routes. Subject-controlled material is a lead and cannot alone establish a consequential claim unless it is itself the authoritative system of record. Discovery records are leads, not report citations.`;
       const remainingBytes = Math.max(0, 8 * 1024 - Buffer.byteLength(`${references}\n`, "utf8"));
       output.context.push(`${references}\n${truncateUtf8(context.slice(references.length + 1), remainingBytes)}`);
     },

@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 
 import type { FileSourceStore } from "./source-store.ts";
+import type { ResearchStateStore } from "./research-state.ts";
 
 export const reportToolNames = [
   "report.summary.set",
@@ -15,6 +16,7 @@ export const reportToolNames = [
 ] as const;
 
 const sourceRefSchema = z.string().regex(/^S[1-9]\d*$/);
+const researchClaimIdSchema = z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/);
 const findingStatusSchema = z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2)]);
 
 export const pdfTextAnchorSchema = z.object({
@@ -28,7 +30,7 @@ export const pdfTextAnchorSchema = z.object({
   message: "lineEnd must be greater than or equal to lineStart.",
 });
 
-export const reportFindingInputSchema = z.object({
+const reportFindingFieldsSchema = z.object({
   findingId: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/),
   section: z.string().trim().min(1).max(200),
   claim: z.string().trim().min(1).max(6_000),
@@ -39,16 +41,24 @@ export const reportFindingInputSchema = z.object({
   sourceRefs: z.array(sourceRefSchema).max(200),
 }).strict();
 
+export const reportFindingInputSchema = reportFindingFieldsSchema.extend({
+  researchClaimIds: z.array(researchClaimIdSchema).min(1).max(500),
+}).strict().superRefine(({ researchClaimIds }, context) => {
+  if (new Set(researchClaimIds).size !== researchClaimIds.length) context.addIssue({ code: z.ZodIssueCode.custom, path: ["researchClaimIds"], message: "researchClaimIds must be unique." });
+});
+
 const reportSourceSchema = z.object({
   sourceRef: sourceRefSchema,
   title: z.string().optional(),
   url: z.string().optional(),
 }).strict();
 
-const storedFindingSchema = reportFindingInputSchema.extend({
+const storedFindingSchema = reportFindingFieldsSchema.extend({
+  researchClaimIds: z.array(researchClaimIdSchema).min(1).max(500),
   order: z.number().int().positive(),
   sources: z.array(reportSourceSchema),
 }).strict();
+const legacyStoredFindingSchema = storedFindingSchema.omit({ researchClaimIds: true });
 
 const runSchema = z.object({
   id: z.string().min(1),
@@ -58,24 +68,49 @@ const runSchema = z.object({
   model: z.string().min(1),
 }).strict();
 
-const draftSchema = z.object({
+const legacyDraftSchema = z.object({
   schemaVersion: z.literal(1),
   run: runSchema,
   state: z.enum(["OPEN", "READY", "PUBLISHED"]),
   revision: z.number().int().nonnegative(),
   summary: z.string().max(50_000),
+  findings: z.array(legacyStoredFindingSchema),
+}).strict();
+
+const draftSchema = z.object({
+  schemaVersion: z.literal(2),
+  run: runSchema,
+  state: z.enum(["OPEN", "READY", "PUBLISHED"]),
+  revision: z.number().int().nonnegative(),
+  researchSnapshotSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  summary: z.string().max(50_000),
+  summaryResearchClaimIds: z.array(researchClaimIdSchema).max(500),
   findings: z.array(storedFindingSchema),
 }).strict();
 
-export const leanReportResultSchema = z.object({
+const legacyLeanReportResultSchema = z.object({
   schemaVersion: z.literal(2),
   run: runSchema.extend({
     status: z.literal("COMPLETED"),
     completedAt: z.string().min(1),
   }).strict(),
   summary: z.string().trim().min(1).max(50_000),
+  findings: z.array(storedFindingSchema.omit({ sourceRefs: true, researchClaimIds: true })).min(1),
+}).strict();
+
+const currentLeanReportResultSchema = z.object({
+  schemaVersion: z.literal(3),
+  run: runSchema.extend({
+    status: z.literal("COMPLETED"),
+    completedAt: z.string().min(1),
+  }).strict(),
+  researchSnapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  summary: z.string().trim().min(1).max(50_000),
+  summaryResearchClaimIds: z.array(researchClaimIdSchema).min(1).max(500),
   findings: z.array(storedFindingSchema.omit({ sourceRefs: true })).min(1),
 }).strict();
+
+export const leanReportResultSchema = z.union([legacyLeanReportResultSchema, currentLeanReportResultSchema]);
 
 const documentSchema = z.object({
   pages: z.array(z.object({
@@ -84,10 +119,12 @@ const documentSchema = z.object({
   }).loose()),
 }).loose();
 
+type LegacyDraft = z.infer<typeof legacyDraftSchema>;
 type Draft = z.infer<typeof draftSchema>;
+type AnyDraft = Draft | LegacyDraft;
 export type ReportFindingInput = z.infer<typeof reportFindingInputSchema>;
 export type LeanReportResult = z.infer<typeof leanReportResultSchema>;
-export type ReportProgress = Draft;
+export type ReportProgress = AnyDraft;
 
 export type ReportMutationResult = {
   ok: true;
@@ -111,6 +148,7 @@ type OpenOptions = {
   runtime: "LOCAL" | "E2B";
   model: string;
   sourceStore: FileSourceStore;
+  researchState?: ResearchStateStore;
 };
 
 async function atomicWrite(path: string, value: unknown): Promise<void> {
@@ -145,7 +183,9 @@ export class ReportStore {
     private readonly root: string,
     private readonly sourceStore: FileSourceStore,
     private readonly document: z.infer<typeof documentSchema>,
-    private draft: Draft,
+    private draft: AnyDraft,
+    private readonly researchState?: ResearchStateStore,
+    private readonly legacy = false,
   ) {}
 
   static async open(root: string, options: OpenOptions): Promise<ReportStore> {
@@ -158,18 +198,25 @@ export class ReportStore {
       runtime: options.runtime,
       model: options.model,
     };
-    let draft: Draft;
+    let draft: AnyDraft;
+    let legacy = false;
     try {
-      draft = draftSchema.parse(JSON.parse(await readFile(path, "utf8")));
+      const raw = JSON.parse(await readFile(path, "utf8"));
+      const current = draftSchema.safeParse(raw);
+      if (current.success) draft = current.data;
+      else {
+        draft = legacyDraftSchema.parse(raw);
+        legacy = true;
+      }
       if (JSON.stringify(draft.run) !== JSON.stringify(expectedRun)) {
         throw new ReportStoreError("DRAFT_SCOPE_MISMATCH", "The report draft belongs to different immutable run inputs.");
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      draft = { schemaVersion: 1, run: expectedRun, state: "OPEN", revision: 0, summary: "", findings: [] };
+      draft = { schemaVersion: 2, run: expectedRun, state: "OPEN", revision: 0, researchSnapshotSha256: null, summary: "", summaryResearchClaimIds: [], findings: [] };
       await atomicWrite(path, draft);
     }
-    return new ReportStore(root, options.sourceStore, document, draft);
+    return new ReportStore(root, options.sourceStore, document, draft, options.researchState, legacy);
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -179,7 +226,29 @@ export class ReportStore {
   }
 
   private assertOpen(): void {
+    if (this.legacy) throw new ReportStoreError("LEGACY_DRAFT_READ_ONLY", "Legacy report drafts are read-only and cannot be republished.");
     if (this.draft.state !== "OPEN") throw new ReportStoreError("REPORT_IMMUTABLE", `Report is ${this.draft.state} and cannot be changed.`);
+    if (this.draft.schemaVersion !== 2 || !this.draft.researchSnapshotSha256) throw new ReportStoreError("RESEARCH_SNAPSHOT_REQUIRED", "Bind the frozen research snapshot before changing the report.");
+  }
+
+  private currentDraft(): Draft {
+    if (this.legacy || this.draft.schemaVersion !== 2) throw new ReportStoreError("LEGACY_DRAFT_READ_ONLY", "Legacy report drafts are read-only and cannot be changed.");
+    return this.draft;
+  }
+
+  private async claimLedger() {
+    const state = await this.researchState?.current();
+    if (!state || state.schemaVersion !== 2) throw new ReportStoreError("RESEARCH_STATE_REQUIRED", "A current v2 research ledger is required for report mappings.");
+    return state;
+  }
+
+  private async validateResearchClaimIds(ids: string[], field: string) {
+    const state = await this.claimLedger();
+    if (new Set(ids).size !== ids.length) throw new ReportStoreError("DUPLICATE_RESEARCH_CLAIM", "Research claim IDs must be unique.", field);
+    const known = new Set(state.claims.map(({ id }) => id));
+    const unknown = ids.filter((id) => !known.has(id));
+    if (unknown.length) throw new ReportStoreError("UNKNOWN_RESEARCH_CLAIM", `Unknown research claim ID(s): ${unknown.join(", ")}.`, field);
+    return state;
   }
 
   private mutationResult(): ReportMutationResult {
@@ -190,11 +259,27 @@ export class ReportStore {
     await atomicWrite(join(this.root, ".work", "report-draft.json"), this.draft);
   }
 
+  bindResearchSnapshot(sha256: string): Promise<{ ok: true; researchSnapshotSha256: string }> {
+    return this.enqueue(async () => {
+      if (this.legacy) throw new ReportStoreError("LEGACY_DRAFT_READ_ONLY", "Legacy report drafts cannot be rebound.");
+      if (!/^[a-f0-9]{64}$/.test(sha256)) throw new ReportStoreError("INVALID_SNAPSHOT_DIGEST", "Research snapshot SHA-256 must be 64 lowercase hexadecimal characters.");
+      const draft = this.currentDraft();
+      if (draft.state !== "OPEN") throw new ReportStoreError("REPORT_IMMUTABLE", `Report is ${draft.state} and cannot be changed.`);
+      if (draft.researchSnapshotSha256 && draft.researchSnapshotSha256 !== sha256) throw new ReportStoreError("RESEARCH_SNAPSHOT_MISMATCH", "The report is already bound to a different research snapshot.");
+      if (draft.researchSnapshotSha256 === sha256) return { ok: true, researchSnapshotSha256: sha256 };
+      this.draft = { ...draft, researchSnapshotSha256: sha256, revision: draft.revision + 1 };
+      await this.persist();
+      return { ok: true, researchSnapshotSha256: sha256 };
+    });
+  }
+
   setSummary(input: unknown): Promise<ReportMutationResult> {
     return this.enqueue(async () => {
       this.assertOpen();
-      const value = parsed(z.object({ summary: z.string().trim().min(1).max(50_000) }).strict(), input);
-      this.draft = { ...this.draft, summary: value.summary, revision: this.draft.revision + 1 };
+      const draft = this.currentDraft();
+      const value = parsed(z.object({ summary: z.string().trim().min(1).max(50_000), researchClaimIds: z.array(researchClaimIdSchema).min(1).max(500) }).strict(), input);
+      await this.validateResearchClaimIds(value.researchClaimIds, "researchClaimIds");
+      this.draft = { ...draft, summary: value.summary, summaryResearchClaimIds: [...new Set(value.researchClaimIds)], revision: draft.revision + 1 };
       await this.persist();
       return this.mutationResult();
     });
@@ -203,7 +288,9 @@ export class ReportStore {
   upsertFinding(input: unknown): Promise<ReportMutationResult> {
     return this.enqueue(async () => {
       this.assertOpen();
+      const draft = this.currentDraft();
       const value = parsed(reportFindingInputSchema, input);
+      const state = await this.validateResearchClaimIds(value.researchClaimIds, "researchClaimIds");
       const page = this.document.pages.find((item) => item.page === value.anchor.page);
       const selectedLines = page?.lines.filter(({ line }) => line >= value.anchor.lineStart && line <= value.anchor.lineEnd) ?? [];
       const expectedLineCount = value.anchor.lineEnd - value.anchor.lineStart + 1;
@@ -221,12 +308,18 @@ export class ReportStore {
         if (source.kind === "SEARCH_DISCOVERY") throw new ReportStoreError("INELIGIBLE_SOURCE", `Search discovery source ${sourceRef} cannot support a report finding.`, "sourceRefs");
         sources.push({ sourceRef, ...(source.title ? { title: source.title } : {}), ...(source.sourceUrl ? { url: source.sourceUrl } : {}) });
       }
-      const existingIndex = this.draft.findings.findIndex(({ findingId }) => findingId === value.findingId);
-      const stored = { ...value, sourceRefs: [...new Set(value.sourceRefs)], sources, order: existingIndex >= 0 ? this.draft.findings[existingIndex]!.order : this.draft.findings.length + 1 };
-      const findings = [...this.draft.findings];
+      const linkedRefs = new Set(value.researchClaimIds.flatMap((id) => {
+        const claim = state.claims.find(({ id: claimId }) => claimId === id)!;
+        return [...claim.supportingRefs, ...claim.conflictingRefs];
+      }));
+      const unlinked = [...new Set(value.sourceRefs)].filter((sourceRef) => !linkedRefs.has(sourceRef));
+      if (unlinked.length) throw new ReportStoreError("UNLINKED_SOURCE", `Finding source reference(s) are not linked to its research claims: ${unlinked.join(", ")}.`, "sourceRefs");
+      const existingIndex = draft.findings.findIndex(({ findingId }) => findingId === value.findingId);
+      const stored = { ...value, sourceRefs: [...new Set(value.sourceRefs)], researchClaimIds: [...new Set(value.researchClaimIds)], sources, order: existingIndex >= 0 ? draft.findings[existingIndex]!.order : draft.findings.length + 1 };
+      const findings = [...draft.findings];
       if (existingIndex >= 0) findings[existingIndex] = stored;
       else findings.push(stored);
-      this.draft = { ...this.draft, findings, revision: this.draft.revision + 1 };
+      this.draft = { ...draft, findings, revision: draft.revision + 1 };
       await this.persist();
       return this.mutationResult();
     });
@@ -235,10 +328,11 @@ export class ReportStore {
   removeFinding(input: unknown): Promise<ReportMutationResult> {
     return this.enqueue(async () => {
       this.assertOpen();
+      const draft = this.currentDraft();
       const { findingId } = parsed(z.object({ findingId: reportFindingInputSchema.shape.findingId }).strict(), input);
-      const findings = this.draft.findings.filter((finding) => finding.findingId !== findingId);
-      if (findings.length === this.draft.findings.length) return this.mutationResult();
-      this.draft = { ...this.draft, findings, revision: this.draft.revision + 1 };
+      const findings = draft.findings.filter((finding) => finding.findingId !== findingId);
+      if (findings.length === draft.findings.length) return this.mutationResult();
+      this.draft = { ...draft, findings, revision: draft.revision + 1 };
       await this.persist();
       return this.mutationResult();
     });
@@ -270,7 +364,7 @@ export class ReportStore {
   finalize(): Promise<ReportMutationResult> {
     return this.enqueue(async () => {
       this.assertOpen();
-      if (!this.draft.summary.trim()) throw new ReportStoreError("INCOMPLETE_REPORT", "Set the investigation summary before finalizing.", "summary");
+      if (this.draft.schemaVersion !== 2 || !this.draft.summary.trim() || !this.draft.summaryResearchClaimIds.length) throw new ReportStoreError("INCOMPLETE_REPORT", "Set the investigation summary and its research claim IDs before finalizing.", "summary");
       if (!this.draft.findings.length) throw new ReportStoreError("INCOMPLETE_REPORT", "Register at least one finding before finalizing.", "findings");
       this.draft = { ...this.draft, state: "READY", revision: this.draft.revision + 1 };
       await this.persist();
@@ -280,6 +374,7 @@ export class ReportStore {
 
   markPublished(): Promise<ReportMutationResult> {
     return this.enqueue(async () => {
+      if (this.legacy) throw new ReportStoreError("LEGACY_DRAFT_READ_ONLY", "Legacy report drafts cannot be republished.");
       if (this.draft.state === "OPEN") throw new ReportStoreError("INCOMPLETE_REPORT", "The report must be READY before publication.");
       if (this.draft.state === "PUBLISHED") return this.mutationResult();
       this.draft = { ...this.draft, state: "PUBLISHED", revision: this.draft.revision + 1 };
@@ -290,11 +385,14 @@ export class ReportStore {
 
   async result(completedAt: string): Promise<LeanReportResult> {
     await this.pending;
-    if (this.draft.state === "OPEN") throw new ReportStoreError("INCOMPLETE_REPORT", "The report is not ready for publication.");
-    return leanReportResultSchema.parse({
-      schemaVersion: 2,
+    if (this.legacy) throw new ReportStoreError("LEGACY_DRAFT_READ_ONLY", "Legacy report drafts are inspectable but cannot be republished.");
+    if (this.draft.state === "OPEN" || this.draft.schemaVersion !== 2 || !this.draft.researchSnapshotSha256) throw new ReportStoreError("INCOMPLETE_REPORT", "The report is not ready for publication.");
+    return currentLeanReportResultSchema.parse({
+      schemaVersion: 3,
       run: { ...this.draft.run, status: "COMPLETED", completedAt },
+      researchSnapshotSha256: this.draft.researchSnapshotSha256,
       summary: this.draft.summary,
+      summaryResearchClaimIds: this.draft.summaryResearchClaimIds,
       findings: this.draft.findings.map(({ sourceRefs: _sourceRefs, ...finding }) => finding),
     });
   }
