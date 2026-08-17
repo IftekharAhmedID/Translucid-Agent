@@ -14,23 +14,18 @@ function latestUserText(body: Record<string, unknown>): string {
 
 export function createHeadlessFixtureCompletion(): (body: Record<string, unknown>, agent: string) => Promise<Completion> {
   const calls = new Map<string, number>();
-  let publishingCalls = 0;
   return async (body, agent) => {
     const call = (calls.get(agent) ?? 0) + 1;
     calls.set(agent, call);
     if (agent === "lead-researcher") {
-      if (/research is now frozen|research is complete/i.test(latestUserText(body))) {
-        publishingCalls += 1;
-        if (publishingCalls === 1) return { toolCall: { name: "research.state.get", arguments: { limit: 25 } } };
-        if (publishingCalls === 2) return { toolCall: { name: "report.progress.get", arguments: {} } };
-        if (publishingCalls === 3) return { toolCall: { name: "report.summary.set", arguments: { summary: "The synthetic public record corroborates the reported Acme employment, title, and interval; no material conflict was found.", researchClaimIds: ["F001"] } } };
-        if (publishingCalls === 4) return { toolCall: { name: "report.finding.upsert", arguments: { findingId: "F001", section: "Career Experience", claim: quote, anchor: { kind: "PDF_TEXT", page: 1, lineStart: 1, lineEnd: 1, exact: "Synthetic Candidate" }, evidence: "The captured synthetic source consistently corroborates the employer, title, and employment interval.", status: 2, sourceRefs: ["S1"], researchClaimIds: ["F001"] } } };
-        if (publishingCalls === 5) return { toolCall: { name: "report.progress.get", arguments: {} } };
-        return { toolCall: { name: "report.finalize", arguments: {} } };
-      }
       if (call === 1) return { toolCall: { name: "web.fetch", arguments: { url: "https://example.test/synthetic-source", focus: "employer title employment interval" } } };
       if (call === 2) return { toolCall: { name: "research.state.set", arguments: { publicationReady: true, identityAnchors: ["Synthetic Candidate"], claims: [{ id: "F001", claim: quote, provisionalStatus: "established", supportingRefs: ["S1"], conflictingRefs: [], remainingGap: null, importance: "material" }] } } };
       return { content: `Synthetic employment finding\n\nExact quote: “${quote}” [S1]\n\nThe source establishes the employer, title, and reported interval.` };
+    }
+    if (agent === "report-writer") {
+      const prompt = latestUserText(body);
+      if (/publication summary/i.test(prompt)) return { content: JSON.stringify({ summary: "The synthetic public record corroborates the reported Acme employment, title, and interval; no material conflict was found.", researchClaimIds: ["F001"] }) };
+      return { content: JSON.stringify({ findings: [{ findingId: "F001", section: "Career Experience", claim: quote, anchor: { kind: "PDF_TEXT", page: 1, lineStart: 1, lineEnd: 1, exact: "Synthetic Candidate" }, evidence: "The captured synthetic source consistently corroborates the employer, title, and employment interval.", status: 2, sourceRefs: ["S1"], researchClaimIds: ["F001"] }] }) };
     }
     return { content: "No additional synthetic research was required." };
   };

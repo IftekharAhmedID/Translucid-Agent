@@ -1,52 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { canPublishAfterResearchFailure, classifyInvestigationFailure, driveReportPublishing, InvestigationStallError, publishingPrompt, ResearchDeadlineError, waitForResearchIdle } from "./controller.ts";
+import { readFile } from "node:fs/promises";
 
-test("publishing starts by recovering frozen claim state and never enables providers", () => {
-  const prompt = publishingPrompt();
-  assert.match(prompt, /research\.state\.get/);
-  assert.doesNotMatch(prompt, /1\. First call research\.state\.set/);
-  assert.match(prompt, /researchClaimIds/);
-  assert.match(prompt, /SEARCH_DISCOVERY/);
-  assert.match(prompt, /report\.finalize/);
-  assert.match(prompt, /External provider tools are disabled/i);
-});
+import { canPublishAfterResearchFailure, classifyInvestigationFailure, InvestigationStallError, ResearchDeadlineError, waitForResearchIdle } from "./controller.ts";
 
-test("publishes with one bounded continuation", async () => {
-  const prompts: string[] = [];
-  let reads = 0;
-  const ready = await driveReportPublishing({
-    launch: async (prompt) => { prompts.push(prompt); },
-    waitUntilIdle: async () => undefined,
-    progress: async () => ({
-      schemaVersion: 1,
-      run: { id: "run-1", inputSha256: "a".repeat(64), startedAt: "2026-08-14T00:00:00.000Z", runtime: "LOCAL", model: "gpt-5.6-luna" },
-      state: reads++ >= 2 ? "READY" : "OPEN",
-      revision: 0,
-      summary: "",
-      findings: [],
-    }),
-  });
-  assert.equal(ready.state, "READY");
-  assert.equal(prompts.length, 2);
-});
-
-test("fails closed after the single publishing continuation", async () => {
-  let launches = 0;
-  await assert.rejects(driveReportPublishing({
-    launch: async () => { launches += 1; },
-    waitUntilIdle: async () => undefined,
-    progress: async () => ({
-      schemaVersion: 1,
-      run: { id: "run-1", inputSha256: "a".repeat(64), startedAt: "2026-08-14T00:00:00.000Z", runtime: "LOCAL", model: "gpt-5.6-luna" },
-      state: "OPEN",
-      revision: launches,
-      summary: "",
-      findings: [],
-    }),
-  }), /one bounded continuation/i);
-  assert.equal(launches, 2);
+test("controller uses the structured finalizer instead of re-prompting the research session", async () => {
+  const source = await readFile(new URL("./controller.ts", import.meta.url), "utf8");
+  assert.match(source, /finalizeFrozenResearch/);
+  assert.doesNotMatch(source, /driveReportPublishing/);
+  assert.doesNotMatch(source, /publishingPrompt/);
+  assert.doesNotMatch(source, /report\.finalize/);
 });
 
 test("stops a busy session after meaningful progress stalls", async () => {

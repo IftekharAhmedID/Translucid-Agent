@@ -14,7 +14,7 @@ import { classifyInvestigationFailure, HeadlessInvestigationController } from ".
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 import { createHeadlessGateway } from "./gateway.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
-import { leanReportResultSchema, reportToolNames, ReportStore } from "./report-store.ts";
+import { leanReportResultSchema, ReportStore } from "./report-store.ts";
 import { ResearchStateStore, researchSnapshotSha256, verifyResearchSnapshot, writeResearchSnapshot } from "./research-state.ts";
 import { renderLeanReport, verifyInvestigationReport } from "./report.ts";
 import { createRunWorkspace, removeRunDiagnostics, sealRunFailure, type RunWorkspace } from "./run-workspace.ts";
@@ -45,7 +45,8 @@ function providerEnvironment(mode: "fixture" | "live"): Record<string, string | 
 
 function agentToolAllowlist(): Map<string, Set<string>> {
   return new Map([
-    ["lead-researcher", new Set([...toolNames, "source.inventory", "source.excerpts", "research.state.set", "research.state.get", ...reportToolNames])],
+    ["lead-researcher", new Set([...toolNames, "source.inventory", "source.excerpts", "research.state.set", "research.state.get"])],
+    ["report-writer", new Set()],
   ]);
 }
 
@@ -139,7 +140,7 @@ async function main(): Promise<void> {
     gateway = createHeadlessGateway({
       runId,
       deadlineAt: deadlineAt.getTime(),
-      allowedTools: new Set([...toolNames, "source.inventory", "source.excerpts", "research.state.set", "research.state.get", ...reportToolNames]),
+      allowedTools: new Set([...toolNames, "source.inventory", "source.excerpts", "research.state.set", "research.state.get"]),
       allowedModels: new Set([researchModel]),
       agentTools: agentToolAllowlist(),
       reportStore,
@@ -195,6 +196,7 @@ async function main(): Promise<void> {
       researchModel,
       reportStore,
       researchState,
+      sourceStore: workspace.sourceStore,
       activity,
       beginPublishing: () => gateway!.freezeResearch(),
       persistResearchSnapshot: persistSnapshot,

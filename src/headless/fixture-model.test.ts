@@ -12,13 +12,10 @@ test("fixture model researches directly and captures one source", async () => {
   assert.match(research.content ?? "", /\[S1\]/);
 });
 
-test("fixture model recovers claim state before publishing", async () => {
+test("fixture report writer returns a complete structured finding batch and summary", async () => {
   const complete = createHeadlessFixtureCompletion();
-  const body = { messages: [{ role: "user", content: "Research is now frozen. Publish the investigation." }], tools: [{ type: "function", function: { name: "research.state.set" } }] };
-  assert.equal((await complete(body, "lead-researcher")).toolCall?.name, "research.state.get");
-  assert.equal((await complete(body, "lead-researcher")).toolCall?.name, "report.progress.get");
-  assert.equal((await complete(body, "lead-researcher")).toolCall?.name, "report.summary.set");
-  assert.equal((await complete(body, "lead-researcher")).toolCall?.name, "report.finding.upsert");
-  assert.equal((await complete(body, "lead-researcher")).toolCall?.name, "report.progress.get");
-  assert.equal((await complete(body, "lead-researcher")).toolCall?.name, "report.finalize");
+  const finding = await complete({ messages: [{ role: "user", content: "Publication batch 1 of 1" }] }, "report-writer");
+  const summary = await complete({ messages: [{ role: "user", content: "Publication summary" }] }, "report-writer");
+  assert.match(finding.content ?? "", /"findings"/);
+  assert.match(summary.content ?? "", /"summary"/);
 });

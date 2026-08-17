@@ -1,10 +1,11 @@
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
-import type { Session } from "@opencode-ai/sdk/v2/client";
 
 import type { RunHandle } from "../runtime/types.ts";
+import { createOpenCodeStructuredWriter, finalizeFrozenResearch } from "./finalization.ts";
 import { researchPrompt } from "./prompt-contracts.ts";
 import type { ResearchStateStore } from "./research-state.ts";
-import type { LeanReportResult, ReportProgress, ReportStore } from "./report-store.ts";
+import type { LeanReportResult, ReportStore } from "./report-store.ts";
+import type { FileSourceStore } from "./source-store.ts";
 
 const directory = "/workspace/case";
 const MODEL_STALL_MS = 5 * 60_000;
@@ -55,39 +56,6 @@ export function describeSdkError(error: unknown): string {
     return JSON.stringify(details);
   }
   return String(error);
-}
-
-export function publishingPrompt(): string {
-  return `Research is now frozen in this same Luna session. External provider tools are disabled. Local source.inventory and source.excerpts remain available.
-
-1. First call research.state.get, paging at most 25 claims per call until the complete frozen claim ledger is available. Never call research.state.set during publication.
-2. Then call report.progress.get. Preserve any valid existing findings when resuming.
-3. Call report.summary.set with one concise but complete investigation summary and the exact researchClaimIds that support it.
-4. Walk /workspace/case/input/document.json from the first page to the last. Register every important factual résumé assertion with report.finding.upsert, attaching the exact researchClaimIds that support it. There is no target count.
-5. Use one coherent assertion per finding. Split claims whenever source authority, timeframe, or confidence differs. Do not bundle formal title with work scope, degree with UK-equivalence, or self-reported use with governance contribution.
-6. Use stable IDs F001, F002, and so on. On repair, reuse the same ID. Copy anchor.exact from the specified page and line range. Cite only eligible captured S references that are already linked to the finding's claims; SEARCH_DISCOVERY references are leads and cannot be cited.
-7. Write direct evidence synthesis, not a bibliography dump. Use notes only for useful caveats. Assign investigator-owned statuses exactly as documented in the report tool. Keep unresolved findings precise and citationless when no eligible source is linked.
-8. Call report.progress.get again, compare it with the research claim state and every résumé section, then repair omissions, duplicates, anchors, claim mappings, and source references with upsert/remove.
-9. Call report.finalize only after that review. Finalization is irreversible for this run.
-
-The host validates structure, source existence, citation eligibility, durability, and ordering. You own evidence relevance, status, completeness, and wording.`;
-}
-
-export async function driveReportPublishing(input: {
-  launch: (prompt: string) => Promise<void>;
-  waitUntilIdle: () => Promise<void>;
-  progress: () => Promise<ReportProgress>;
-  initialPrompt?: string;
-}): Promise<ReportProgress> {
-  let progress = await input.progress();
-  if (progress.state !== "OPEN") return progress;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    await input.launch(attempt === 0 ? input.initialPrompt ?? publishingPrompt() : "Continue publishing the existing draft in this same session. Do not research or call providers. Call report.progress.get, complete or repair the remaining résumé findings, review claim-state and source coverage, and call report.finalize.");
-    await input.waitUntilIdle();
-    progress = await input.progress();
-    if (progress.state !== "OPEN") return progress;
-  }
-  throw new Error("Lead investigator did not finalize the report after the publishing prompt and one bounded continuation.");
 }
 
 type ActivitySnapshot = {
@@ -143,6 +111,7 @@ type Input = {
   researchModel: string;
   reportStore: ReportStore;
   researchState: ResearchStateStore;
+  sourceStore: FileSourceStore;
   activity: ActivitySnapshot;
   beginPublishing: () => void | Promise<void>;
   persistResearchSnapshot: () => Promise<string>;
@@ -225,32 +194,14 @@ export class HeadlessInvestigationController {
       const snapshotSha256 = await input.persistResearchSnapshot();
       await input.bindResearchSnapshot(snapshotSha256);
       await input.enterPublishing();
-      input.onProgress?.(`Research is frozen; Luna session ${leadId} entered local publication.`);
-      await driveReportPublishing({
-        launch: async (prompt) => {
-          const launched = await client.session.promptAsync({
-            sessionID: leadId,
-            directory,
-            agent: "lead-researcher",
-            model: { providerID: "translucid", modelID: input.researchModel },
-            variant: "xhigh",
-            parts: [{ type: "text", text: prompt }],
-          }, { signal: input.signal });
-          if (launched.error) throw new Error(`Luna publishing prompt failed: ${describeSdkError(launched.error)}`);
-        },
-        waitUntilIdle: () => waitForResearchIdle({
-          readStatus: async () => {
-            const statuses = unwrap(await client.session.status({ directory }, { signal: input.signal }), "publishing session status");
-            const status = statuses[leadId]?.type;
-            return status === "busy" || status === "retry" ? status : undefined;
-          },
-          deadlineAt: input.deadlineAt.getTime(),
-          signal: input.signal,
-          initialGraceMs: 5_000,
-          readActivity: () => input.activity,
-          phase: "PUBLISHING",
-        }),
-        progress: () => input.reportStore.progress(),
+      input.onProgress?.("Research is frozen; host-only structured publication started.");
+      await finalizeFrozenResearch({
+        root: input.root,
+        researchState: input.researchState,
+        sourceStore: input.sourceStore,
+        reportStore: input.reportStore,
+        writer: createOpenCodeStructuredWriter({ client, model: input.researchModel, signal: input.signal }),
+        onProgress: input.onProgress,
       });
     const result = await input.reportStore.result(new Date().toISOString());
     return { result, leadSessionId: lead.id, childSessions: [] };

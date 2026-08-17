@@ -5,7 +5,7 @@ import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { z } from "zod";
 
 import type { ResearchClaim, ResearchStateStore } from "./research-state.ts";
-import { reportFindingInputSchema, type ReportFindingInput, type ReportStore } from "./report-store.ts";
+import { ReportStoreError, reportFindingInputSchema, type ReportFindingInput, type ReportStore } from "./report-store.ts";
 import type { FileSourceStore } from "./source-store.ts";
 
 const directory = "/workspace/case";
@@ -287,6 +287,10 @@ export async function finalizeFrozenResearch(input: {
     input.onProgress?.(`Publishing frozen claim batch ${index + 1}/${batches.length}.`);
     try { return await write(); }
     catch (firstError) {
+      // The writer already gets a native structured attempt and one JSON-only
+      // fallback. A third attempt is warranted only when the host's immutable
+      // report contract rejects an otherwise valid model response.
+      if (!(firstError instanceof ReportStoreError)) throw firstError;
       input.onProgress?.(`Repairing frozen claim batch ${index + 1}/${batches.length} after host validation.`);
       try { return await write([reportError(firstError)]); }
       catch (repairError) { throw new Error(`Publication batch ${index + 1}/${batches.length} failed after one focused repair (${reportError(repairError)}).`); }
