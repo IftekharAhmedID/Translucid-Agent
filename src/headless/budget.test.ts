@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { headlessBudgetCeilings, MemoryRunBudget } from "./budget.ts";
+import { headlessBudgetCeilings, MemoryRunBudget, unboundedBudgetCeilings } from "./budget.ts";
 
 test("enforces model, provider, network, and route ceilings atomically", async () => {
   const budget = new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 3, repositoryClones: 1, socialProfiles: 1 });
@@ -88,4 +88,18 @@ test("headless budget ceilings honor the existing environment contract", () => {
     socialProfiles: 2,
   });
   assert.throws(() => headlessBudgetCeilings({ MODEL_BUDGET_USD: "-1" }), /MODEL_BUDGET_USD/);
+});
+
+test("qualification budgets retain usage telemetry without a numerical ceiling", async () => {
+  const budget = new MemoryRunBudget(unboundedBudgetCeilings());
+  await budget.reserveModel(1_000_000_000);
+  await budget.recordProvider(1_000_000_000);
+  await budget.recordNetworkCall("github.clone");
+  await budget.recordNetworkCall("github.clone");
+  assert.deepEqual(budget.snapshot(), {
+    modelUsd: 1_000_000_000,
+    providerUsd: 1_000_000_000,
+    externalNetworkCalls: 2,
+    routeCounts: { "github.clone": 2 },
+  });
 });

@@ -63,3 +63,25 @@ test("forwards normalized includeDomains to the Exa search request only when sup
   assert.equal(networkArguments[0]?.type, "deep");
   assert.equal("includeDomains" in networkArguments[1]!, false);
 });
+
+test("qualification mode removes per-tool numeric provider ceilings", async () => {
+  let countCeiling: number | undefined;
+  const backend: ProviderCallBackend = async (input) => {
+    countCeiling = input.countCeiling;
+    return {
+      provider: "exa",
+      providerRoute: "exa.search",
+      data: { results: [] },
+      sourceUrl: "https://api.exa.ai/search",
+      costUsd: 0,
+      costSource: "FREE_PUBLIC",
+      artifactIds: [],
+      evidenceEligibleArtifactIds: [],
+      reused: false,
+    };
+  };
+  const executor = new ProviderExecutor({ PROVIDER_MODE: "live", QUALIFICATION_MODE: "unbounded", EXA_API_KEY: "test-key" }, backend);
+  const result = await executor.executeHeadless({ tool: "web.search", arguments: { query: "Exact Candidate Name" } }, { runId: "run-headless", agent: "lead-researcher", sessionId: "session-headless" });
+  assert.equal(result.status, "OK");
+  assert.equal(countCeiling, Number.POSITIVE_INFINITY);
+});

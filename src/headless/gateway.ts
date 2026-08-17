@@ -43,7 +43,7 @@ function json(response: ServerResponse, status: number, body: unknown): void {
 
 type GatewayInput = {
   runId: string;
-  deadlineAt: number;
+  deadlineAt?: number;
   allowedTools: Set<string>;
   allowedModels: Set<string>;
   executor?: ProviderExecutor;
@@ -95,7 +95,7 @@ export function createHeadlessGateway(input: GatewayInput) {
     if (bearer && alternate && bearer !== alternate) throw new GatewayError(401, "Conflicting run credentials.");
     const provided = bearer || alternate;
     const providedDigest = digest(provided);
-    if (!active || Date.now() >= input.deadlineAt || provided.length > 256 || !timingSafeEqual(providedDigest, tokenDigest)) throw new GatewayError(401, "Unauthorized or expired run token.");
+    if (!active || (input.deadlineAt !== undefined && Date.now() >= input.deadlineAt) || provided.length > 256 || !timingSafeEqual(providedDigest, tokenDigest)) throw new GatewayError(401, "Unauthorized or expired run token.");
     if (request.headers["x-run-id"] !== input.runId) throw new GatewayError(401, "Run scope mismatch.");
     const allowed = kind === "tool" ? input.allowedTools : input.allowedModels;
     if (!allowed.has(name)) throw new GatewayError(403, `Run scope denies ${name}.`);
@@ -184,12 +184,15 @@ export function createHeadlessGateway(input: GatewayInput) {
             agent: typeof operational.agent === "string" ? operational.agent : "unknown-agent",
             sessionId: typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session",
           });
-          return json(response, 200, { ...result, timing: {
-            convergeAt: input.deadlineAt - 10 * 60_000,
-            researchDeadlineAt: input.deadlineAt - 6 * 60_000,
-            totalDeadlineAt: input.deadlineAt,
-            convergeNow: Date.now() >= input.deadlineAt - 10 * 60_000,
-          } });
+          return json(response, 200, {
+            ...result,
+            ...(input.deadlineAt === undefined ? {} : { timing: {
+              convergeAt: input.deadlineAt - 10 * 60_000,
+              researchDeadlineAt: input.deadlineAt - 6 * 60_000,
+              totalDeadlineAt: input.deadlineAt,
+              convergeNow: Date.now() >= input.deadlineAt - 10 * 60_000,
+            } }),
+          });
         } finally {
           input.onActivity?.({ kind: "tool-end", name, at: Date.now() });
           finishProviderCall();
@@ -204,8 +207,8 @@ export function createHeadlessGateway(input: GatewayInput) {
           throw new GatewayError(400, `Model ${model || "unknown"} must use the ${model === "gpt-5.6-luna" ? "Responses" : "Chat Completions"} endpoint.`);
         }
         const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
-        const remainingMs = input.deadlineAt - Date.now();
-        if (remainingMs <= 0) throw new GatewayError(401, "Investigation deadline reached.");
+        const remainingMs = input.deadlineAt === undefined ? undefined : input.deadlineAt - Date.now();
+        if (remainingMs !== undefined && remainingMs <= 0) throw new GatewayError(401, "Investigation deadline reached.");
         input.onModelRequest?.({ agent, estimatedInputTokens: estimateModelInputTokens(body) });
         input.onActivity?.({ kind: "model-start", name: model, at: Date.now() });
         try {

@@ -65,7 +65,7 @@ type ActivitySnapshot = {
 
 export async function waitForResearchIdle(input: {
   readStatus: () => Promise<"busy" | "retry" | undefined>;
-  deadlineAt: number;
+  deadlineAt?: number;
   signal: AbortSignal;
   intervalMs?: number;
   now?: () => number;
@@ -78,14 +78,14 @@ export async function waitForResearchIdle(input: {
   const now = input.now ?? Date.now;
   let observedBusy = false;
   const startedAt = now();
-  while (now() < input.deadlineAt) {
+  while (input.deadlineAt === undefined || now() < input.deadlineAt) {
     input.signal.throwIfAborted();
     const status = await input.readStatus();
     const activity = input.readActivity?.();
-    if (activity?.modelStartedAt && now() - activity.modelStartedAt >= (input.modelStallMs ?? MODEL_STALL_MS)) {
+    if (input.deadlineAt !== undefined && activity?.modelStartedAt !== undefined && now() - activity.modelStartedAt >= (input.modelStallMs ?? MODEL_STALL_MS)) {
       throw new InvestigationStallError(input.phase ?? "RESEARCH", "Model call exceeded the five-minute liveness limit without completing.", "MODEL_CALL_STALLED");
     }
-    if (activity && now() - activity.lastProgressAt >= (input.progressStallMs ?? PROGRESS_STALL_MS) && (status === "busy" || status === "retry")) {
+    if (input.deadlineAt !== undefined && activity && now() - activity.lastProgressAt >= (input.progressStallMs ?? PROGRESS_STALL_MS) && (status === "busy" || status === "retry")) {
       throw new InvestigationStallError(input.phase ?? "RESEARCH", "Investigation made no meaningful progress for three minutes.");
     }
     if (status === "busy" || status === "retry") observedBusy = true;
@@ -104,8 +104,8 @@ function unwrap<T>(result: { data?: T; error?: unknown }, action: string): T {
 type Input = {
   root: string;
   handle: RunHandle;
-  deadlineAt: Date;
-  publishingReserveMs: number;
+  deadlineAt?: Date;
+  publishingReserveMs?: number;
   signal: AbortSignal;
   runtime: "LOCAL" | "E2B";
   researchModel: string;
@@ -144,9 +144,11 @@ export class HeadlessInvestigationController {
       const leadId = lead.id;
       await input.onLeadStarted?.(leadId);
       input.onProgress?.(`Luna investigation session ${leadId} started.`);
-      const researchDeadline = input.deadlineAt.getTime() - input.publishingReserveMs;
+      const researchDeadline = input.deadlineAt ? input.deadlineAt.getTime() - (input.publishingReserveMs ?? 0) : undefined;
       const researchAbort = new AbortController();
-      const timeout = setTimeout(() => researchAbort.abort(new ResearchDeadlineError()), Math.max(1, researchDeadline - Date.now()));
+      const timeout = researchDeadline === undefined
+        ? undefined
+        : setTimeout(() => researchAbort.abort(new ResearchDeadlineError()), Math.max(1, researchDeadline - Date.now()));
       const abort = () => researchAbort.abort(input.signal.reason);
       input.signal.addEventListener("abort", abort, { once: true });
       let researchFailure: unknown;
@@ -157,7 +159,7 @@ export class HeadlessInvestigationController {
           agent: "lead-researcher",
           model: { providerID: "translucid", modelID: input.researchModel },
           variant: "xhigh",
-          parts: [{ type: "text", text: researchPrompt(new Date(researchDeadline).toISOString()) }],
+          parts: [{ type: "text", text: researchPrompt(researchDeadline === undefined ? undefined : new Date(researchDeadline).toISOString()) }],
         }, { signal: researchAbort.signal });
         if (launch.error) throw new Error(`Luna research prompt failed: ${describeSdkError(launch.error)}`);
         await waitForResearchIdle({
@@ -178,7 +180,7 @@ export class HeadlessInvestigationController {
         input.onProgress?.(`Research is being frozen: ${researchFailure instanceof Error ? researchFailure.message : String(researchFailure)}`);
         await client.session.abort({ sessionID: leadId, directory }).catch(() => undefined);
       } finally {
-        clearTimeout(timeout);
+        if (timeout) clearTimeout(timeout);
         input.signal.removeEventListener("abort", abort);
       }
 

@@ -63,7 +63,7 @@ export async function proxyModelCompletion(input: {
   body: Record<string, unknown>;
   agent: string;
   model: string;
-  remainingMs: number;
+  remainingMs?: number;
   providerMode: "fixture" | "live";
   upstreamKey?: string;
   researchUpstreamFamily: ResearchUpstreamFamily;
@@ -77,7 +77,9 @@ export async function proxyModelCompletion(input: {
   if (!input.upstreamKey) throw new Error("OPENCODE_API_KEY is not configured on the host gateway.");
   const encoded = encodeModelToolNames(input.body);
   const upstreamAbort = new AbortController();
-  const timeout = setTimeout(() => upstreamAbort.abort(new DOMException("Model request deadline reached.", "TimeoutError")), modelRequestTimeoutMs(input.remainingMs));
+  const timeout = input.remainingMs === undefined
+    ? undefined
+    : setTimeout(() => upstreamAbort.abort(new DOMException("Model request deadline reached.", "TimeoutError")), modelRequestTimeoutMs(input.remainingMs));
   input.request.once("aborted", () => upstreamAbort.abort(new DOMException("Runtime request disconnected.", "AbortError")));
   input.response.once("close", () => upstreamAbort.abort(new DOMException("Runtime response disconnected.", "AbortError")));
   let upstream: IncomingMessage;
@@ -89,14 +91,14 @@ export async function proxyModelCompletion(input: {
       upstreamAbort.signal,
     );
   } catch (error) {
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
     throw error;
   }
   const status = upstream.statusCode ?? 502;
   if (status < 200 || status >= 300) {
     let detail = "";
     try { detail = await readUpstreamText(upstream, 2_000); }
-    finally { clearTimeout(timeout); }
+    finally { if (timeout) clearTimeout(timeout); }
     throw new Error(`LLM upstream returned HTTP ${status}: ${detail}`);
   }
   const rawContentType = upstream.headers["content-type"];
@@ -110,7 +112,7 @@ export async function proxyModelCompletion(input: {
     try {
       const payload = await readUpstreamText(upstream);
       input.response.end(contentType.includes("json") ? decodeJsonToolNames(payload, encoded.wireToSemantic) : payload);
-    } finally { clearTimeout(timeout); }
+    } finally { if (timeout) clearTimeout(timeout); }
     return;
   }
   const names = new SseToolNameDecoder(encoded.wireToSemantic);
@@ -122,7 +124,7 @@ export async function proxyModelCompletion(input: {
     const final = names.flush();
     if (final) input.response.write(final);
   } finally {
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
     input.response.end();
   }
 }

@@ -38,6 +38,17 @@ test("does not wait through the startup grace after a model has completed", asyn
   });
 });
 
+test("qualification waiting has no deadline or liveness enforcement", async () => {
+  let attempts = 0;
+  await waitForResearchIdle({
+    readStatus: async () => ++attempts === 1 ? "busy" : undefined,
+    signal: new AbortController().signal,
+    intervalMs: 0,
+    now: (() => { let value = 0; return () => value += 1_000_000; })(),
+    readActivity: () => ({ lastProgressAt: 0, modelStartedAt: 0 }),
+  });
+});
+
 test("classifies cancellation and ordinary failures without specialist handoff states", () => {
   assert.deepEqual(classifyInvestigationFailure(new Error("cancelled"), true, true), { code: "CANCELLED_OR_TIMED_OUT", phase: "INVESTIGATION" });
   assert.deepEqual(classifyInvestigationFailure(new Error("provider failed"), false, true), { code: "INVESTIGATION_FAILED", phase: "INVESTIGATION" });

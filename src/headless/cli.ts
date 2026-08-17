@@ -8,7 +8,7 @@ import { ProviderExecutor } from "../providers/executor.ts";
 import { E2BRuntime } from "../runtime/e2b.ts";
 import { getPinnedLocalManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
 import type { InvestigatorRuntime, RunHandle } from "../runtime/types.ts";
-import { headlessBudgetCeilings, MemoryRunBudget } from "./budget.ts";
+import { headlessBudgetCeilings, MemoryRunBudget, unboundedBudgetCeilings } from "./budget.ts";
 import { parseInvestigationArguments } from "./cli-options.ts";
 import { classifyInvestigationFailure, HeadlessInvestigationController } from "./controller.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
@@ -39,8 +39,10 @@ function integerEnvironment(name: string, fallback: number): number {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
-function providerEnvironment(mode: "fixture" | "live"): Record<string, string | undefined> {
-  return { ...process.env, PROVIDER_MODE: mode, PROVIDER_BUDGET_USD: "10", GITHUB_CLONE_CEILING: "3", SOCIAL_PROFILE_CEILING: "1" };
+function providerEnvironment(mode: "fixture" | "live", qualification: boolean): Record<string, string | undefined> {
+  return qualification
+    ? { ...process.env, PROVIDER_MODE: mode, QUALIFICATION_MODE: "unbounded" }
+    : { ...process.env, PROVIDER_MODE: mode, QUALIFICATION_MODE: undefined, PROVIDER_BUDGET_USD: "10", GITHUB_CLONE_CEILING: "3", SOCIAL_PROFILE_CEILING: "1" };
 }
 
 function agentToolAllowlist(): Map<string, Set<string>> {
@@ -69,7 +71,7 @@ async function main(): Promise<void> {
   const options = parseInvestigationArguments(process.argv.slice(2));
   const runId = randomUUID();
   const startedAt = new Date().toISOString();
-  const deadlineAt = new Date(Date.now() + RUN_TIMEOUT_MS);
+  const deadlineAt = options.qualification ? undefined : new Date(Date.now() + RUN_TIMEOUT_MS);
   let workspace: RunWorkspace | undefined;
   let runtime: InvestigatorRuntime | undefined;
   let handle: RunHandle | undefined;
@@ -81,7 +83,9 @@ async function main(): Promise<void> {
   const abortHandler = () => abort.abort(new DOMException("Investigation cancelled by signal.", "AbortError"));
   process.once("SIGINT", abortHandler);
   process.once("SIGTERM", abortHandler);
-  const deadline = setTimeout(() => abort.abort(new DOMException("Investigation deadline reached.", "TimeoutError")), RUN_TIMEOUT_MS);
+  const deadline = options.qualification
+    ? undefined
+    : setTimeout(() => abort.abort(new DOMException("Investigation deadline reached.", "TimeoutError")), RUN_TIMEOUT_MS);
 
   try {
     workspace = await createRunWorkspace({
@@ -95,7 +99,7 @@ async function main(): Promise<void> {
     });
     const expectedManifestHash = await getPinnedLocalManifestHash();
     const researchModel = RESEARCH_MODEL;
-    const budget = new MemoryRunBudget(headlessBudgetCeilings(), { onChange: () => undefined });
+    const budget = new MemoryRunBudget(options.qualification ? unboundedBudgetCeilings() : headlessBudgetCeilings(), { onChange: () => undefined });
     const researchState = await ResearchStateStore.open(workspace.root, workspace.sourceStore);
     const reportStore = await ReportStore.open(workspace.root, {
       runId,
@@ -134,12 +138,12 @@ async function main(): Promise<void> {
       }
       return sha256;
     };
-    const providerExecutor = new ProviderExecutor(providerEnvironment(options.providerMode), createFileProviderBackend({ sourceStore: workspace.sourceStore, budget, deadlineAt: deadlineAt.getTime() }));
+    const providerExecutor = new ProviderExecutor(providerEnvironment(options.providerMode, options.qualification), createFileProviderBackend({ sourceStore: workspace.sourceStore, budget, ...(deadlineAt ? { deadlineAt: deadlineAt.getTime() } : {}) }));
     const researchProvider = process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
     const fixture = createHeadlessFixtureCompletion();
     gateway = createHeadlessGateway({
       runId,
-      deadlineAt: deadlineAt.getTime(),
+      ...(deadlineAt ? { deadlineAt: deadlineAt.getTime() } : {}),
       allowedTools: new Set([...toolNames, "source.inventory", "source.excerpts", "research.state.set", "research.state.get"]),
       allowedModels: new Set([researchModel]),
       agentTools: agentToolAllowlist(),
@@ -177,7 +181,7 @@ async function main(): Promise<void> {
       expectedManifestHash,
       timeoutMs: RUN_TIMEOUT_MS,
       mode: "headless",
-      deadlineAt: deadlineAt.toISOString(),
+      ...(deadlineAt ? { deadlineAt: deadlineAt.toISOString() } : {}),
     });
     if (handle.kind === "LOCAL") {
       const attachDirectory = resolve(".debug", "headless");
@@ -189,8 +193,7 @@ async function main(): Promise<void> {
     const output = await controller.run({
       root: workspace.root,
       handle,
-      deadlineAt,
-      publishingReserveMs: PUBLISHING_RESERVE_MS,
+      ...(deadlineAt ? { deadlineAt, publishingReserveMs: PUBLISHING_RESERVE_MS } : {}),
       signal: abort.signal,
       runtime: options.runtime,
       researchModel,
@@ -285,7 +288,7 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     if (runtime && handle) await runtime.stop(handle).catch(() => undefined);
   } finally {
-    clearTimeout(deadline);
+    if (deadline) clearTimeout(deadline);
     process.removeListener("SIGINT", abortHandler);
     process.removeListener("SIGTERM", abortHandler);
     if (attachPath) await rm(attachPath, { force: true });

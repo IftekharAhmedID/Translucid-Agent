@@ -7,6 +7,7 @@ export type InvestigationArguments = {
   outputDirectory: string;
   watch: boolean;
   keepDebug: boolean;
+  qualification: boolean;
 };
 
 function value(args: string[], index: number, name: string): string {
@@ -24,10 +25,12 @@ export function parseInvestigationArguments(args: string[]): InvestigationArgume
   let outputDirectory = "./runs";
   let watch = false;
   let keepDebug = false;
+  let qualification = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
     if (argument === "--watch") watch = true;
     else if (argument === "--keep-debug") keepDebug = true;
+    else if (argument === "--qualification") qualification = true;
     else if (argument === "--resume") { resumePath = value(args, index, argument); index += 1; }
     else if (argument === "--submission") { submissionPath = value(args, index, argument); index += 1; }
     else if (argument === "--output") { outputDirectory = value(args, index, argument); index += 1; }
@@ -51,6 +54,7 @@ export function parseInvestigationArguments(args: string[]): InvestigationArgume
   if (!resumePath && !submissionPath) throw new Error("At least one input is required through --resume or --submission.");
   if (!classification) throw new Error("--classification is required.");
   if (classification === "PUBLIC_PROFESSIONAL" && providerMode !== "live") throw new Error("Public-professional classification requires live provider mode.");
+  if (qualification && runtime !== "LOCAL") throw new Error("Qualification mode requires the local runtime because E2B enforces a sandbox deadline.");
   return {
     ...(resumePath ? { resumePath } : {}),
     ...(submissionPath ? { submissionPath } : {}),
@@ -60,5 +64,6 @@ export function parseInvestigationArguments(args: string[]): InvestigationArgume
     outputDirectory,
     watch,
     keepDebug,
+    qualification,
   };
 }

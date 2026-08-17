@@ -36,6 +36,16 @@ export function headlessBudgetCeilings(environment: Record<string, string | unde
   };
 }
 
+export function unboundedBudgetCeilings(): BudgetCeilings {
+  return {
+    modelUsd: Number.POSITIVE_INFINITY,
+    providerUsd: Number.POSITIVE_INFINITY,
+    externalNetworkCalls: Number.POSITIVE_INFINITY,
+    repositoryClones: Number.POSITIVE_INFINITY,
+    socialProfiles: Number.POSITIVE_INFINITY,
+  };
+}
+
 type BudgetOptions = {
   initial?: BudgetSnapshot;
   onChange?: (snapshot: BudgetSnapshot) => void | Promise<void>;

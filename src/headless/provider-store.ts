@@ -10,7 +10,7 @@ import type { FileSourceStore } from "./source-store.ts";
 type Options = {
   sourceStore: FileSourceStore;
   budget: MemoryRunBudget;
-  deadlineAt: number;
+  deadlineAt?: number;
 };
 
 function errorStatus(error: unknown): string {
@@ -65,7 +65,10 @@ export function createFileProviderBackend(options: Options): ProviderCallBackend
       await options.budget.recordNetworkCall(input.providerRoute);
       const reserved = input.knownCost?.costUsd ?? 0;
       if (reserved > 0) await options.budget.recordProvider(reserved);
-      const result = await input.run(AbortSignal.timeout(providerDeadlineMs(input.providerRoute, options.deadlineAt)), () => undefined);
+      const signal = options.deadlineAt === undefined
+        ? new AbortController().signal
+        : AbortSignal.timeout(providerDeadlineMs(input.providerRoute, options.deadlineAt));
+      const result = await input.run(signal, () => undefined);
       if (result.costUsd > reserved) await options.budget.recordProvider(result.costUsd - reserved);
       const artifactInputs = result.artifacts ?? [{
         kind: "PROVIDER_RESPONSE",

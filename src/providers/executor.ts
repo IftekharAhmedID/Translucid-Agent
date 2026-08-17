@@ -614,6 +614,7 @@ export class ProviderExecutor {
   }
 
   private toolCeiling(tool: ToolName): number {
+    if (this.environment.QUALIFICATION_MODE === "unbounded") return Number.POSITIVE_INFINITY;
     return positiveNumber(this.environment[ceilingEnvironmentKeys[tool]], defaultToolCeilings[tool]);
   }
 

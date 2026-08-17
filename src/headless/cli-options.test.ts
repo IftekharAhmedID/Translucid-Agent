@@ -12,6 +12,7 @@ test("parses the documented headless CLI contract", () => {
     "--output", "./runs",
     "--watch",
     "--keep-debug",
+    "--qualification",
   ]), {
     resumePath: "/tmp/resume.pdf",
     classification: "PUBLIC_PROFESSIONAL",
@@ -20,6 +21,7 @@ test("parses the documented headless CLI contract", () => {
     outputDirectory: "./runs",
     watch: true,
     keepDebug: true,
+    qualification: true,
   });
 });
 
@@ -29,6 +31,7 @@ test("defaults to fixture, local runtime, and ./runs", () => {
   assert.equal(parsed.runtime, "LOCAL");
   assert.equal(parsed.outputDirectory, "./runs");
   assert.equal(parsed.watch, false);
+  assert.equal(parsed.qualification, false);
 });
 
 test("requires input and classification and rejects incompatible public fixture execution", () => {
@@ -36,4 +39,5 @@ test("requires input and classification and rejects incompatible public fixture 
   assert.throws(() => parseInvestigationArguments(["--submission", "/tmp/a.txt"]), /classification is required/i);
   assert.throws(() => parseInvestigationArguments(["--submission", "/tmp/a.txt", "--classification", "public-professional"]), /requires live provider mode/i);
   assert.throws(() => parseInvestigationArguments(["--submission", "/tmp/a.txt", "--classification", "synthetic", "--unknown"]), /unknown argument/i);
+  assert.throws(() => parseInvestigationArguments(["--submission", "/tmp/a.txt", "--classification", "synthetic", "--runtime", "e2b", "--qualification"]), /qualification.*local runtime/i);
 });
