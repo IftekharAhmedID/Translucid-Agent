@@ -57,7 +57,16 @@ test("headless runtime loads the material-investigation skills and requires the 
   assert.match(professional, /Tier C[\s\S]*never initiate a dedicated search[\s\S]*Preserve incidental evidence/i);
   assert.match(professional, /plausible material counter-hypothesis/i);
   assert.match(professional, /dispositive[\s\S]*alternative would not change the judgment[\s\S]*Tier-B\/C/i);
+  assert.match(professional, /Investigate the material predicate exactly/i);
+  assert.match(professional, /“Organised”\s+means assess material organising work/i);
+  assert.match(professional, /Every claimed completed degree creates one material education target/i);
+  assert.match(professional, /forward local sweep/i);
+  assert.match(professional, /reverse sweep for unresolved Tier-A targets/i);
+  assert.match(professional, /artifact-oriented route/i);
+  assert.match(professional, /final skill audit must check/i);
   assert.match(historical, /remaining Tier-A historical gap/i);
+  assert.match(historical, /reliable metadata/i);
+  assert.match(historical, /mailing lists, technical forums,\s+event programmes/i);
   assert.doesNotMatch(lead, /exhaustive factual coverage checklist/i);
   assert.doesNotMatch(contract, /complete claim checklist/i);
   assert.doesNotMatch(professional, /at most four provider calls/i);

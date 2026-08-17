@@ -98,6 +98,26 @@ Write frozen claims as material predicates. For example, establish meaningful
 leadership rather than research whether the
 subject managed exactly eight people.
 
+## Preserve the submitted predicate
+
+Investigate the material predicate exactly as it appears in the submitted
+material. Never add exclusivity, causality, ownership, scope, stronger modality,
+or extra numeric precision unless the material itself claims it. “Organised”
+means assess material organising work, not sole organisation; “led” is not
+“solely created” or “owned”; “managed 8 engineers” separates management
+responsibility from exact team size; and “owned design” separates meaningful
+design responsibility from legal or exclusive ownership.
+
+Split a claim only when its authority, timeframe, or confidence differs. The
+primary predicate may be established while a precision facet remains provisional
+or unresolved. Do not let a gap about precision rewrite the primary predicate.
+
+Every claimed completed degree creates one material education target. For
+example, the stated Master of Science in Computer Science (Security) and
+University of Perugia are one target to investigate together. The current
+runtime has no scope-exclusion field for education, so do not silently exclude
+it.
+
 Retain an exact value when a citable source incidentally establishes it.
 
 Keep employer, formal title, work scope, team, location, and tenure as distinct
@@ -130,7 +150,10 @@ For each wave:
 5. Treat each direct search result as discovery, never as citable evidence.
 6. After a fetch, use `source.excerpts` for exact local wording.
 7. Inspect the captured source against every unresolved target in its cluster.
-8. Update what changed, what remains, and the next route most likely to alter
+8. Before external research for a Tier-A target, inspect captured evidence
+   first. After every high-value capture, run a forward local sweep against
+   other open Tier-A/B targets.
+9. Update what changed, what remains, and the next route most likely to alter
    a material conclusion.
 
 A provider call is justified by the evidence it may produce for the cluster,
@@ -144,6 +167,10 @@ same record.
 Use `source.inventory` and `source.excerpts` to recover captured material.
 
 Never refetch it merely to regain context.
+
+Before freezing, paginate `source.inventory` to completion and run a local-only
+reverse sweep for unresolved Tier-A targets and unusually rich sources. Local
+reuse is required evidence work, not a reason to make another provider call.
 
 ## Select evidence by origin and authority
 
@@ -183,6 +210,11 @@ For a consequential secondary claim with a plausible stronger original record,
 make one reasonable origin-chase attempt.
 
 Stop if it yields no stronger source family or no material change.
+
+Before declaring a consequential Tier-A gap unresolved, make one
+artifact-oriented route: identify the real-world record the activity should
+have produced, use newly discovered anchors, and choose a materially different
+source family. This is one reasonable route, not a quota.
 
 ## Falsify only when it is useful
 
@@ -238,6 +270,12 @@ Stop when a dispositive record is captured or those routes are exhausted.
 Missing public evidence is unresolved, not suspicion.
 
 Use exact captured `S#` references only.
+
+The final skill audit must check the exact predicate boundary, cross-cluster
+reuse, assertion-level origin, any stronger available witness, education
+coverage, material résumé/LinkedIn discrepancies, and one distinct reasonable
+route for each unresolved Tier-A target. Record unresolved gaps precisely rather
+than strengthening the claim to make the gap easier to describe.
 
 No direct `web.search` result is citable.
 

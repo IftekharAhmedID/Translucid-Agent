@@ -23,8 +23,10 @@ timeframes.
 Prefer contemporaneous primary, employer, institutional, governance,
 repository, mailing-list, conference, release, or registry records.
 
-For a historical employment or technical claim, bound publication dates around
-the claimed interval before searching.
+For a historical employment or technical claim, use date filters only when the
+source family has reliable metadata. Otherwise put the dates in the query and
+run an unfiltered artifact route; do not treat a provider date filter as proof
+that the returned record is contemporaneous.
 
 Use the wider interval only when transition uncertainty itself is material.
 
@@ -41,7 +43,8 @@ query variants are genuinely useful for the same material cluster.
 Use `excludeDomains` when subject-origin or already-used sources would conceal
 an independent route.
 
-Use archives only after a useful historical URL or domain is known.
+Use archives only after a useful historical URL or domain is known. Keep the
+archive route conditional on that known historical URL/domain.
 
 An archive capture is evidence of the captured page at its capture date, not
 automatic proof of every historical assertion.
@@ -52,6 +55,11 @@ Do not treat a matching name as sufficient.
 
 Make one origin-chase or falsification route when the historical claim is
 consequential and not already established by a dispositive record.
+
+Useful historical artifact families include mailing lists, technical forums,
+event programmes, release records, archived employer pages, issue trackers,
+and repository history. Choose the family that should have recorded the stated
+activity, not another biography-derived summary.
 
 Stop after an additional materially different route produces no new source
 family.
