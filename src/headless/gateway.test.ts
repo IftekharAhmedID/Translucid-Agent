@@ -55,7 +55,7 @@ test("freezes providers only after model-authored claim state is durably set", a
     gateway.freezeResearch();
     assert.equal((await execute("web.search", { query: "blocked after freeze" })).status, 403);
     assert.equal((await execute("report.progress.get", {})).status, 403);
-    assert.equal((await execute("research.state.set", { claims: [{ id: "F001", claim: "Record exists", provisionalStatus: "established", supportingRefs: ["S1"], conflictingRefs: [], remainingGap: null, importance: "material" }] })).status, 200);
+    assert.equal((await execute("research.state.set", { publicationReady: true, claims: [{ id: "F001", claim: "Record exists", provisionalStatus: "established", supportingRefs: ["S1"], conflictingRefs: [], remainingGap: null, importance: "material" }] })).status, 200);
     assert.equal(snapshots, 1);
     gateway.cancel();
     await server.close();

@@ -19,11 +19,18 @@ export const researchClaimSchema = z.object({
 }).strict();
 
 export const researchStateInputSchema = z.object({
+  publicationReady: z.boolean(),
   claims: z.array(researchClaimSchema).min(1).max(500),
   identityAnchors: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
-}).strict();
+}).strict().superRefine(({ claims }, context) => {
+  const ids = new Set<string>();
+  for (const claim of claims) {
+    if (ids.has(claim.id)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["claims"], message: `Claim IDs must be unique; duplicate ${claim.id}.` });
+    ids.add(claim.id);
+  }
+});
 
-const researchStateSchema = z.object({
+const researchStateV1Schema = z.object({
   schemaVersion: z.literal(1),
   updatedAt: z.string().min(1),
   identityAnchors: z.array(z.string().min(1).max(500)).max(100),
@@ -31,6 +38,13 @@ const researchStateSchema = z.object({
   attemptedRoutes: z.array(z.string().min(1).max(200)).max(1_000),
   claims: z.array(researchClaimSchema).min(1).max(500),
 }).strict();
+
+const researchStateV2Schema = researchStateV1Schema.extend({
+  schemaVersion: z.literal(2),
+  publicationReady: z.boolean(),
+}).strict();
+
+const researchStateSchema = z.union([researchStateV1Schema, researchStateV2Schema]);
 
 const snapshotSchema = z.object({
   schemaVersion: z.literal(1),
@@ -42,7 +56,12 @@ const snapshotSchema = z.object({
 }).strict();
 
 export type ResearchClaim = z.infer<typeof researchClaimSchema>;
-export type ResearchState = z.infer<typeof researchStateSchema>;
+export type ResearchState = z.infer<typeof researchStateSchema> & { publicationReady: boolean };
+
+export type ResearchStatePage = {
+  state: (ResearchState & { claims: ResearchClaim[] }) | null;
+  nextCursor: string | null;
+};
 
 async function atomicWrite(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -79,7 +98,8 @@ export class ResearchStateStore {
     const root = resolve(rootPath);
     let state: ResearchState | undefined;
     try {
-      state = researchStateSchema.parse(JSON.parse(await readFile(join(root, ".work", "research-state.json"), "utf8")));
+      const parsed = researchStateSchema.parse(JSON.parse(await readFile(join(root, ".work", "research-state.json"), "utf8")));
+      state = { ...parsed, publicationReady: parsed.schemaVersion === 2 ? parsed.publicationReady : false };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -97,9 +117,10 @@ export class ResearchStateStore {
     const referenced = value.claims.flatMap(({ supportingRefs, conflictingRefs }) => [...supportingRefs, ...conflictingRefs]);
     const unknown = sortedRefs(referenced.filter((ref) => !known.has(ref)));
     if (unknown.length) throw new Error(`Research state references unknown source(s): ${unknown.join(", ")}.`);
-    const next = researchStateSchema.parse({
-      schemaVersion: 1,
+    const next = researchStateV2Schema.parse({
+      schemaVersion: 2,
       updatedAt: new Date().toISOString(),
+      publicationReady: value.publicationReady,
       identityAnchors: [...new Set(value.identityAnchors)],
       sourceRefs,
       attemptedRoutes: [...this.attemptedRoutes].sort(),
@@ -120,14 +141,32 @@ export class ResearchStateStore {
   }
 
   async hasValidState(): Promise<boolean> {
-    return Boolean(await this.current());
+    const state = await this.current();
+    return Boolean(state && state.schemaVersion === 2);
+  }
+
+  async isPublicationReady(): Promise<boolean> {
+    const state = await this.current();
+    return Boolean(state && state.schemaVersion === 2 && state.publicationReady);
+  }
+
+  async get(input: { cursor?: string; limit?: number } = {}): Promise<ResearchStatePage> {
+    const state = await this.current();
+    if (!state) return { state: null, nextCursor: null };
+    const limit = Math.min(Math.max(Math.floor(input.limit ?? 25), 1), 25);
+    const start = input.cursor ? state.claims.findIndex(({ id }) => id === input.cursor) + 1 : 0;
+    if (input.cursor && start === 0) throw new Error(`Unknown research-state cursor ${input.cursor}.`);
+    const claims = state.claims.slice(start, start + limit);
+    const nextCursor = start + limit < state.claims.length ? claims.at(-1)?.id ?? null : null;
+    return { state: { ...structuredClone(state), claims }, nextCursor };
   }
 
   async refresh(): Promise<void> {
     await this.pending;
     if (!this.state) return;
+    if (this.state.schemaVersion !== 2) return;
     const sourceRefs = sortedRefs((await this.sourceStore.list()).map(({ ref }) => ref));
-    const next = researchStateSchema.parse({
+    const next = researchStateV2Schema.parse({
       ...this.state,
       updatedAt: new Date().toISOString(),
       sourceRefs,
