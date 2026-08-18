@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 
 import type { FileSourceStore } from "./source-store.ts";
-import type { ResearchStateStore } from "./research-state.ts";
+import { discoveredAnchorSchema, knownResearchPredicateIds, pdfTextAnchorSchema as researchPdfTextAnchorSchema, statusToNumeric, type ResearchStateStore } from "./research-state.ts";
 
 export const reportToolNames = [
   "report.summary.set",
@@ -19,22 +19,14 @@ const sourceRefSchema = z.string().regex(/^S[1-9]\d*$/);
 const researchClaimIdSchema = z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/);
 const findingStatusSchema = z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2)]);
 
-export const pdfTextAnchorSchema = z.object({
-  kind: z.literal("PDF_TEXT"),
-  page: z.number().int().positive(),
-  lineStart: z.number().int().positive(),
-  lineEnd: z.number().int().positive(),
-  exact: z.string().trim().min(1).max(6_000),
-}).strict().refine(({ lineStart, lineEnd }) => lineEnd >= lineStart, {
-  path: ["lineEnd"],
-  message: "lineEnd must be greater than or equal to lineStart.",
-});
+export const pdfTextAnchorSchema = researchPdfTextAnchorSchema;
+const reportAnchorSchema = z.discriminatedUnion("kind", [pdfTextAnchorSchema, discoveredAnchorSchema]);
 
 const reportFindingFieldsSchema = z.object({
   findingId: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/),
   section: z.string().trim().min(1).max(200),
   claim: z.string().trim().min(1).max(6_000),
-  anchor: pdfTextAnchorSchema,
+  anchor: reportAnchorSchema,
   evidence: z.string().trim().min(1).max(12_000),
   notes: z.string().max(6_000).optional(),
   status: findingStatusSchema,
@@ -110,7 +102,19 @@ const currentLeanReportResultSchema = z.object({
   findings: z.array(storedFindingSchema.omit({ sourceRefs: true })).min(1),
 }).strict();
 
-export const leanReportResultSchema = z.union([legacyLeanReportResultSchema, currentLeanReportResultSchema]);
+const v4LeanReportResultSchema = z.object({
+  schemaVersion: z.literal(4),
+  run: runSchema.extend({
+    status: z.literal("COMPLETED"),
+    completedAt: z.string().min(1),
+  }).strict(),
+  researchSnapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  summary: z.string().trim().min(1).max(50_000),
+  summaryResearchClaimIds: z.array(researchClaimIdSchema).max(500),
+  findings: z.array(storedFindingSchema.omit({ sourceRefs: true })).min(1),
+}).strict();
+
+export const leanReportResultSchema = z.union([legacyLeanReportResultSchema, currentLeanReportResultSchema, v4LeanReportResultSchema]);
 
 const documentSchema = z.object({
   pages: z.array(z.object({
@@ -238,14 +242,14 @@ export class ReportStore {
 
   private async claimLedger() {
     const state = await this.researchState?.current();
-    if (!state || state.schemaVersion !== 2) throw new ReportStoreError("RESEARCH_STATE_REQUIRED", "A current v2 research ledger is required for report mappings.");
+    if (!state || (state.schemaVersion !== 2 && state.schemaVersion !== 3)) throw new ReportStoreError("RESEARCH_STATE_REQUIRED", "A current v2 or v3 research ledger is required for report mappings.");
     return state;
   }
 
   private async validateResearchClaimIds(ids: string[], field: string) {
     const state = await this.claimLedger();
     if (new Set(ids).size !== ids.length) throw new ReportStoreError("DUPLICATE_RESEARCH_CLAIM", "Research claim IDs must be unique.", field);
-    const known = new Set(state.claims.map(({ id }) => id));
+    const known = new Set(knownResearchPredicateIds(state));
     const unknown = ids.filter((id) => !known.has(id));
     if (unknown.length) throw new ReportStoreError("UNKNOWN_RESEARCH_CLAIM", `Unknown research claim ID(s): ${unknown.join(", ")}.`, field);
     return state;
@@ -291,11 +295,14 @@ export class ReportStore {
       const draft = this.currentDraft();
       const value = parsed(reportFindingInputSchema, input);
       const state = await this.validateResearchClaimIds(value.researchClaimIds, "researchClaimIds");
-      const page = this.document.pages.find((item) => item.page === value.anchor.page);
-      const selectedLines = page?.lines.filter(({ line }) => line >= value.anchor.lineStart && line <= value.anchor.lineEnd) ?? [];
-      const expectedLineCount = value.anchor.lineEnd - value.anchor.lineStart + 1;
-      if (selectedLines.length !== expectedLineCount || !normalizeText(selectedLines.map(({ text }) => text).join("\n")).includes(normalizeText(value.anchor.exact))) {
-        throw new ReportStoreError("INVALID_ANCHOR", "anchor.exact was not found in the specified résumé page and line range.", "anchor.exact");
+      if (value.anchor.kind === "PDF_TEXT") {
+        const anchor = value.anchor as z.infer<typeof pdfTextAnchorSchema>;
+        const page = this.document.pages.find((item) => item.page === anchor.page);
+        const selectedLines = page?.lines.filter(({ line }) => line >= anchor.lineStart && line <= anchor.lineEnd) ?? [];
+        const expectedLineCount = anchor.lineEnd - anchor.lineStart + 1;
+        if (selectedLines.length !== expectedLineCount || !normalizeText(selectedLines.map(({ text }) => text).join("\n")).includes(normalizeText(anchor.exact))) {
+          throw new ReportStoreError("INVALID_ANCHOR", "anchor.exact was not found in the specified résumé page and line range.", "anchor.exact");
+        }
       }
       const sources = [];
       for (const sourceRef of [...new Set(value.sourceRefs)]) {
@@ -309,6 +316,10 @@ export class ReportStore {
         sources.push({ sourceRef, ...(source.title ? { title: source.title } : {}), ...(source.sourceUrl ? { url: source.sourceUrl } : {}) });
       }
       const linkedRefs = new Set(value.researchClaimIds.flatMap((id) => {
+        if (state.schemaVersion === 3) {
+          const finding = state.findings.find(({ targetId }) => targetId === id);
+          return finding?.evidence.map(({ sourceRef }) => sourceRef) ?? [];
+        }
         const claim = state.claims.find(({ id: claimId }) => claimId === id)!;
         return [...claim.supportingRefs, ...claim.conflictingRefs];
       }));
@@ -320,6 +331,57 @@ export class ReportStore {
       if (existingIndex >= 0) findings[existingIndex] = stored;
       else findings.push(stored);
       this.draft = { ...draft, findings, revision: draft.revision + 1 };
+      await this.persist();
+      return this.mutationResult();
+    });
+  }
+
+  materializeV3(): Promise<ReportMutationResult> {
+    return this.enqueue(async () => {
+      this.assertOpen();
+      const draft = this.currentDraft();
+      const state = await this.researchState?.current();
+      if (!state || state.schemaVersion !== 3 || state.phase !== "COMMITTED") throw new ReportStoreError("RESEARCH_STATE_REQUIRED", "A committed v3 research state is required for deterministic materialization.");
+      if (!state.summary) throw new ReportStoreError("INCOMPLETE_REPORT", "A committed v3 state must contain a summary.", "summary");
+      const sourcesByRef = new Map((await this.sourceStore.list()).map((source) => [source.ref, source]));
+      const findings = state.targets.map((target, index) => {
+        const finding = state.findings.find(({ targetId }) => targetId === target.id);
+        if (!finding) throw new ReportStoreError("INCOMPLETE_REPORT", "Target " + target.id + " has no finding.", "findings");
+        const evidence = finding.evidence.map(({ sourceRef, comment }) => comment + " [" + sourceRef + "]").join("\n") || "No eligible source evidence was captured.";
+        if (evidence.length > 12_000) throw new ReportStoreError("EVIDENCE_TOO_LARGE", "Finding " + target.id + " evidence comments exceed the report limit.", "evidence");
+        const sourceRefs = [...new Set(finding.evidence.map(({ sourceRef }) => sourceRef))].sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
+        const sources = sourceRefs.map((sourceRef) => {
+          const source = sourcesByRef.get(sourceRef);
+          if (!source) throw new ReportStoreError("UNKNOWN_SOURCE", "Source reference " + sourceRef + " does not exist in this run.", "sourceRefs");
+          if (source.kind === "SEARCH_DISCOVERY") throw new ReportStoreError("INELIGIBLE_SOURCE", "Search discovery source " + sourceRef + " cannot support a report finding.", "sourceRefs");
+          return { sourceRef, ...(source.title ? { title: source.title } : {}), ...(source.sourceUrl ? { url: source.sourceUrl } : {}) };
+        });
+        return {
+          findingId: target.id,
+          section: target.section,
+          claim: target.predicate,
+          anchor: target.anchor,
+          evidence,
+          notes: [
+            target.anchor.kind === "DISCOVERED" ? "Anchor basis: " + target.anchor.basis : "",
+            finding.rationale,
+            finding.remainingGap ? "Remaining gap: " + finding.remainingGap : "",
+          ].filter(Boolean).join(" ").slice(0, 6_000),
+          status: statusToNumeric(finding.status),
+          sourceRefs,
+          researchClaimIds: [target.id],
+          order: index + 1,
+          sources,
+        };
+      });
+      this.draft = {
+        ...draft,
+        summary: state.summary.text,
+        summaryResearchClaimIds: [...state.summary.targetIds],
+        findings,
+        state: "READY",
+        revision: draft.revision + 1,
+      };
       await this.persist();
       return this.mutationResult();
     });
@@ -387,13 +449,16 @@ export class ReportStore {
     await this.pending;
     if (this.legacy) throw new ReportStoreError("LEGACY_DRAFT_READ_ONLY", "Legacy report drafts are inspectable but cannot be republished.");
     if (this.draft.state === "OPEN" || this.draft.schemaVersion !== 2 || !this.draft.researchSnapshotSha256) throw new ReportStoreError("INCOMPLETE_REPORT", "The report is not ready for publication.");
-    return currentLeanReportResultSchema.parse({
-      schemaVersion: 3,
-      run: { ...this.draft.run, status: "COMPLETED", completedAt },
+    const state = await this.researchState?.current();
+    const schemaVersion = state?.schemaVersion === 3 ? 4 : 3;
+    const payload = {
+      schemaVersion,
+      run: { ...this.draft.run, status: "COMPLETED" as const, completedAt },
       researchSnapshotSha256: this.draft.researchSnapshotSha256,
       summary: this.draft.summary,
       summaryResearchClaimIds: this.draft.summaryResearchClaimIds,
       findings: this.draft.findings.map(({ sourceRefs: _sourceRefs, ...finding }) => finding),
-    });
+    };
+    return (schemaVersion === 4 ? v4LeanReportResultSchema : currentLeanReportResultSchema).parse(payload);
   }
 }

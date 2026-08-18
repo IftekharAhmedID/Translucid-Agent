@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import { z } from "zod";
@@ -232,6 +232,7 @@ export class ResearchStateStore {
   private state: ResearchState | undefined;
   private readonly attemptedRoutes = new Set<string>();
   private pending: Promise<void> = Promise.resolve();
+  private eventPending: Promise<void> = Promise.resolve();
   private pendingFailure: unknown;
 
   private constructor(private readonly root: string, private readonly sourceStore: FileSourceStore, state?: ResearchState, private readonly legacy = false) {
@@ -257,6 +258,28 @@ export class ResearchStateStore {
 
   recordRoute(route: string): void {
     if (route.trim()) this.attemptedRoutes.add(route.trim().slice(0, 200));
+  }
+
+  recordEvent(input: { tool: string; sessionId: string; agent: string; callId?: string; phase?: string }): Promise<void> {
+    const event = {
+      schemaVersion: 1,
+      tool: input.tool.slice(0, 100),
+      sessionId: input.sessionId.slice(0, 200),
+      agent: input.agent.slice(0, 100),
+      ...(input.callId ? { callId: input.callId.slice(0, 200) } : {}),
+      ...(input.phase ? { phase: input.phase.slice(0, 40) } : {}),
+      recordedAt: now(),
+    };
+    const operation = this.eventPending.then(async () => {
+      await mkdir(join(this.root, ".work"), { recursive: true });
+      await appendFile(join(this.root, ".work", "investigation-events.jsonl"), JSON.stringify(event) + "\n", { encoding: "utf8", mode: 0o600 });
+    });
+    this.eventPending = operation.catch(() => undefined);
+    return operation;
+  }
+
+  async flushEvents(): Promise<void> {
+    await this.eventPending;
   }
 
   private assertV3Mutable(allowedPhases: Array<ResearchStateV3["phase"]>): ResearchStateV3 {
@@ -416,6 +439,7 @@ export class ResearchStateStore {
   }
 
   async set(input: unknown): Promise<{ ok: true; claimCount: number; sourceRefs: string[] }> {
+    if (this.state?.schemaVersion === 3) throw new ResearchStateError("V3_STATE_REQUIRES_INVESTIGATION_TOOLS", "A v3 investigation state cannot be rewritten through the legacy claim ledger tool.");
     if (this.legacy) throw new Error("Legacy research ledgers are read-only and cannot be rewritten.");
     const value = researchStateInputSchema.parse(input);
     const sourceRefs = sortedRefs((await this.sourceStore.list()).map(({ ref }) => ref));
@@ -450,17 +474,18 @@ export class ResearchStateStore {
 
   async hasValidState(): Promise<boolean> {
     const state = await this.current();
-    return Boolean(state && state.schemaVersion === 2);
+    return Boolean(state && (state.schemaVersion === 2 || state.schemaVersion === 3));
   }
 
   async isPublicationReady(): Promise<boolean> {
     const state = await this.current();
-    return Boolean(state && state.schemaVersion === 2 && state.publicationReady);
+    return Boolean(state && ((state.schemaVersion === 2 && state.publicationReady) || (state.schemaVersion === 3 && state.phase === "COMMITTED")));
   }
 
   async get(input: { cursor?: string; limit?: number } = {}): Promise<ResearchStatePage> {
     const state = await this.current();
     if (!state) return { state: null, nextCursor: null };
+    if (state.schemaVersion === 3) return { state: structuredClone(state), nextCursor: null };
     const limit = Math.min(Math.max(Math.floor(input.limit ?? 25), 1), 25);
     const start = input.cursor ? state.claims.findIndex(({ id }) => id === input.cursor) + 1 : 0;
     if (input.cursor && start === 0) throw new Error(`Unknown research-state cursor ${input.cursor}.`);
@@ -505,7 +530,7 @@ async function snapshotFiles(root: string, sourceStore: FileSourceStore): Promis
   // new excerpts after the research freeze. The immutable source blobs and
   // manifest are the recovery boundary, so do not hash this cache into the
   // research snapshot.
-  const optional = ["sources/requests.jsonl"];
+  const optional = ["sources/requests.jsonl", ".work/investigation-events.jsonl"];
   const sources = await sourceStore.list();
   const blobPaths = sources.map(({ relativePath }) => relativePath);
   const files = [...required, ...optional, ...blobPaths];

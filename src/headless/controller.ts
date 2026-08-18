@@ -1,7 +1,6 @@
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 
 import type { RunHandle } from "../runtime/types.ts";
-import { createOpenCodeStructuredWriter, finalizeFrozenResearch } from "./finalization.ts";
 import { researchPrompt } from "./prompt-contracts.ts";
 import type { ResearchStateStore } from "./research-state.ts";
 import type { LeanReportResult, ReportStore } from "./report-store.ts";
@@ -101,7 +100,7 @@ function unwrap<T>(result: { data?: T; error?: unknown }, action: string): T {
   return result.data;
 }
 
-const ledgerRecoveryPrompt = "The host has not observed a durable research.state.set result after your research turn. Resume from your current investigation context, complete any final gap check needed for a publication-ready ledger, then call research.state.set exactly once with every material claim and its exact captured S references. Set publicationReady true only when the evidence is sufficient. Make the tool call now; do not answer with prose. Never invent a source reference.";
+const synthesisRecoveryPrompt = "Recover the durable investigation with investigation.progress.get. If synthesis has not started, call investigation.synthesis.begin. Complete every target with one strict finding and assertion-level evidence comments, call investigation.summary.set with every HIGH target ID, then call investigation.commit. Treat host 422 responses as precise validation feedback. Make the tool calls now; do not answer with prose or invent source references.";
 
 type Input = {
   root: string;
@@ -115,10 +114,8 @@ type Input = {
   researchState: ResearchStateStore;
   sourceStore: FileSourceStore;
   activity: ActivitySnapshot;
-  beginPublishing: () => void | Promise<void>;
   persistResearchSnapshot: () => Promise<string>;
   bindResearchSnapshot: (sha256: string) => void | Promise<void>;
-  enterPublishing: () => void | Promise<void>;
   onLeadStarted?: (sessionId: string) => void | Promise<void>;
   onProgress?: (message: string) => void;
 };
@@ -142,29 +139,50 @@ export function classifyInvestigationFailure(error: Error, aborted: boolean, run
 export class HeadlessInvestigationController {
   async run(input: Input): Promise<HeadlessControllerOutput> {
     const client = createOpencodeClient({ baseUrl: input.handle.openCodeUrl, headers: input.handle.accessHeaders, throwOnError: false });
-    const lead = unwrap(await client.session.create({ directory, title: "Headless Luna investigation", agent: "lead-researcher", model: { id: input.researchModel, providerID: "translucid", variant: "xhigh" } }, { signal: input.signal }), "lead session creation");
-      const leadId = lead.id;
-      await input.onLeadStarted?.(leadId);
-      input.onProgress?.(`Luna investigation session ${leadId} started.`);
-      const researchDeadline = input.deadlineAt ? input.deadlineAt.getTime() - (input.publishingReserveMs ?? 0) : undefined;
-      const researchAbort = new AbortController();
-      const timeout = researchDeadline === undefined
-        ? undefined
-        : setTimeout(() => researchAbort.abort(new ResearchDeadlineError()), Math.max(1, researchDeadline - Date.now()));
-      const abort = () => researchAbort.abort(input.signal.reason);
-      input.signal.addEventListener("abort", abort, { once: true });
-      let researchFailure: unknown;
-      try {
-        const launch = await client.session.promptAsync({
+    const lead = unwrap(await client.session.create({ directory, title: "Headless DeepSeek V4 Pro investigation", agent: "lead-researcher", model: { id: input.researchModel, providerID: "translucid", variant: "xhigh" } }, { signal: input.signal }), "lead session creation");
+    const leadId = lead.id;
+    await input.onLeadStarted?.(leadId);
+    input.onProgress?.("Single lead investigation session " + leadId + " started.");
+    const researchDeadline = input.deadlineAt ? input.deadlineAt.getTime() - (input.publishingReserveMs ?? 0) : undefined;
+    const researchAbort = new AbortController();
+    const timeout = researchDeadline === undefined
+      ? undefined
+      : setTimeout(() => researchAbort.abort(new ResearchDeadlineError()), Math.max(1, researchDeadline - Date.now()));
+    const abort = () => researchAbort.abort(input.signal.reason);
+    input.signal.addEventListener("abort", abort, { once: true });
+    try {
+      const launch = await client.session.promptAsync({
+        sessionID: leadId,
+        directory,
+        agent: "lead-researcher",
+        model: { providerID: "translucid", modelID: input.researchModel },
+        variant: "xhigh",
+        parts: [{ type: "text", text: researchPrompt(researchDeadline === undefined ? undefined : new Date(researchDeadline).toISOString()) }],
+      }, { signal: researchAbort.signal });
+      if (launch.error) throw new Error("Lead research prompt failed: " + describeSdkError(launch.error));
+      await waitForResearchIdle({
+        readStatus: async () => {
+          const statuses = unwrap(await client.session.status({ directory }, { signal: researchAbort.signal }), "session status");
+          const status = statuses[leadId]?.type;
+          return status === "busy" || status === "retry" ? status : undefined;
+        },
+        deadlineAt: researchDeadline,
+        signal: researchAbort.signal,
+        readActivity: () => input.activity,
+        phase: "RESEARCH",
+      });
+      let state = await input.researchState.current();
+      if (!state || state.schemaVersion !== 3 || state.phase !== "COMMITTED") {
+        input.onProgress?.("Lead session is continuing durable synthesis and commit recovery.");
+        const recovery = unwrap(await client.session.prompt({
           sessionID: leadId,
           directory,
           agent: "lead-researcher",
           model: { providerID: "translucid", modelID: input.researchModel },
           variant: "xhigh",
-          parts: [{ type: "text", text: researchPrompt(researchDeadline === undefined ? undefined : new Date(researchDeadline).toISOString()) }],
-        }, { signal: researchAbort.signal });
-        if (launch.error) throw new Error(`Luna research prompt failed: ${describeSdkError(launch.error)}`);
-        await waitForResearchIdle({
+          parts: [{ type: "text", text: synthesisRecoveryPrompt }],
+        }, { signal: researchAbort.signal }), "synthesis recovery prompt");
+        if (recovery) await waitForResearchIdle({
           readStatus: async () => {
             const statuses = unwrap(await client.session.status({ directory }, { signal: researchAbort.signal }), "session status");
             const status = statuses[leadId]?.type;
@@ -175,49 +193,23 @@ export class HeadlessInvestigationController {
           readActivity: () => input.activity,
           phase: "RESEARCH",
         });
-        const stateAfterResearch = await input.researchState.current();
-        if (!stateAfterResearch || !stateAfterResearch.publicationReady) {
-          unwrap(await client.session.prompt({
-            sessionID: leadId,
-            directory,
-            agent: "lead-researcher",
-            model: { providerID: "translucid", modelID: input.researchModel },
-            variant: "xhigh",
-            parts: [{ type: "text", text: ledgerRecoveryPrompt }],
-          }, { signal: researchAbort.signal }), "research ledger recovery prompt");
-        }
-      } catch (error) {
-        if (input.signal.aborted) throw error;
-        const deadlineFailure = researchAbort.signal.aborted && researchAbort.signal.reason instanceof ResearchDeadlineError ? researchAbort.signal.reason : undefined;
-        researchFailure = deadlineFailure ?? error;
-        input.onProgress?.(`Research is being frozen: ${researchFailure instanceof Error ? researchFailure.message : String(researchFailure)}`);
-        await client.session.abort({ sessionID: leadId, directory }).catch(() => undefined);
-      } finally {
-        if (timeout) clearTimeout(timeout);
-        input.signal.removeEventListener("abort", abort);
+        state = await input.researchState.current();
       }
-
-      if (researchFailure && !isRecoverableResearchTermination(researchFailure)) throw researchFailure;
-      await input.beginPublishing();
-      const state = await input.researchState.current();
-      if (!state || state.schemaVersion !== 2) {
-        throw new ResearchFreezeError("RESEARCH_STATE_REQUIRED", "A valid publication-ready research ledger is required before freeze.", researchFailure instanceof Error ? researchFailure.message : undefined);
-      }
-      if (!state.publicationReady) {
-        throw new ResearchFreezeError("RESEARCH_STATE_NOT_READY", "The durable research ledger is valid but not publication-ready.", researchFailure instanceof Error ? researchFailure.message : undefined);
+      if (!state || state.schemaVersion !== 3 || state.phase !== "COMMITTED") {
+        throw new ResearchFreezeError("RESEARCH_STATE_NOT_READY", "The lead must commit a valid v3 investigation before publication.");
       }
       const snapshotSha256 = await input.persistResearchSnapshot();
       await input.bindResearchSnapshot(snapshotSha256);
-      await input.enterPublishing();
-      input.onProgress?.("Research is frozen; host-only structured publication started.");
-      await finalizeFrozenResearch({
-        root: input.root,
-        researchState: input.researchState,
-        sourceStore: input.sourceStore,
-        reportStore: input.reportStore,
-        writer: createOpenCodeStructuredWriter({ client, model: input.researchModel, signal: input.signal }),
-        onProgress: input.onProgress,
-      });
+      await input.reportStore.materializeV3();
+      input.onProgress?.("Committed research is frozen; host-only deterministic materialization started.");
+    } catch (error) {
+      if (input.signal.aborted) throw error;
+      await client.session.abort({ sessionID: leadId, directory }).catch(() => undefined);
+      throw error;
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      input.signal.removeEventListener("abort", abort);
+    }
     const result = await input.reportStore.result(new Date().toISOString());
     return { result, leadSessionId: lead.id, childSessions: [] };
   }

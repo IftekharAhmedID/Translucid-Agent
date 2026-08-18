@@ -47,8 +47,7 @@ function providerEnvironment(mode: "fixture" | "live", qualification: boolean): 
 
 function agentToolAllowlist(): Map<string, Set<string>> {
   return new Map([
-    ["lead-researcher", new Set([...toolNames, "source.inventory", "source.excerpts", "research.state.set", "research.state.get"])],
-    ["report-writer", new Set()],
+    ["lead-researcher", new Set([...toolNames, "source.inventory", "source.excerpts", "investigation.plan.set", "investigation.target.add", "investigation.synthesis.begin", "investigation.finding.upsert", "investigation.progress.get", "investigation.summary.set", "investigation.commit"])],
   ]);
 }
 
@@ -144,7 +143,7 @@ async function main(): Promise<void> {
     gateway = createHeadlessGateway({
       runId,
       ...(deadlineAt ? { deadlineAt: deadlineAt.getTime() } : {}),
-      allowedTools: new Set([...toolNames, "source.inventory", "source.excerpts", "research.state.set", "research.state.get"]),
+      allowedTools: new Set([...toolNames, "source.inventory", "source.excerpts", "investigation.plan.set", "investigation.target.add", "investigation.synthesis.begin", "investigation.finding.upsert", "investigation.progress.get", "investigation.summary.set", "investigation.commit"]),
       allowedModels: new Set([researchModel]),
       agentTools: agentToolAllowlist(),
       reportStore,
@@ -201,10 +200,8 @@ async function main(): Promise<void> {
       researchState,
       sourceStore: workspace.sourceStore,
       activity,
-      beginPublishing: () => gateway!.freezeResearch(),
       persistResearchSnapshot: persistSnapshot,
       bindResearchSnapshot: (sha256) => reportStore.bindResearchSnapshot(sha256).then(() => undefined),
-      enterPublishing: () => gateway!.setPhase("PUBLISHING"),
       onLeadStarted: async (sessionId) => {
         leadSessionId = sessionId;
         gateway?.setLeadSession(sessionId);
@@ -219,7 +216,7 @@ async function main(): Promise<void> {
       error.name = "RESEARCH_SOURCE_INTEGRITY_FAILED";
       throw error;
     }
-    if (output.result.schemaVersion !== 3) throw new Error("Only result-v3 may be published by a new run.");
+    if (output.result.schemaVersion !== 4) throw new Error("Only result-v4 may be published by a new v3 run.");
     await verifyResearchSnapshot(workspace.root);
     const actualSnapshotSha256 = await researchSnapshotSha256(workspace.root);
     const draft = await reportStore.progress();
@@ -238,6 +235,10 @@ async function main(): Promise<void> {
     handle = undefined;
     await mkdir(join(workspace.root, "provenance"), { recursive: true });
     const progress = await reportStore.progress();
+    const telemetry = gateway?.telemetry() ?? { semanticAgentCount: 0, modelRequests: 0, providerCallsDuringSynthesis: 0, nonLeadSemanticModelRequests: 0, reportWriterModelRequests: 0 };
+    if (telemetry.semanticAgentCount !== 1 || telemetry.nonLeadSemanticModelRequests !== 0 || telemetry.reportWriterModelRequests !== 0) {
+      throw new Error("Semantic provenance invariant failed: expected exactly one lead agent and no non-lead or report-writer model requests.");
+    }
     const citedSourceRefs = [...new Set(output.result.findings.flatMap(({ sources }) => sources.map(({ sourceRef }) => sourceRef)))].sort();
     const capturedSources = await workspace.sourceStore.list();
     const eligibleSources = capturedSources.filter(({ kind, sourceUrl }) => kind !== "SEARCH_DISCOVERY" && Boolean(sourceUrl));
@@ -254,6 +255,11 @@ async function main(): Promise<void> {
       researchSnapshotSha256: actualSnapshotSha256,
       inputSha256: workspace.inputSha256,
       reportDraftRevision: progress.revision,
+      semanticAgentCount: telemetry.semanticAgentCount,
+      modelRequests: telemetry.modelRequests,
+      nonLeadSemanticModelRequests: telemetry.nonLeadSemanticModelRequests,
+      reportWriterModelRequests: telemetry.reportWriterModelRequests,
+      providerCallsDuringSynthesis: telemetry.providerCallsDuringSynthesis,
       sourceRefs: citedSourceRefs,
       coverage: { eligibleUrlCount: eligibleUrls.length, citedUrlCount: citedUrls.length, uncitedEligibleUrls },
     }, null, 2)}\n`);
@@ -265,7 +271,7 @@ async function main(): Promise<void> {
     const writtenResult = leanReportResultSchema.parse(JSON.parse(await readFile(resultPath, "utf8")));
     const pdfMtime = (await stat(reportPath)).mtimeMs;
     const resultMtime = (await stat(resultPath)).mtimeMs;
-    if (writtenResult.schemaVersion !== 3 || writtenResult.researchSnapshotSha256 !== actualSnapshotSha256 || resultMtime < pdfMtime) throw new Error("Published result failed final digest or ordering validation.");
+    if (writtenResult.schemaVersion !== 4 || writtenResult.researchSnapshotSha256 !== actualSnapshotSha256 || resultMtime < pdfMtime) throw new Error("Published result failed final digest or ordering validation.");
     process.stdout.write(`${JSON.stringify({ runId, result: resultPath, report: reportPath, sources: join(workspace.root, "sources") }, null, 2)}\n`);
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error("Unknown headless investigation failure.");

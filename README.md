@@ -1,6 +1,6 @@
 # Translucid Investigator
 
-Translucid runs one isolated OpenCode investigator per résumé investigation. A single `gpt-5.6-luna` xhigh session owns research, gap closure, claim state, and publication while the host durably captures every provider result in immutable, file-backed sources. After research freezes, that same session publishes one summary and an ordered list of coherent résumé findings through typed native tools.
+Translucid runs one isolated OpenCode investigator per résumé investigation. A single DeepSeek V4 Pro xhigh session owns research, gap closure, target state, synthesis, and commit while the host durably captures every provider result in immutable, file-backed sources. After commit, the host snapshots and deterministically materializes the report; no post-freeze semantic model runs.
 
 The host backend owns only structure, durability, source-reference resolution, résumé-anchor validation, and deterministic rendering. It does not decide whether evidence proves a claim, whether a source is authoritative, whether a claim is complete, or which status the investigator should assign.
 
@@ -41,21 +41,23 @@ npm run investigate -- \
   --keep-debug
 ```
 
-## Report tools
+## Investigation tools
 
 The lead uses:
 
-- `report.summary.set({ summary, researchClaimIds })`
-- `report.finding.upsert({ findingId, section, claim, anchor, evidence, notes, status, sourceRefs, researchClaimIds })`
-- `report.finding.remove({ findingId })`
-- `report.progress.get()`
-- `report.finalize()`
+- `investigation.plan.set({ identityAnchors, targets })`
+- `investigation.target.add({ target })`
+- `investigation.synthesis.begin()`
+- `investigation.finding.upsert({ targetId, conclusion, status, rationale, remainingGap, evidence })`
+- `investigation.progress.get()`
+- `investigation.summary.set({ text, targetIds })`
+- `investigation.commit()`
 
-Finding IDs are idempotency keys. Every new draft is bound to a verified research snapshot SHA-256, and every summary/finding maps to unique frozen research claim IDs. The anchor stores a PDF page, line range, and exact text and is bound to the immutable input SHA-256. Sources are references such as `S12`; URLs are resolved from the captured manifest. Status values are investigator-authored: `2`, `1`, `0`, `-1`, and `-2`.
+Targets are durable semantic predicates. `PDF_TEXT` targets retain exact résumé anchors; `DISCOVERED` targets carry a materiality basis and render under additional independently established findings. Findings preserve assertion-level evidence comments and canonical statuses (`ESTABLISHED`, `PARTIAL`, `UNRESOLVED`, `CONFLICTING`, `CONTRADICTED`). The host maps them deterministically to `2`, `1`, `0`, `-1`, and `-2`, resolves source titles/URLs from the captured manifest, and binds publication to a verified research snapshot SHA-256.
 
 ## Research and publication boundary
 
-Provider calls are captured before their results are returned to Luna. Use `source.inventory({ cursor, limit })` to recover every captured reference, including non-citable `SEARCH_DISCOVERY` leads, and `source.excerpts` for exact local text without a network refetch. Luna saves explicit publication-ready claim state through `research.state.set`; after freeze, recover it with read-only `research.state.get({ cursor, limit })`. The host validates schema and source-reference existence but does not adjudicate evidence. At the research freeze, external providers are disabled, local recall remains available, and one bounded publication continuation produces the PDF before `result.json`.
+Provider calls are captured before their results are returned to DeepSeek. Use `source.inventory({ cursor, limit })` to recover every captured reference, including non-citable `SEARCH_DISCOVERY` leads, and `source.excerpts` for exact local text without a network refetch. The lead writes v3 state one finding at a time and may research again during synthesis. `investigation.commit` prevalidates, drains in-flight providers, refreshes host inventory, revalidates, and atomically commits. After commit, providers and semantic mutations are denied; the host writes the snapshot, PDF, provenance, and `result.json` last.
 
 ## Development checks
 

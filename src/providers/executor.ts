@@ -152,6 +152,7 @@ function authHeaders(value: string | undefined, scheme = "Bearer"): Record<strin
 
 function fixtureData(request: AnyParsedToolRequest): unknown {
   const common = request.arguments as { questionId?: string; claimIds?: string[] };
+  const focus = typeof (request.arguments as { focus?: unknown }).focus === "string" ? (request.arguments as { focus: string }).focus : "";
   return {
     synthetic: true,
     tool: request.tool,
@@ -159,7 +160,7 @@ function fixtureData(request: AnyParsedToolRequest): unknown {
     ...(common.claimIds ? { claimIds: common.claimIds } : {}),
     records: request.tool === "professional.profile"
       ? [{ fullName: "Synthetic Candidate", headline: "Principal Engineer", positions: [{ company: "Acme Synthetic Labs", title: "Principal Engineer", start: "2021", end: "2025" }] }]
-      : [{ title: "Synthetic fixture result", url: "https://example.test/synthetic-source", text: "Synthetic Candidate held the title Principal Engineer at Acme Synthetic Labs from 2021 through 2025. Synthetic corroborating content for deterministic development tests." }],
+      : [{ title: "Synthetic fixture result", url: "https://example.test/synthetic-source", text: "Synthetic Candidate held the title Principal Engineer at Acme Synthetic Labs from 2021 through 2025. Synthetic corroborating content for deterministic development tests." + (focus ? " Focus: " + focus + "." : "") }],
   };
 }
 

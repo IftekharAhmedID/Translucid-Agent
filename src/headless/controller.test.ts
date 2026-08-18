@@ -5,11 +5,13 @@ import { readFile } from "node:fs/promises";
 
 import { canPublishAfterResearchFailure, classifyInvestigationFailure, InvestigationStallError, ResearchDeadlineError, waitForResearchIdle } from "./controller.ts";
 
-test("controller uses the structured finalizer instead of re-prompting the research session", async () => {
+test("controller uses one lead session and deterministic v3 materialization", async () => {
   const source = await readFile(new URL("./controller.ts", import.meta.url), "utf8");
-  assert.match(source, /finalizeFrozenResearch/);
-  assert.doesNotMatch(source, /driveReportPublishing/);
-  assert.doesNotMatch(source, /publishingPrompt/);
+  assert.match(source, /materializeV3/);
+  assert.match(source, /synthesisRecoveryPrompt/);
+  assert.doesNotMatch(source, /createOpenCodeStructuredWriter/);
+  assert.doesNotMatch(source, /finalizeFrozenResearch/);
+  assert.doesNotMatch(source, /report-writer/);
   assert.doesNotMatch(source, /report\.finalize/);
 });
 

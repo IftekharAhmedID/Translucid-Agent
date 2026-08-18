@@ -54,17 +54,25 @@ export async function renderLeanReport(value: LeanReportResult): Promise<Buffer>
   heading("Status scale");
   for (const status of [2, 1, 0, -1, -2] as const) paragraph(`${status}: ${findingStatusLabels[status]}`);
 
-  const findings = [...result.findings].sort((left, right) => left.anchor.page - right.anchor.page
-    || left.anchor.lineStart - right.anchor.lineStart
-    || left.order - right.order);
+  const findings = [...result.findings].sort((left, right) => {
+    if (left.anchor.kind !== right.anchor.kind) return left.anchor.kind === "PDF_TEXT" ? -1 : 1;
+    if (left.anchor.kind === "PDF_TEXT" && right.anchor.kind === "PDF_TEXT") {
+      return left.anchor.page - right.anchor.page || left.anchor.lineStart - right.anchor.lineStart || left.order - right.order;
+    }
+    return left.order - right.order;
+  });
   let currentSection = "";
   for (const finding of findings) {
     ensureSpace(150);
-    if (finding.section !== currentSection) {
-      currentSection = finding.section;
+    const section = finding.anchor.kind === "DISCOVERED" ? "Additional independently established findings" : finding.section;
+    if (section !== currentSection) {
+      currentSection = section;
       heading(currentSection);
     }
-    subheading(`${finding.findingId} · ${finding.status}: ${findingStatusLabels[finding.status]} · résumé p.${finding.anchor.page}, lines ${finding.anchor.lineStart}–${finding.anchor.lineEnd}`);
+    const anchorLabel = finding.anchor.kind === "PDF_TEXT"
+      ? `résumé p.${finding.anchor.page}, lines ${finding.anchor.lineStart}–${finding.anchor.lineEnd}`
+      : "independently discovered finding";
+    subheading(`${finding.findingId} · ${finding.status}: ${findingStatusLabels[finding.status]} · ${anchorLabel}`);
     label("Claim");
     paragraph(finding.claim);
     label("Evidence");

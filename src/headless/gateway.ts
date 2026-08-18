@@ -5,9 +5,10 @@ import { estimateModelInputTokens, modelCostReservation, proxyModelCompletion, t
 import { toolNames } from "../providers/contracts.ts";
 import type { ProviderExecutor } from "../providers/executor.ts";
 import type { MemoryRunBudget } from "./budget.ts";
+import { modelUsesResponses } from "./model-registry.ts";
 import { SessionExcerptAllowances } from "./excerpt-allowance.ts";
 import { reportToolNames, ReportStoreError, type ReportStore } from "./report-store.ts";
-import type { ResearchStateStore } from "./research-state.ts";
+import { ResearchStateError, type ResearchStateStore } from "./research-state.ts";
 import type { FileSourceStore } from "./source-store.ts";
 
 const MAX_TOOL_BODY = 1024 * 1024;
@@ -64,11 +65,34 @@ export function createHeadlessGateway(input: GatewayInput) {
   const tokenDigest = digest(token);
   const excerptAllowances = new SessionExcerptAllowances();
   const reportTools = new Set<string>(reportToolNames);
+  const investigationTools = new Set([
+    "investigation.plan.set",
+    "investigation.target.add",
+    "investigation.synthesis.begin",
+    "investigation.finding.upsert",
+    "investigation.progress.get",
+    "investigation.summary.set",
+    "investigation.commit",
+  ]);
+  const investigationMutationTools = new Set([
+    "investigation.plan.set",
+    "investigation.target.add",
+    "investigation.synthesis.begin",
+    "investigation.finding.upsert",
+    "investigation.summary.set",
+    "investigation.commit",
+  ]);
   let active = true;
-  let phase: "RESEARCHING" | "FREEZING" | "PUBLISHING" = "RESEARCHING";
+  let phase: "RESEARCHING" | "FREEZING" | "PUBLISHING" | "ACTIVE" | "COMMITTING" | "FROZEN" = "ACTIVE";
   let leadSessionId: string | undefined;
   let providersInFlight = 0;
+  let synthesisActive = false;
+  let providerCallsDuringSynthesis = 0;
+  let modelRequests = 0;
+  let nonLeadSemanticModelRequests = 0;
+  let reportWriterModelRequests = 0;
   const providerDrainWaiters: Array<() => void> = [];
+  let commitOperation: Promise<{ ok: true; phase: "FROZEN"; revision: number }> | undefined;
 
   function waitForProviderDrain(): Promise<void> {
     if (providersInFlight === 0) return Promise.resolve();
@@ -88,6 +112,38 @@ export function createHeadlessGateway(input: GatewayInput) {
     return operational;
   }
 
+  async function commitInvestigation(): Promise<{ ok: true; phase: "FROZEN"; revision: number }> {
+    if (!input.researchState) throw new GatewayError(403, "Investigation state is unavailable in this run.");
+    if (commitOperation) return commitOperation;
+    if (phase === "FROZEN") {
+      const current = await input.researchState.current();
+      if (current?.schemaVersion === 3 && current.phase === "COMMITTED") return { ok: true, phase: "FROZEN", revision: current.revision };
+    }
+    const operation: Promise<{ ok: true; phase: "FROZEN"; revision: number }> = (async () => {
+      // Prevalidation happens while the gateway is still ACTIVE, so a
+      // rejected commit leaves the lead free to repair the exact defect.
+      await input.researchState!.validateCommit();
+      phase = "COMMITTING";
+      try {
+        await waitForProviderDrain();
+        // current() drains serialized state writes; the host then refreshes
+        // the source/route inventory before final validation.
+        await input.researchState!.current();
+        await input.researchState!.sealHostInventory();
+        await input.researchState!.validateCommit();
+        const committed = await input.researchState!.commit();
+        await input.researchState!.flushEvents();
+        phase = "FROZEN";
+        return { ok: true as const, phase: "FROZEN" as const, revision: committed.revision };
+      } catch (error) {
+        phase = "ACTIVE";
+        throw error;
+      }
+    })();
+    commitOperation = operation.finally(() => { commitOperation = undefined; });
+    return commitOperation!;
+  }
+
   const authorize = (request: IncomingMessage, kind: "tool" | "model", name: string): void => {
     const header = request.headers.authorization;
     const bearer = header?.startsWith("Bearer ") ? header.slice(7) : "";
@@ -103,12 +159,19 @@ export function createHeadlessGateway(input: GatewayInput) {
       const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
       if (!input.agentTools.get(agent)?.has(name)) throw new GatewayError(403, `Agent ${agent} cannot use ${name}.`);
     }
+    if (kind === "model") {
+      const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
+      if (agent !== "lead-researcher") throw new GatewayError(403, "Only the lead investigator may make semantic model requests.");
+    }
     if (kind === "tool") {
       if (reportTools.has(name) && phase !== "PUBLISHING") throw new GatewayError(403, "Report tools are unavailable until publishing begins.");
-      if (name === "research.state.set" && phase !== "RESEARCHING") throw new GatewayError(403, "Research state is immutable after research ends.");
-      if (name !== "source.excerpts" && name !== "source.inventory" && name !== "research.state.set" && name !== "research.state.get" && !reportTools.has(name) && phase !== "RESEARCHING") {
+      if (investigationTools.has(name) && !input.researchState) throw new GatewayError(403, "Investigation state is unavailable in this run.");
+      if (investigationMutationTools.has(name) && (phase === "COMMITTING" || phase === "FROZEN" || phase === "FREEZING" || phase === "PUBLISHING")) throw new GatewayError(403, "Investigation state is immutable while committing or after commit.");
+      if (name === "research.state.set" && phase !== "RESEARCHING" && phase !== "ACTIVE") throw new GatewayError(403, "Research state is immutable after research ends.");
+      if (name !== "source.excerpts" && name !== "source.inventory" && name !== "research.state.set" && name !== "research.state.get" && !investigationTools.has(name) && !reportTools.has(name) && phase !== "RESEARCHING" && phase !== "ACTIVE") {
         throw new GatewayError(403, `Publishing phase denies ${name}.`);
       }
+      if (investigationTools.has(name) && name !== "investigation.progress.get" && phase === "PUBLISHING") throw new GatewayError(403, "Publishing phase denies investigation mutations.");
     }
   };
 
@@ -139,6 +202,28 @@ export function createHeadlessGateway(input: GatewayInput) {
             ...(typeof args.cursor === "string" ? { cursor: args.cursor } : {}),
             ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
           }));
+        }
+        if (investigationTools.has(name)) {
+          if (!input.researchState) throw new GatewayError(403, "Investigation state is unavailable in this run.");
+          let result: unknown;
+          if (name === "investigation.plan.set") result = await input.researchState.planSet(body.arguments);
+          else if (name === "investigation.target.add") result = await input.researchState.targetAdd(body.arguments);
+          else if (name === "investigation.synthesis.begin") {
+            result = await input.researchState.beginSynthesis();
+            synthesisActive = true;
+          }
+          else if (name === "investigation.finding.upsert") result = await input.researchState.upsertFinding(body.arguments);
+          else if (name === "investigation.progress.get") result = await input.researchState.progress();
+          else if (name === "investigation.summary.set") result = await input.researchState.setSummary(body.arguments);
+          else if (name === "investigation.commit") result = await commitInvestigation();
+          await input.researchState.recordEvent({
+            tool: name,
+            sessionId: typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session",
+            agent: typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent",
+            callId: typeof operational.callId === "string" ? operational.callId : undefined,
+            phase,
+          });
+          return json(response, 200, result);
         }
         if (reportTools.has(name)) {
           if (!input.reportStore) throw new GatewayError(403, "Report publishing is unavailable in this run.");
@@ -177,6 +262,7 @@ export function createHeadlessGateway(input: GatewayInput) {
         if (!input.executor) throw new GatewayError(403, "Research providers are unavailable after publication begins.");
         input.researchState?.recordRoute(name);
         providersInFlight += 1;
+        if (synthesisActive) providerCallsDuringSynthesis += 1;
         input.onActivity?.({ kind: "tool-start", name, at: Date.now() });
         try {
           const result = await input.executor.executeHeadless({ tool: name, arguments: body.arguments }, {
@@ -203,13 +289,19 @@ export function createHeadlessGateway(input: GatewayInput) {
         const model = typeof body.model === "string" ? body.model.split("/").at(-1) ?? "" : "";
         authorize(request, "model", model);
         const responsesPath = url.pathname.endsWith("/responses");
-        if (responsesPath !== (model === "gpt-5.6-luna")) {
-          throw new GatewayError(400, `Model ${model || "unknown"} must use the ${model === "gpt-5.6-luna" ? "Responses" : "Chat Completions"} endpoint.`);
+        let responsesModel: boolean;
+        try { responsesModel = modelUsesResponses(model); }
+        catch { throw new GatewayError(400, `Unknown research model ${model || "unknown"}.`); }
+        if (responsesPath !== responsesModel) {
+          throw new GatewayError(400, `Model ${model || "unknown"} must use the ${responsesModel ? "Responses" : "Chat Completions"} endpoint.`);
         }
         const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
         const remainingMs = input.deadlineAt === undefined ? undefined : input.deadlineAt - Date.now();
         if (remainingMs !== undefined && remainingMs <= 0) throw new GatewayError(401, "Investigation deadline reached.");
         input.onModelRequest?.({ agent, estimatedInputTokens: estimateModelInputTokens(body) });
+        modelRequests += 1;
+        if (agent !== "lead-researcher") nonLeadSemanticModelRequests += 1;
+        if (agent === "report-writer") reportWriterModelRequests += 1;
         input.onActivity?.({ kind: "model-start", name: model, at: Date.now() });
         try {
           await input.budget.reserveModel(modelCostReservation(body, model));
@@ -236,7 +328,7 @@ export function createHeadlessGateway(input: GatewayInput) {
         if (!response.destroyed) response.destroy();
         return;
       }
-      if (error instanceof ReportStoreError) {
+      if (error instanceof ReportStoreError || error instanceof ResearchStateError) {
         return json(response, 422, { error: { code: error.code, ...(error.field ? { field: error.field } : {}), message: error.message } });
       }
       const status = error instanceof GatewayError ? error.status : 400;
@@ -253,7 +345,15 @@ export function createHeadlessGateway(input: GatewayInput) {
       if (leadSessionId && leadSessionId !== sessionId) throw new Error("Lead session ID cannot be changed.");
       leadSessionId = sessionId;
     },
-    setPhase: (value: "RESEARCHING" | "FREEZING" | "PUBLISHING") => { phase = value; },
+    telemetry: () => ({
+      semanticAgentCount: leadSessionId ? 1 : 0,
+      modelRequests,
+      providerCallsDuringSynthesis,
+      nonLeadSemanticModelRequests,
+      reportWriterModelRequests,
+    }),
+    setPhase: (value: "RESEARCHING" | "FREEZING" | "PUBLISHING" | "ACTIVE" | "COMMITTING" | "FROZEN") => { phase = value; },
+    commitInvestigation,
     freezeResearch: async () => {
       phase = "FREEZING";
       await waitForProviderDrain();

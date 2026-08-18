@@ -173,3 +173,48 @@ test("freezing waits for an in-flight provider and rejects new external calls", 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("v3 commit prevalidates, drains in-flight providers, and freezes all semantic writes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-v3-commit-gateway-"));
+  try {
+    await mkdir(join(directory, "input"), { recursive: true });
+    await writeFile(join(directory, "input", "document.json"), JSON.stringify({ pages: [{ page: 1, lines: [{ line: 1, text: "Synthetic Candidate" }] }] }));
+    const sourceStore = await FileSourceStore.open(directory);
+    const source = await sourceStore.capture({ kind: "SOURCE_CONTENT", provider: "fixture", providerRoute: "fixture.record", sourceUrl: "https://example.test/record", mimeType: "text/plain", content: "The record establishes contribution.", provenance: {} });
+    const researchState = await ResearchStateStore.open(directory, sourceStore);
+    let started = false;
+    let release!: () => void;
+    const executor = {
+      executeHeadless: async () => {
+        started = true;
+        await new Promise<void>((resolve) => { release = resolve; });
+        return { status: "OK", capability: "WEB_SEARCH", provider: "fixture", sourceRefs: [], evidenceEligibleSourceRefs: [], preview: "", observedAt: new Date().toISOString(), costUsd: 0, costSource: "FREE_PUBLIC", cache: "MISS" };
+      },
+    } as unknown as ProviderExecutor;
+    const tools = ["investigation.plan.set", "investigation.synthesis.begin", "investigation.finding.upsert", "investigation.summary.set", "investigation.progress.get", "investigation.commit", "web.search"];
+    const gateway = createHeadlessGateway({ runId: "run-v3-commit", deadlineAt: Date.now() + 60_000, allowedTools: new Set(tools), allowedModels: new Set(), agentTools: new Map([["lead-researcher", new Set(tools)]]), researchState, executor, sourceStore, budget: budget(), providerMode: "fixture" });
+    gateway.setLeadSession("lead-v3");
+    const server = await listen(gateway);
+    const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-v3-commit", "x-opencode-agent": "lead-researcher" };
+    const execute = (tool: string, args: unknown = {}) => fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool, arguments: args, operational: { sessionId: "lead-v3" } }) });
+    const anchor = { kind: "PDF_TEXT", page: 1, lineStart: 1, lineEnd: 1, exact: "Synthetic Candidate" };
+    assert.equal((await execute("investigation.plan.set", { identityAnchors: ["Synthetic Candidate"], targets: [{ id: "contribution", section: "Career", predicate: "Made a material contribution", importance: "HIGH", anchor }] })).status, 200);
+    assert.equal((await execute("investigation.synthesis.begin")).status, 200);
+    assert.equal((await execute("investigation.finding.upsert", { targetId: "contribution", conclusion: "Contribution is established.", status: "ESTABLISHED", evidence: [{ sourceRef: source.ref, relation: "SUPPORTS", comment: "The record establishes contribution, not leadership." }], rationale: "Direct record.", remainingGap: null })).status, 200);
+    assert.equal((await execute("investigation.summary.set", { text: "The contribution is established.", targetIds: ["contribution"] })).status, 200);
+    const provider = execute("web.search", { query: "in flight" });
+    while (!started) await new Promise((resolve) => setTimeout(resolve, 1));
+    const commit = execute("investigation.commit");
+    assert.equal((await execute("web.search", { query: "blocked during commit" })).status, 403);
+    release();
+    assert.equal((await provider).status, 200);
+    assert.equal((await commit).status, 200);
+    assert.equal((await execute("investigation.finding.upsert", { targetId: "contribution", conclusion: "Late mutation", status: "ESTABLISHED", evidence: [{ sourceRef: source.ref, relation: "SUPPORTS", comment: "Late." }], rationale: "Late.", remainingGap: null })).status, 403);
+    assert.equal((await execute("web.search", { query: "blocked after commit" })).status, 403);
+    assert.equal((await researchState.current())?.phase, "COMMITTED");
+    gateway.cancel();
+    await server.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

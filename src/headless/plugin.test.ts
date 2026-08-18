@@ -13,7 +13,7 @@ process.env.CASE_ROOT = join(tmpdir(), `translucid-plugin-${process.pid}`);
 
 after(async () => rm(process.env.CASE_ROOT!, { recursive: true, force: true }));
 
-test("compaction context preserves refs and route history and directs ledger recovery through state.get", async () => {
+test("compaction context preserves refs and route history and directs v3 state recovery", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (_input, init) => {
     const body = JSON.parse(String(init?.body)) as { tool: string; arguments?: unknown; operational: { sessionId: string } };
@@ -36,7 +36,7 @@ test("compaction context preserves refs and route history and directs ledger rec
     const text = output.context.join("\n");
     assert.match(text, /S1/);
     assert.match(text, /S3/);
-    assert.match(text, /research\.state\.get/);
+    assert.match(text, /investigation\.progress\.get/);
     assert.doesNotMatch(text, /Latest claim state:/);
     assert.match(text, /web\.search/);
     assert.ok(Buffer.byteLength(text, "utf8") <= 8 * 1024);

@@ -293,10 +293,10 @@ than strengthening the claim to make the gap easier to describe.
 
 No direct `web.search` result is citable.
 
-Set `publicationReady: true` only when the material target queue has received
-an honest final gap pass.
+When discovery is mature, call investigation.synthesis.begin and load
+investigation-reporting. Reconstruct the durable targets, recover evidence
+locally, research any material resolvable gap during synthesis, and persist one
+finding at a time with assertion-level evidence comments. Then set the summary,
+audit every HIGH target, and call investigation.commit.
 
-Call `research.state.set` once with every material claim, exact supporting and
-conflicting references, status, importance, and remaining gap.
-
-Stop after the publication-ready ledger is saved.
+Stop only after the host confirms the v3 state is committed.

@@ -86,6 +86,34 @@ const claim = {
   importance: z.string().trim().min(1).max(100),
 };
 
+const pdfTargetAnchor = z.object({
+  kind: z.literal("PDF_TEXT"),
+  page: z.number().int().positive(),
+  lineStart: z.number().int().positive(),
+  lineEnd: z.number().int().positive(),
+  exact: z.string().trim().min(1).max(6_000),
+}).strict();
+const target = z.object({
+  id: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/),
+  section: z.string().trim().min(1).max(200),
+  predicate: z.string().trim().min(1).max(6_000),
+  importance: z.enum(["HIGH", "MEDIUM"]),
+  anchor: z.discriminatedUnion("kind", [pdfTargetAnchor, z.object({ kind: z.literal("DISCOVERED"), basis: z.string().trim().min(1).max(2_000) }).strict()]),
+}).strict();
+const findingEvidence = z.object({
+  sourceRef: z.string().regex(/^S[1-9]\d*$/),
+  relation: z.enum(["SUPPORTS", "CONTRADICTS", "CONTEXT"]),
+  comment: z.string().trim().min(1).max(6_000),
+}).strict();
+const finding = {
+  targetId: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/),
+  conclusion: z.string().trim().min(1).max(6_000),
+  status: z.enum(["ESTABLISHED", "PARTIAL", "UNRESOLVED", "CONFLICTING", "CONTRADICTED"]),
+  evidence: z.array(findingEvidence).max(200),
+  rationale: z.string().trim().min(1).max(12_000),
+  remainingGap: z.string().trim().max(2_000).nullable(),
+};
+
 const plugin: Plugin = async () => {
   const assignments = new Map<string, string>();
   const sessionSourceRefs = new Map<string, Set<string>>();
@@ -108,7 +136,7 @@ const plugin: Plugin = async () => {
     const refs = sessionSourceRefs.get(context.sessionID) ?? new Set<string>();
     for (const ref of returnedSourceRefs(body)) refs.add(ref);
     sessionSourceRefs.set(context.sessionID, refs);
-    if (name !== "source.excerpts" && name !== "source.inventory" && name !== "research.state.set" && name !== "research.state.get" && !name.startsWith("report.")) {
+    if (name !== "source.excerpts" && name !== "source.inventory" && name !== "research.state.set" && name !== "research.state.get" && !name.startsWith("investigation.") && !name.startsWith("report.")) {
       const routes = routeHistory.get(context.sessionID) ?? [];
       routes.push(`${name} ${safeJson(args, 400)}`);
       routeHistory.set(context.sessionID, routes.slice(-100));
@@ -138,6 +166,13 @@ const plugin: Plugin = async () => {
     "source.excerpts": gatewayTool("source.excerpts", "Reuse one immutable local source before making a provider call. Ask for several short anchors when a claim has multiple facets; returned wording and S references come from stored content.", { sourceRef: z.string().regex(/^S[1-9]\d*$/), queries: z.array(z.string().min(1).max(500)).min(1).max(12), maxCharacters: z.number().int().min(1).max(60000).optional() }),
     "research.state.set": gatewayTool("research.state.set", "Persist the final machine-readable claim ledger. Set publicationReady true only after the final gap pass is genuinely complete.", { publicationReady: z.boolean(), claims: z.array(z.object(claim).strict()).min(1).max(500), identityAnchors: z.array(z.string().min(1).max(500)).max(100).default([]) }),
     "research.state.get": gatewayTool("research.state.get", "Recover the frozen durable claim ledger in deterministic pages of at most 25 claims. This is read-only.", { cursor: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/).optional(), limit: z.number().int().min(1).max(25).default(25) }),
+    "investigation.plan.set": gatewayTool("investigation.plan.set", "Establish the durable material-target queue. PDF_TEXT targets must use exact résumé page/line anchors; DISCOVERED targets require a materiality basis.", { identityAnchors: z.array(z.string().trim().min(1).max(500)).max(100).default([]), targets: z.array(target).min(1).max(500) }),
+    "investigation.target.add": gatewayTool("investigation.target.add", "Add one material target discovered during research without rewriting existing targets.", { target }),
+    "investigation.synthesis.begin": gatewayTool("investigation.synthesis.begin", "Transition the durable investigation from research into one-finding-at-a-time synthesis.", {}),
+    "investigation.finding.upsert": gatewayTool("investigation.finding.upsert", "Persist one assertion-level finding. Every evidence comment must state what its source establishes and, where relevant, the material boundary it does not establish.", finding),
+    "investigation.progress.get": gatewayTool("investigation.progress.get", "Recover the durable v3 phase, targets, findings, summary, and host source inventory after compaction.", {}),
+    "investigation.summary.set": gatewayTool("investigation.summary.set", "Persist the final summary and list target IDs considered; every HIGH target must be included before commit.", { text: z.string().trim().min(1).max(50_000), targetIds: z.array(z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).max(500) }),
+    "investigation.commit": gatewayTool("investigation.commit", "Prevalidate, drain in-flight provider work, refresh host inventory, revalidate, and atomically commit the v3 investigation.", {}),
     "report.summary.set": gatewayTool("report.summary.set", "Set the final investigation summary and link it to frozen research claims.", { summary: z.string().min(1).max(50000), researchClaimIds: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).min(1).max(500) }),
     "report.finding.upsert": gatewayTool("report.finding.upsert", "Register or repair one résumé finding with exact PDF anchors, linked frozen claims, and captured eligible sources.", { findingId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/), section: z.string().min(1).max(200), claim: z.string().min(1).max(6000), anchor: z.object({ kind: z.literal("PDF_TEXT"), page: z.number().int().positive(), lineStart: z.number().int().positive(), lineEnd: z.number().int().positive(), exact: z.string().min(1).max(6000) }).strict(), evidence: z.string().min(1).max(12000), notes: z.string().max(6000).optional(), status: z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2)]), sourceRefs: z.array(z.string().regex(/^S[1-9]\d*$/)).max(200), researchClaimIds: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).min(1).max(500) }),
     "report.finding.remove": gatewayTool("report.finding.remove", "Remove one obsolete finding during final coverage repair.", { findingId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/) }),
@@ -160,7 +195,7 @@ const plugin: Plugin = async () => {
       const refs = [...(sessionSourceRefs.get(input.sessionID) ?? [])].sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
       const routes = routeHistory.get(input.sessionID) ?? [];
       const references = `Complete captured S references (contiguous ranges are exact): ${compactRefs(refs)}`;
-      const context = `${references}\nHeadless durable investigation state:\n- Assignment: ${assignments.get(input.sessionID) ?? "Continue the current input scope."}\n- Hard deadline: ${deadlineAt ?? "host controlled"}\n- Attempted routes: ${safeJson(routes, 2_000)}\n- Recover the claim ledger with research.state.get (paged, read-only); do not inject or reconstruct serialized claim state.\n- Use source.inventory/source.excerpts for local recovery; never repeat a provider call merely to recover captured content.\n- Consequential claims: accept a dispositive authoritative primary record, authoritative evidence plus independent corroboration, or exhausted materially different public routes. Subject-controlled material is a lead and cannot alone establish a consequential claim unless it is itself the authoritative system of record. Discovery records are leads, not report citations.`;
+      const context = `${references}\nHeadless durable investigation state:\n- Assignment: ${assignments.get(input.sessionID) ?? "Continue the current input scope."}\n- Hard deadline: ${deadlineAt ?? "host controlled"}\n- Attempted routes: ${safeJson(routes, 2_000)}\n- Recover v3 state with investigation.progress.get; do not inject or reconstruct serialized targets or findings.\n- Use source.inventory/source.excerpts for local recovery; never repeat a provider call merely to recover captured content.\n- During SYNTHESIZING, research may continue when a resolvable material gap remains. Write one finding at a time and preserve the final evidence comments verbatim.\n- Consequential claims: accept a dispositive authoritative primary record, authoritative evidence plus independent corroboration, or exhausted materially different public routes. Subject-controlled material is a lead and cannot alone establish a consequential claim unless it is itself the authoritative system of record. Discovery records are leads, not report citations.`;
       const remainingBytes = Math.max(0, 8 * 1024 - Buffer.byteLength(`${references}\n`, "utf8"));
       output.context.push(`${references}\n${truncateUtf8(context.slice(references.length + 1), remainingBytes)}`);
     },

@@ -5,20 +5,22 @@ import test from "node:test";
 
 const root = join(process.cwd(), "runtime", "headless-opencode");
 
-test("headless runtime keeps the Luna investigator focused on research", async () => {
+test("headless runtime keeps the DeepSeek investigator as the only semantic authority", async () => {
   const lead = await readFile(join(root, "agents", "lead-researcher.md"), "utf8");
   const cli = await readFile(join(process.cwd(), "src", "headless", "cli.ts"), "utf8");
   const config = JSON.parse(await readFile(join(root, "opencode.json"), "utf8"));
-  assert.match(lead, /model: translucid\/gpt-5\.6-luna/);
-  for (const name of ["source.inventory", "source.excerpts", "research.state.set", "research.state.get"]) assert.match(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
+  assert.doesNotMatch(lead, /^model:/m);
+  for (const name of ["source.inventory", "source.excerpts", "investigation.plan.set", "investigation.target.add", "investigation.synthesis.begin", "investigation.finding.upsert", "investigation.progress.get", "investigation.summary.set", "investigation.commit"]) assert.match(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
+  for (const name of ["research.state.set", "research.state.get"]) assert.doesNotMatch(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
   for (const name of ["report.summary.set", "report.finding.upsert", "report.finding.remove", "report.progress.get", "report.finalize"]) assert.doesNotMatch(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
   for (const name of ["professional.profile", "github.rest", "public_records.search", "scholarly.search", "packages.inspect", "security_records.search"]) assert.match(lead, new RegExp(`${name.replaceAll(".", "\\.")}: allow`));
   assert.doesNotMatch(lead, /\btask:/);
   assert.doesNotMatch(lead, /specialist|delegate/i);
-  assert.match(cli, /gpt-5\.6-luna/);
+  assert.match(cli, /resolveResearchModel/);
+  assert.doesNotMatch(cli, /gpt-5\.6-luna/);
   assert.doesNotMatch(cli, /research\.memo\.persist|SPECIALIST_MODEL|professional-researcher/);
-  assert.equal(config.model, "translucid/gpt-5.6-luna");
-  assert.equal(config.small_model, "translucid/gpt-5.6-luna");
+  assert.equal(config.model, "translucid/deepseek-v4-pro");
+  assert.equal(config.small_model, "translucid/deepseek-v4-pro");
   assert.equal(config.subagent_depth, 0);
 });
 
@@ -59,7 +61,7 @@ test("the DeepSeek V4 Pro comparison model is configured for maximum reasoning",
 
 test("headless runtime loads the material-investigation skills and requires the initial method", async () => {
   const skills = (await readdir(join(root, "skills"))).sort();
-  assert.deepEqual(skills, ["historical-footprint", "professional-investigation"]);
+  assert.deepEqual(skills, ["historical-footprint", "investigation-reporting", "professional-investigation"]);
 
   const lead = await readFile(join(root, "agents", "lead-researcher.md"), "utf8");
   const contract = await readFile(join(process.cwd(), "src", "headless", "prompt-contracts.ts"), "utf8");
@@ -68,6 +70,8 @@ test("headless runtime loads the material-investigation skills and requires the 
 
   assert.match(lead, /load `professional-investigation`/i);
   assert.match(contract, /load `professional-investigation`/i);
+  assert.match(contract, /investigation\.synthesis\.begin/i);
+  assert.match(professional, /investigation-reporting/i);
   assert.match(professional, /at most one\s+logical employment-history baseline/i);
   assert.match(professional, /Tier C[\s\S]*never initiate a dedicated search[\s\S]*Preserve incidental evidence/i);
   assert.match(professional, /plausible material counter-hypothesis/i);
