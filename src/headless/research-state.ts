@@ -39,6 +39,24 @@ export const investigationEvidenceSchema = z.object({
 
 export const canonicalFindingStatusSchema = z.enum(["ESTABLISHED", "PARTIAL", "UNRESOLVED", "CONFLICTING", "CONTRADICTED"]);
 
+export const compactWordLimits = {
+  summary: { target: 180, maximum: 220 },
+  conclusion: { target: 70, maximum: 90 },
+  evidenceComment: { target: 30, maximum: 35 },
+  rationale: { target: 60, maximum: 80 },
+  remainingGap: { target: 30, maximum: 40 },
+} as const;
+
+function wordCount(value: string): number {
+  const trimmed = value.trim();
+  return trimmed ? trimmed.split(/\s+/u).length : 0;
+}
+
+function addWordLimitIssue(context: z.RefinementCtx, path: (string | number)[], field: string, value: string, maximum: number): void {
+  const actual = wordCount(value);
+  if (actual > maximum) context.addIssue({ code: z.ZodIssueCode.custom, path, message: `${field} exceeds compact writing ceiling: ${actual} words; maximum ${maximum}.` });
+}
+
 export const investigationFindingSchema = z.object({
   targetId: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/),
   conclusion: z.string().trim().min(1).max(6_000),
@@ -46,12 +64,18 @@ export const investigationFindingSchema = z.object({
   evidence: z.array(investigationEvidenceSchema).max(200),
   rationale: z.string().trim().min(1).max(12_000),
   remainingGap: z.string().trim().max(2_000).nullable(),
-}).strict();
+}).strict().superRefine((finding, context) => {
+  addWordLimitIssue(context, ["conclusion"], "conclusion", finding.conclusion, compactWordLimits.conclusion.maximum);
+  addWordLimitIssue(context, ["rationale"], "rationale", finding.rationale, compactWordLimits.rationale.maximum);
+  if (finding.remainingGap !== null) addWordLimitIssue(context, ["remainingGap"], "remainingGap", finding.remainingGap, compactWordLimits.remainingGap.maximum);
+  for (const [index, evidence] of finding.evidence.entries()) addWordLimitIssue(context, ["evidence", index, "comment"], "evidence comment", evidence.comment, compactWordLimits.evidenceComment.maximum);
+});
 
 export const investigationSummarySchema = z.object({
   text: z.string().trim().min(1).max(50_000),
   targetIds: z.array(z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).max(500),
-}).strict().superRefine(({ targetIds }, context) => {
+}).strict().superRefine(({ text, targetIds }, context) => {
+  addWordLimitIssue(context, ["text"], "summary text", text, compactWordLimits.summary.maximum);
   if (new Set(targetIds).size !== targetIds.length) context.addIssue({ code: z.ZodIssueCode.custom, path: ["targetIds"], message: "Summary target IDs must be unique." });
 });
 

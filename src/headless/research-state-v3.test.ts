@@ -65,6 +65,24 @@ test("v3 rejects missing target dispositions, invalid status evidence, and incom
   }
 });
 
+test("v3 enforces compact finding and summary ceilings with actionable word counts", async () => {
+  const { root, sourceStore, source } = await fixture();
+  try {
+    const state = await ResearchStateStore.open(root, sourceStore);
+    await state.planSet({ identityAnchors: ["Synthetic Candidate"], targets: [{ id: "target", section: "Career", predicate: "Target", importance: "HIGH", anchor }] });
+    await state.beginSynthesis();
+    const words = (count: number) => Array.from({ length: count }, (_, index) => `word${index}`).join(" ");
+    await assert.rejects(
+      state.upsertFinding({ targetId: "target", conclusion: words(91), status: "ESTABLISHED", evidence: [{ sourceRef: source.ref, relation: "SUPPORTS", comment: "The record establishes the target." }], rationale: "Direct record.", remainingGap: null }),
+      /conclusion.*91.*90/i,
+    );
+    await state.upsertFinding({ targetId: "target", conclusion: "The target is established.", status: "ESTABLISHED", evidence: [{ sourceRef: source.ref, relation: "SUPPORTS", comment: "The record establishes the target." }], rationale: "Direct record.", remainingGap: null });
+    await assert.rejects(state.setSummary({ text: words(221), targetIds: ["target"] }), /text.*221.*220/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("v3 does not silently upgrade an existing v2 ledger", async () => {
   const { root, sourceStore } = await fixture();
   try {

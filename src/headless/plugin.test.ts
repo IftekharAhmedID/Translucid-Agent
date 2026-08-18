@@ -69,3 +69,13 @@ test("web fetch forwards optional focus and the plugin forwards material search 
     globalThis.fetch = originalFetch;
   }
 });
+
+test("plugin finding and summary schemas report compact word overflows", async () => {
+  const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
+  const hooks = await plugin({} as Parameters<typeof plugin>[0]);
+  const findingSchema = tool.schema.object(hooks.tool!["investigation.finding.upsert"]!.args);
+  const summarySchema = tool.schema.object(hooks.tool!["investigation.summary.set"]!.args);
+  const words = (count: number) => Array.from({ length: count }, (_, index) => `word${index}`).join(" ");
+  assert.throws(() => findingSchema.parse({ targetId: "target", conclusion: words(91), status: "ESTABLISHED", evidence: [], rationale: "Direct record.", remainingGap: null }), /conclusion.*91.*90/i);
+  assert.throws(() => summarySchema.parse({ text: words(221), targetIds: [] }), /summary text.*221.*220/i);
+});

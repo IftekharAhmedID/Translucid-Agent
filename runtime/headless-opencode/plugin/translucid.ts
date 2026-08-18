@@ -2,6 +2,15 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 
 const z = tool.schema;
+const compactWordLimits = { summary: 220, conclusion: 90, evidenceComment: 35, rationale: 80, remainingGap: 40 } as const;
+const wordCount = (value: string): number => {
+  const trimmed = value.trim();
+  return trimmed ? trimmed.split(/\s+/u).length : 0;
+};
+const compactText = (field: string, maximum: number) => z.string().superRefine((value, context) => {
+  const actual = wordCount(value);
+  if (actual > maximum) context.addIssue({ code: "custom", message: `${field} exceeds compact writing ceiling: ${actual} words; maximum ${maximum}.` });
+});
 const searchDomains = z.array(z.string().trim().min(1).max(500).regex(/^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/)).min(1).max(10)
   .transform((values) => [...new Set(values.map((value) => {
     const slash = value.indexOf("/");
@@ -103,15 +112,15 @@ const target = z.object({
 const findingEvidence = z.object({
   sourceRef: z.string().regex(/^S[1-9]\d*$/),
   relation: z.enum(["SUPPORTS", "CONTRADICTS", "CONTEXT"]),
-  comment: z.string().trim().min(1).max(6_000),
+  comment: compactText("evidence comment", compactWordLimits.evidenceComment).trim().min(1).max(6_000),
 }).strict();
 const finding = {
   targetId: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/),
-  conclusion: z.string().trim().min(1).max(6_000),
+  conclusion: compactText("conclusion", compactWordLimits.conclusion).trim().min(1).max(6_000),
   status: z.enum(["ESTABLISHED", "PARTIAL", "UNRESOLVED", "CONFLICTING", "CONTRADICTED"]),
   evidence: z.array(findingEvidence).max(200),
-  rationale: z.string().trim().min(1).max(12_000),
-  remainingGap: z.string().trim().max(2_000).nullable(),
+  rationale: compactText("rationale", compactWordLimits.rationale).trim().min(1).max(12_000),
+  remainingGap: compactText("remainingGap", compactWordLimits.remainingGap).trim().max(2_000).nullable(),
 };
 
 const plugin: Plugin = async () => {
@@ -171,7 +180,7 @@ const plugin: Plugin = async () => {
     "investigation.synthesis.begin": gatewayTool("investigation.synthesis.begin", "Transition the durable investigation from research into one-finding-at-a-time synthesis.", {}),
     "investigation.finding.upsert": gatewayTool("investigation.finding.upsert", "Persist one assertion-level finding. Every evidence comment must state what its source establishes and, where relevant, the material boundary it does not establish.", finding),
     "investigation.progress.get": gatewayTool("investigation.progress.get", "Recover the durable v3 phase, targets, findings, summary, and host source inventory after compaction.", {}),
-    "investigation.summary.set": gatewayTool("investigation.summary.set", "Persist the final summary and list target IDs considered; every HIGH target must be included before commit.", { text: z.string().trim().min(1).max(50_000), targetIds: z.array(z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).max(500) }),
+    "investigation.summary.set": gatewayTool("investigation.summary.set", "Persist the final summary and list target IDs considered; every HIGH target must be included before commit.", { text: compactText("summary text", compactWordLimits.summary).trim().min(1).max(50_000), targetIds: z.array(z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).max(500) }),
     "investigation.commit": gatewayTool("investigation.commit", "Prevalidate, drain in-flight provider work, refresh host inventory, revalidate, and atomically commit the v3 investigation.", {}),
     "report.summary.set": gatewayTool("report.summary.set", "Set the final investigation summary and link it to frozen research claims.", { summary: z.string().min(1).max(50000), researchClaimIds: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).min(1).max(500) }),
     "report.finding.upsert": gatewayTool("report.finding.upsert", "Register or repair one résumé finding with exact PDF anchors, linked frozen claims, and captured eligible sources.", { findingId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/), section: z.string().min(1).max(200), claim: z.string().min(1).max(6000), anchor: z.object({ kind: z.literal("PDF_TEXT"), page: z.number().int().positive(), lineStart: z.number().int().positive(), lineEnd: z.number().int().positive(), exact: z.string().min(1).max(6000) }).strict(), evidence: z.string().min(1).max(12000), notes: z.string().max(6000).optional(), status: z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2)]), sourceRefs: z.array(z.string().regex(/^S[1-9]\d*$/)).max(200), researchClaimIds: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).min(1).max(500) }),
