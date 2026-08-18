@@ -16,7 +16,8 @@
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "{env:CASE_GATEWAY_URL}/internal/llm/v1", "apiKey": "{env:CASE_TOKEN}", "timeout": 720000 },
       "models": {
-        "gpt-5.6-luna": { "name": "GPT 5.6 Luna", "provider": { "npm": "@ai-sdk/openai" }, "reasoning": true, "tool_call": true, "variants": { "xhigh": { "reasoningEffort": "xhigh" } }, "limit": { "context": 200000, "output": 32000 } }
+        "gpt-5.6-luna": { "name": "GPT 5.6 Luna", "provider": { "npm": "@ai-sdk/openai" }, "reasoning": true, "tool_call": true, "variants": { "xhigh": { "reasoningEffort": "xhigh" } }, "limit": { "context": 200000, "output": 32000 } },
+        "deepseek-v4-pro": { "name": "DeepSeek V4 Pro", "provider": { "npm": "@ai-sdk/openai-compatible" }, "reasoning": true, "tool_call": true, "variants": { "xhigh": { "reasoningEffort": "max" } }, "limit": { "context": 1000000, "output": 384000 } }
       }
     }
   },

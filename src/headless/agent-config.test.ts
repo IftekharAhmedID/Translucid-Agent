@@ -47,6 +47,16 @@ test("headless runtime keeps a tool-free report writer separate from its one inv
   assert.doesNotMatch(plugin, /task-memo|research\.memo\.persist|tool\.execute\.before/);
 });
 
+test("the DeepSeek V4 Pro comparison model is configured for maximum reasoning", async () => {
+  const cli = await readFile(join(process.cwd(), "src", "headless", "cli.ts"), "utf8");
+  const config = JSON.parse(await readFile(join(root, "opencode.json"), "utf8"));
+  assert.match(cli, /RESEARCH_MODEL/);
+  assert.ok(config.provider.translucid.models["deepseek-v4-pro"]);
+  assert.equal(config.provider.translucid.models["deepseek-v4-pro"].reasoning, true);
+  assert.equal(config.provider.translucid.models["deepseek-v4-pro"].tool_call, true);
+  assert.deepEqual(config.provider.translucid.models["deepseek-v4-pro"].variants, { xhigh: { reasoningEffort: "max" } });
+});
+
 test("headless runtime loads the material-investigation skills and requires the initial method", async () => {
   const skills = (await readdir(join(root, "skills"))).sort();
   assert.deepEqual(skills, ["historical-footprint", "professional-investigation"]);

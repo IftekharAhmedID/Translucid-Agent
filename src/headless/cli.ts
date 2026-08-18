@@ -22,7 +22,8 @@ import { attachOpenCodeTui } from "./visible-tui.ts";
 
 const RUN_TIMEOUT_MS = 30 * 60_000;
 const PUBLISHING_RESERVE_MS = 6 * 60_000;
-const RESEARCH_MODEL = "gpt-5.6-luna";
+const DEFAULT_RESEARCH_MODEL = "gpt-5.6-luna";
+const SUPPORTED_RESEARCH_MODELS = new Set([DEFAULT_RESEARCH_MODEL, "deepseek-v4-pro"]);
 
 async function atomicWrite(path: string, bytes: Uint8Array | string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -98,7 +99,8 @@ async function main(): Promise<void> {
       runId,
     });
     const expectedManifestHash = await getPinnedLocalManifestHash();
-    const researchModel = RESEARCH_MODEL;
+    const researchModel = process.env.RESEARCH_MODEL?.trim() || DEFAULT_RESEARCH_MODEL;
+    if (!SUPPORTED_RESEARCH_MODELS.has(researchModel)) throw new Error(`Unsupported research model: ${researchModel}`);
     const budget = new MemoryRunBudget(options.qualification ? unboundedBudgetCeilings() : headlessBudgetCeilings(), { onChange: () => undefined });
     const researchState = await ResearchStateStore.open(workspace.root, workspace.sourceStore);
     const reportStore = await ReportStore.open(workspace.root, {
