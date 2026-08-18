@@ -27,6 +27,17 @@ export const MODEL_REGISTRY = {
     outputLimit: 384_000,
     default: true,
   },
+  "deepseek-v4-flash": {
+    id: "deepseek-v4-flash",
+    displayName: "DeepSeek V4 Flash",
+    protocol: "CHAT_COMPLETIONS",
+    variant: "medium",
+    reasoningEffort: "medium",
+    effectiveReasoningEffort: "high",
+    contextLimit: 1_000_000,
+    outputLimit: 384_000,
+    default: false,
+  },
   "gpt-5.6-luna": {
     id: "gpt-5.6-luna",
     displayName: "GPT 5.6 Luna",
@@ -50,7 +61,7 @@ export function resolveResearchModel(value?: string, requestedVariant?: string):
   if (!spec) throw new Error(`Unsupported research model: ${id}`);
   const variant = requestedVariant?.trim() || spec.variant;
   if (variant === spec.variant) return spec;
-  if (id === "deepseek-v4-pro" && variant === "xhigh") return { ...spec, variant: "xhigh", reasoningEffort: "max", effectiveReasoningEffort: "max" };
+  if ((id === "deepseek-v4-pro" || id === "deepseek-v4-flash") && variant === "xhigh") return { ...spec, variant: "xhigh", reasoningEffort: "max", effectiveReasoningEffort: "max" };
   throw new Error(`Research model ${id} does not support reasoning variant ${variant}.`);
 }
 
