@@ -47,6 +47,36 @@ export class RunTimeline {
     await this.pending;
   }
 
+  publicationOrder(): string[] {
+    return this.events.filter(({ kind }) => kind.startsWith("publication.")).map(({ kind }) => kind);
+  }
+
+  timingSummary(input: { modelElapsedMs: number; providerElapsedMs: number }): {
+    endToEndWallMs: number;
+    researchElapsedMs: number | null;
+    freezePublicationElapsedMs: number | null;
+    publicationElapsedMs: number | null;
+    modelElapsedMs: number;
+    providerElapsedMs: number;
+  } {
+    const elapsed = (kind: string): number | null => {
+      for (let index = this.events.length - 1; index >= 0; index -= 1) if (this.events[index]?.kind === kind) return this.events[index]!.elapsedMs;
+      return null;
+    };
+    const endToEndWallMs = this.events.at(-1)?.elapsedMs ?? Math.max(0, Math.round(performance.now() - this.startedMono));
+    const frozen = elapsed("research.frozen");
+    const publicationStarted = elapsed("publication.started");
+    const resultWritten = elapsed("publication.result.written");
+    return {
+      endToEndWallMs,
+      researchElapsedMs: frozen,
+      freezePublicationElapsedMs: frozen === null || resultWritten === null ? null : Math.max(0, resultWritten - frozen),
+      publicationElapsedMs: publicationStarted === null || resultWritten === null ? null : Math.max(0, resultWritten - publicationStarted),
+      modelElapsedMs: Math.max(0, Math.round(input.modelElapsedMs)),
+      providerElapsedMs: Math.max(0, Math.round(input.providerElapsedMs)),
+    };
+  }
+
   summary(): { startedAt: string; completedAt: string; totalElapsedMs: number; eventCount: number } {
     const completed = Date.now();
     return { startedAt: new Date(this.startedAt).toISOString(), completedAt: new Date(completed).toISOString(), totalElapsedMs: Math.max(0, Math.round(performance.now() - this.startedMono)), eventCount: this.events.length };

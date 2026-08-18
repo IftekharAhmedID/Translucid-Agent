@@ -17,6 +17,10 @@ recreate captured evidence.
 Subject-only corroboration is UNRESOLVED unless the subject is the authoritative
 system of record for that exact fact.
 
+Use calibrated statuses during adjudication: PARTIAL is allowed only when captured
+evidence establishes a precisely stated subset of the submitted predicate; otherwise
+the external claim remains UNRESOLVED.
+
 ## Start with identity
 
 Read the supplied manifest, document, and extracted text once. Collect supplied
@@ -135,6 +139,15 @@ Begin each new cluster with short broad `auto` searches that learn vocabulary,
 project names, repositories, organizations, dates, domains, and likely source
 families.
 
+For every unresolved material predicate, make the obvious canonical-route attempt:
+use the issuing institution or credential registry for a university, organizer or
+proceedings for a conference, repository/registry/releases/issues/history for a
+project, canonical governance/team records for governance, a direct fetch for a
+submitted résumé URL, and an employer or contemporaneous institutional record for
+a current position. Follow new domains, people, project identifiers, dates,
+document names, awards, PEPs, mailing lists, and canonical systems learned from
+those routes.
+
 Do not begin with a long query containing every résumé keyword. For example:
 
 `Diego Russo Arm`
@@ -179,6 +192,10 @@ to reach. Qualification does not create a search quota or ritual.
 Before freezing, paginate `source.inventory` to completion and run a local-only
 reverse sweep for unresolved Tier-A targets and unusually rich sources. Local
 reuse is required evidence work, not a reason to make another provider call.
+
+Run a final novel-discovery pass: identify material facts learned that were absent
+from the submitted résumé, capture only the useful new records, and adjudicate
+them against the professional judgment before freezing.
 
 ## Select evidence by origin and authority
 

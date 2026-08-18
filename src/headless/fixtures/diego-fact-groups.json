@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "case": "diego",
+  "groups": [
+    {
+      "id": "diego-current-arm-role",
+      "predicate": "Diego Russo's current Arm role is supported by an employer or contemporaneous institutional record.",
+      "canonicalWitnessFamily": "employer",
+      "canonicalHostAliases": ["arm.com"],
+      "canonicalPathAliases": ["/company/", "/careers/", "/blogs/", "/news/"],
+      "subjectMatchers": ["Diego Russo"],
+      "predicateMatchers": ["Arm", "engineer"],
+      "required": true
+    },
+    {
+      "id": "diego-mbed-technical-work",
+      "predicate": "Diego Russo's claimed Mbed or embedded-systems work is supported by a canonical project, repository, release, or issue record.",
+      "canonicalWitnessFamily": "project",
+      "canonicalHostAliases": ["github.com", "os.mbed.com", "mbed.com"],
+      "canonicalPathAliases": ["/mbed/", "/ARMmbed/", "/diego/"],
+      "subjectMatchers": ["Diego Russo", "Diego"],
+      "predicateMatchers": ["Mbed", "embedded", "Linux"],
+      "required": true
+    },
+    {
+      "id": "diego-cpython-governance",
+      "predicate": "Diego Russo's claimed CPython or Python governance participation is supported by a canonical governance or team record.",
+      "canonicalWitnessFamily": "governance",
+      "canonicalHostAliases": ["python.org", "devguide.python.org", "github.com"],
+      "canonicalPathAliases": ["/dev/", "/psf-landing/", "/python/"],
+      "subjectMatchers": ["Diego Russo", "Diego"],
+      "predicateMatchers": ["CPython", "core developer", "governance", "Python"],
+      "required": true
+    },
+    {
+      "id": "diego-perugia-credential",
+      "predicate": "The claimed University of Perugia credential is supported by the institution or a credential registry.",
+      "canonicalWitnessFamily": "institution",
+      "canonicalHostAliases": ["unipg.it", "unipg.eu", "unipg.it"],
+      "canonicalPathAliases": ["/", "/didattica/", "/studenti/", "/laureati/"],
+      "subjectMatchers": ["Diego Russo", "Diego"],
+      "predicateMatchers": ["Perugia", "University", "Master", "Computer Science"],
+      "required": true
+    }
+  ],
+  "semanticReviewCases": [
+    {
+      "id": "subject-origin-external-claim",
+      "description": "Subject-origin evidence alone must not establish an external employment or governance claim.",
+      "targetIds": ["education_msc", "education_bsc", "prearm_career"],
+      "acceptableStatuses": ["PARTIAL", "UNRESOLVED"]
+    },
+    {
+      "id": "contribution-is-not-leadership",
+      "description": "Technical contribution must not be broadened into leadership or ownership.",
+      "targetIds": ["mlia_leadership"],
+      "acceptableStatuses": ["PARTIAL", "UNRESOLVED"]
+    }
+  ]
+}

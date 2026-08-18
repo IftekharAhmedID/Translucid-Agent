@@ -6,10 +6,12 @@ compatibility: opencode
 
 # Historical footprint
 
-Load this method only for a remaining Tier-A historical gap.
+Load this method only for a remaining material historical gap.
 
-Load it only after discovery identifies a relevant person, project, URL, or
-domain that can make the historical route concrete.
+The historical route may begin from a known person, employer, project, or
+domain. Load it as soon as one of those anchors makes a materially different
+historical route concrete; do not wait for a perfect URL. Archive lookup still
+requires a concrete historical URL or domain.
 
 Do not use it for routine chronology, Tier-B detail, or speculative archive
 browsing.
@@ -30,11 +32,13 @@ that the returned record is contemporaneous.
 
 Use the wider interval only when transition uncertainty itself is material.
 
-Search broad-to-narrow:
+Search broad-to-narrow, with optimistic discovery and conservative adjudication:
 
 1. Start with the person and organization or project.
 2. Learn dated vocabulary, source families, and canonical URLs.
-3. Use a date-bounded deep route only for the remaining material gap.
+3. Use a targeted ordinary route, then `deep-lite`, then a date-bounded `deep`
+   route only for the remaining material gap. Let Exa plan the first deep query;
+   add orthogonal `additionalQueries` only after learning concrete vocabulary.
 4. Fetch decisive leads directly and inspect the captured source locally.
 
 Use `additionalQueries` only with a deep route and only when several known

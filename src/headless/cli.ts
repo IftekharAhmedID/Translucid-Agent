@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { type ChildProcess } from "node:child_process";
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { toolNames } from "../providers/contracts.ts";
@@ -24,6 +24,7 @@ import { resolveResearchModel } from "./model-registry.ts";
 import { preflightResearchModel } from "../gateway/model-proxy.ts";
 import { RUN_TIMEOUT_MS, researchDeadlineAt } from "./deadlines.ts";
 import { RunTimeline } from "./run-timeline.ts";
+import { evaluateQualification, loadDiegoFactGroupFixture, readEvaluationSources, type QualificationEvaluation } from "./qualification-evaluator.ts";
 
 async function atomicWrite(path: string, bytes: Uint8Array | string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -83,6 +84,7 @@ async function main(): Promise<void> {
   let auditTemporaryPath: string | undefined;
   let timeline: RunTimeline | undefined;
   let preflightPath: string | undefined;
+  let qualificationEvaluation: QualificationEvaluation | undefined;
   const abort = new AbortController();
   const abortHandler = () => abort.abort(new DOMException("Investigation cancelled by signal.", "AbortError"));
   process.once("SIGINT", abortHandler);
@@ -227,6 +229,7 @@ async function main(): Promise<void> {
       await writeFile(attachPath, JSON.stringify({ openCodeUrl: handle.openCodeUrl, password, title: "Headless lead research" }), { encoding: "utf8", mode: 0o600, flag: "wx" });
     }
     const controller = new HeadlessInvestigationController();
+    await timeline?.record({ kind: "research.started", status: "OK" });
     const output = await controller.run({
       root: workspace.root,
       handle,
@@ -254,6 +257,7 @@ async function main(): Promise<void> {
       },
       onProgress: (message) => { if (!options.watch) process.stderr.write(`Run ${runId}: ${message}\n`); },
     });
+    await timeline?.record({ kind: "research.frozen", status: "OK" });
     const integrity = await workspace.sourceStore.verify();
     if (!integrity.valid) {
       const error = new Error(`Source integrity failed for ${integrity.invalidSourceRefs.join(", ")}.`);
@@ -280,6 +284,7 @@ async function main(): Promise<void> {
     await rm(auditTemporaryPath, { force: true });
     const reportBytes = await renderRecruiterReport(output.result);
     const auditBytes = await renderAuditReport(output.result);
+    await timeline?.record({ kind: "publication.started", status: "OK" });
     await atomicWrite(reportTemporaryPath, reportBytes);
     await atomicWrite(auditTemporaryPath, auditBytes);
     const reportVerification = await verifyInvestigationReport(reportBytes);
@@ -306,6 +311,13 @@ async function main(): Promise<void> {
     const uncitedEligibleUrls = eligibleUrls.filter((url) => !citedUrls.includes(url));
     const providerStats = await workspace.sourceStore.requestStats();
     if (providerStats.invalidRows) throw new Error(`Provider request ledger contains ${providerStats.invalidRows} invalid row(s).`);
+    if (options.qualification && options.providerMode === "live") {
+      const fixture = await loadDiegoFactGroupFixture();
+      const evaluationSources = await readEvaluationSources(workspace.root, capturedSources);
+      qualificationEvaluation = evaluateQualification({ fixture, sources: evaluationSources, citedSourceRefs: citedSourceRefs, result: output.result });
+      await timeline?.record({ kind: "qualification.evaluated", status: qualificationEvaluation.qualification });
+      await atomicWrite(join(workspace.root, "provenance", "qualification.json"), `${JSON.stringify({ schemaVersion: 1, ...qualificationEvaluation }, null, 2)}\n`);
+    }
     await timeline?.record({ kind: "publication.provenance.written", status: "OK" });
     await timeline?.flush();
     await atomicWrite(join(workspace.root, "provenance", "report.json"), `${JSON.stringify({
@@ -325,6 +337,12 @@ async function main(): Promise<void> {
       modelTiming: telemetry.modelTiming,
       providerTiming: telemetry.providerTiming,
       providerIntervals: summarizeProviderIntervals(providerIntervals),
+      timing: timeline?.timingSummary({
+        modelElapsedMs: Object.values(telemetry.modelTiming).reduce((sum, value) => sum + value.totalElapsedMs, 0),
+        providerElapsedMs: summarizeProviderIntervals(providerIntervals).unionElapsedMs,
+      }) ?? null,
+      qualification: qualificationEvaluation ?? null,
+      qualificationPath: qualificationEvaluation ? "provenance/qualification.json" : null,
       providerStats,
       leadSession: output.leadSession,
       modelConfig: { protocol: modelSpec.protocol, requestedVariant: modelSpec.variant, variant: modelSpec.variant, reasoningEffort: modelSpec.reasoningEffort, effectiveReasoningEffort: modelSpec.effectiveReasoningEffort, upstreamFamily: researchProvider, observedReasoningEfforts: telemetry.observedReasoningEfforts },
@@ -340,17 +358,23 @@ async function main(): Promise<void> {
     }, null, 2)}\n`);
     await rename(auditTemporaryPath, auditPath);
     auditTemporaryPath = undefined;
+    await timeline?.record({ kind: "publication.audit.pdf.written", status: "OK" });
     await rename(reportTemporaryPath, reportPath);
     reportTemporaryPath = undefined;
+    await timeline?.record({ kind: "publication.report.pdf.written", status: "OK" });
     await reportStore.markPublished();
     if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
     await atomicWrite(resultPath, `${JSON.stringify(output.result, null, 2)}\n`);
     const writtenResult = leanReportResultSchema.parse(JSON.parse(await readFile(resultPath, "utf8")));
-    const pdfMtime = Math.max((await stat(reportPath)).mtimeMs, (await stat(auditPath)).mtimeMs);
-    const resultMtime = (await stat(resultPath)).mtimeMs;
-    if (writtenResult.schemaVersion !== 4 || writtenResult.researchSnapshotSha256 !== actualSnapshotSha256 || resultMtime < pdfMtime) throw new Error("Published result failed final digest or ordering validation.");
+    if (writtenResult.schemaVersion !== 4 || writtenResult.researchSnapshotSha256 !== actualSnapshotSha256) throw new Error("Published result failed final digest validation.");
     await timeline?.record({ kind: "publication.result.written", status: "OK" });
     await timeline?.flush();
+    if (timeline?.publicationOrder().at(-1) !== "publication.result.written") throw new Error("Published result failed timeline ordering validation.");
+    if (qualificationEvaluation && qualificationEvaluation.qualification !== "PASS") {
+      const error = new Error(`Diego qualification ${qualificationEvaluation.qualification}; preserved report, PDFs, provenance, and result for review.`);
+      error.name = qualificationEvaluation.qualification === "FAIL" ? "QUALIFICATION_FAILED" : "QUALIFICATION_REQUIRES_HUMAN_REVIEW";
+      throw error;
+    }
     process.stdout.write(`${JSON.stringify({ runId, result: resultPath, report: reportPath, audit: auditPath, sources: join(workspace.root, "sources") }, null, 2)}\n`);
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error("Unknown headless investigation failure.");

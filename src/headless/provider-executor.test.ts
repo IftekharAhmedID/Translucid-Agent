@@ -224,24 +224,24 @@ test("projects a successful Exa parent and bounded direct subpages into separate
         highlights: ["Parent highlight"],
         highlightScores: [0.9],
         subpages: [
-          { url: "https://example.test/hub/one", title: "One", text: "First subpage evidence" },
-          { url: "https://example.test/hub/two", title: "Two", highlights: ["Second subpage evidence"] },
+          ...Array.from({ length: 12 }, (_, index) => ({ url: `https://example.test/hub/child-${index + 1}`, title: `Child ${index + 1}`, text: `Subpage ${index + 1} evidence` })),
           { url: "https://example.test/hub/one", text: "Duplicate" },
           { url: "not-a-url", text: "Invalid" },
           { url: "https://example.test/hub/empty", text: "" },
         ],
       }],
     }), { headers: { "content-type": "application/json" } });
-    const result = await executor.executeHeadless({ tool: "web.fetch", arguments: { url: parentUrl, subpages: 3, subpageTarget: ["release"] } }, { runId: "run-subpages", agent: "lead-researcher", sessionId: "session-subpages" });
+    const result = await executor.executeHeadless({ tool: "web.fetch", arguments: { url: parentUrl, subpages: 10, subpageTarget: ["release"] } }, { runId: "run-subpages", agent: "lead-researcher", sessionId: "session-subpages" });
     assert.equal(result.status, "OK");
-    assert.deepEqual(result.sourceRefs, ["S1", "S2", "S3"]);
-    assert.deepEqual(result.evidenceEligibleSourceRefs, ["S1", "S2", "S3"]);
+    assert.equal(result.sourceRefs.length, 11);
+    assert.deepEqual(result.evidenceEligibleSourceRefs, result.sourceRefs);
     const sources = await sourceStore.list();
-    assert.deepEqual(sources.map((source) => ({ url: source.sourceUrl, method: source.provenance.captureMethod, parent: source.provenance.parentUrl })), [
+    assert.equal(sources.length, 11);
+    assert.deepEqual(sources.slice(0, 2).map((source) => ({ url: source.sourceUrl, method: source.provenance.captureMethod, parent: source.provenance.parentUrl })), [
       { url: parentUrl, method: "EXA_CONTENTS_PARENT", parent: undefined },
-      { url: "https://example.test/hub/one", method: "EXA_CONTENTS_SUBPAGE", parent: parentUrl },
-      { url: "https://example.test/hub/two", method: "EXA_CONTENTS_SUBPAGE", parent: parentUrl },
+      { url: "https://example.test/hub/child-1", method: "EXA_CONTENTS_SUBPAGE", parent: parentUrl },
     ]);
+    assert.equal(sources.at(-1)?.sourceUrl, "https://example.test/hub/child-10");
     const parentBlob = JSON.parse(await readFile(join(directory, sources[0]!.relativePath), "utf8")) as Record<string, unknown>;
     assert.equal(parentBlob.url, parentUrl);
     assert.equal("results" in parentBlob, false);

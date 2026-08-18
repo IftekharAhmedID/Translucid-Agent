@@ -174,6 +174,30 @@ test("routes research providers and local excerpts, then blocks providers in pub
   }
 });
 
+test("resolves a captured SEARCH_DISCOVERY reference before web.fetch and records its provenance", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-discovery-ref-gateway-"));
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    const discovery = await sourceStore.capture({ kind: "SEARCH_DISCOVERY", provider: "exa", providerRoute: "exa.search", sourceUrl: "https://example.test/oversized-lead", mimeType: "application/json", content: { results: [{ url: "https://example.test/oversized-lead" }] }, provenance: { searchQuery: "candidate" } });
+    let received: { tool?: string; arguments?: unknown; context?: Record<string, unknown> } = {};
+    const executor = { executeHeadless: async (request: { tool: string; arguments: unknown }, context: Record<string, unknown>) => {
+      received = { tool: request.tool, arguments: request.arguments, context };
+      return { status: "OK", capability: "WEB_FETCH", provider: "fixture", sourceRefs: [], evidenceEligibleSourceRefs: [], preview: "fetched", observedAt: new Date().toISOString(), costUsd: 0, costSource: "FREE_PUBLIC", cache: "MISS" };
+    } } as unknown as ProviderExecutor;
+    const gateway = createHeadlessGateway({ runId: "run-discovery-ref", deadlineAt: Date.now() + 60_000, allowedTools: new Set(["web.fetch"]), allowedModels: new Set(), agentTools: new Map([["lead-researcher", new Set(["web.fetch"])] ]), executor, sourceStore, budget: budget(), providerMode: "fixture" });
+    gateway.setLeadSession("session-discovery-ref");
+    const server = await listen(gateway);
+    const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-discovery-ref", "x-opencode-agent": "lead-researcher" };
+    const response = await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "web.fetch", arguments: { discoveryRef: discovery.ref }, operational: { agent: "lead-researcher", sessionId: "session-discovery-ref" } }) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(received, { tool: "web.fetch", arguments: { url: "https://example.test/oversized-lead" }, context: { runId: "run-discovery-ref", agent: "lead-researcher", sessionId: "session-discovery-ref", resolvedDiscoveryRef: discovery.ref } });
+    gateway.cancel();
+    await server.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("freezing waits for an in-flight provider and rejects new external calls", async () => {
   const directory = await mkdtemp(join(tmpdir(), "translucid-provider-freeze-"));
   try {

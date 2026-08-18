@@ -26,7 +26,9 @@ Split a résumé section into 2–4 material predicates only when authority,
 timeframe, or confidence differs. Keep the shared résumé section in the
 existing `section` field; do not invent grouping fields. Subject-only
 corroboration is UNRESOLVED unless the subject is the authoritative system of
-record for that exact fact.
+record for that exact fact. Be aggressive in discovery but conservative in
+adjudication: search as though material evidence may exist, then state only
+what each captured source establishes.
 
 ## Recover evidence and test the predicate boundary
 
@@ -51,7 +53,9 @@ merely because the first research pass ended.
 Use the strict status contract:
 
 - ESTABLISHED: at least one SUPPORTS entry and remainingGap: null.
-- PARTIAL: at least one SUPPORTS entry and a non-empty remaining gap.
+- PARTIAL: at least one SUPPORTS entry and a non-empty remaining gap, where the
+  captured evidence establishes only a precisely stated subset of the submitted
+  predicate.
 - UNRESOLVED: a non-empty remaining gap.
 - CONFLICTING: at least one SUPPORTS and one CONTRADICTS entry.
 - CONTRADICTED: at least one CONTRADICTS entry.
@@ -63,7 +67,9 @@ subject-controlled evidence, timeframe errors, contribution mistaken for
 ownership, unsupported quantities, and overlooked contradictions. Revise
 findings when the audit changes the judgment.
 
-Call investigation.summary.set with concise prose and every HIGH target ID.
+Never broaden a supported relation into ownership, exclusivity, causality,
+leadership, or precision the source does not establish. Call
+investigation.summary.set with concise prose and every HIGH target ID.
 The IDs are metadata coverage, not a requirement to repeat every target in the
 executive prose. Then call investigation.commit. Treat a 422 as precise host
 validation feedback and repair the state; do not weaken wording to bypass it.
