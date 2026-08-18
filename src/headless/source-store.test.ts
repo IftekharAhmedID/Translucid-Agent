@@ -6,6 +6,17 @@ import test from "node:test";
 
 import { FileSourceStore } from "./source-store.ts";
 
+function decodeStoredJsonString(raw: string, excerpt: { offsetStart: number; offsetEnd: number }): string {
+  return JSON.parse(`"${raw.slice(excerpt.offsetStart, excerpt.offsetEnd)}"`) as string;
+}
+
+function precedingJsonDelimiter(raw: string, offset: number): string {
+  let index = offset - 1;
+  if (raw[index] === '"') index -= 1;
+  while (index >= 0 && /\s/.test(raw[index]!)) index -= 1;
+  return raw[index] ?? "";
+}
+
 test("captures immutable sources, deduplicates identical content, and verifies blobs", async () => {
   const directory = await mkdtemp(join(tmpdir(), "translucid-source-store-"));
   try {
@@ -61,6 +72,61 @@ test("centers a JSON excerpt on a late exact match instead of returning the leaf
     assert.equal(result.excerpts.length, 1);
     assert.match(result.excerpts[0]!.text, /Principal Software Engineer at Arm/);
     assert.ok(result.excerpts[0]!.offsetStart > 5_000);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("maps multiline JSON excerpts to their encoded immutable string token", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-source-json-offsets-"));
+  try {
+    const store = await FileSourceStore.open(directory);
+    const captured = await store.capture({
+      kind: "SOURCE_CONTENT",
+      provider: "fixture",
+      providerRoute: "fixture.record",
+      sourceUrl: "https://example.test/offsets",
+      mimeType: "application/json",
+      content: { profile: { summary: ["intro", ["Principal Software Engineer at Arm", "outro"].join("\n")] } },
+      provenance: {},
+    });
+    const result = await store.excerpts({ sourceRef: captured.ref, queries: ["Principal Software Engineer at Arm"] });
+    const raw = await readFile(join(directory, captured.relativePath), "utf8");
+    const excerpt = result.excerpts[0]!;
+    assert.equal(decodeStoredJsonString(raw, excerpt), excerpt.text);
+    assert.equal(precedingJsonDelimiter(raw, excerpt.offsetStart), ",");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("maps escaped JSON text and duplicate values to the correct value tokens", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-source-json-escaped-offsets-"));
+  try {
+    const store = await FileSourceStore.open(directory);
+    const captured = await store.capture({
+      kind: "SOURCE_CONTENT",
+      provider: "fixture",
+      providerRoute: "fixture.record",
+      sourceUrl: "https://example.test/escaped-offsets",
+      mimeType: "application/json",
+      content: {
+        value: "value",
+        duplicate: "value",
+        note: "A quote: \"Arm\"; a slash: \\\\; and control: \u0001.",
+      },
+      provenance: {},
+    });
+    const raw = await readFile(join(directory, captured.relativePath), "utf8");
+    const values = await store.excerpts({ sourceRef: captured.ref, queries: ["value"] });
+    assert.deepEqual(new Set(values.excerpts.map(({ path }) => path)), new Set(["value", "duplicate"]));
+    for (const excerpt of values.excerpts) {
+      assert.equal(decodeStoredJsonString(raw, excerpt), excerpt.text);
+      assert.equal(precedingJsonDelimiter(raw, excerpt.offsetStart), ":");
+    }
+    const note = await store.excerpts({ sourceRef: captured.ref, queries: ["quote Arm"] });
+    assert.equal(note.excerpts[0]?.path, "note");
+    assert.equal(decodeStoredJsonString(raw, note.excerpts[0]!), note.excerpts[0]!.text);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

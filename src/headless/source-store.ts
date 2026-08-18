@@ -69,7 +69,7 @@ export type SourceExcerptResult = {
 
 type Manifest = z.infer<typeof manifestSchema>;
 type Excerpt = z.infer<typeof excerptLedgerSchema>["excerpts"][number];
-type FlatValue = { path: string; text: string; parentPath: string; order: number };
+type FlatValue = { path: string; text: string; parentPath: string; order: number; value: string | number | boolean };
 
 const excerptStopWords = new Set([
   "about", "after", "again", "also", "and", "are", "been", "before", "being", "between", "but", "can", "for", "from", "had", "has", "have", "into", "its", "more", "not", "of", "on", "or", "our", "that", "the", "their", "then", "there", "these", "they", "this", "those", "through", "was", "were", "with", "would", "you", "your",
@@ -133,7 +133,9 @@ function flatten(value: unknown, path = "", output: FlatValue[] = [], depth = 0)
     const dot = leafPath.lastIndexOf(".");
     const bracket = leafPath.lastIndexOf("[");
     const parentPath = dot >= 0 ? leafPath.slice(0, dot) || "$" : bracket >= 0 ? leafPath.slice(0, bracket) || "$" : "$";
-    output.push({ path: leafPath, text: String(value), parentPath, order: output.length });
+    if (["string", "number", "boolean"].includes(typeof value)) {
+      output.push({ path: leafPath, text: String(value), parentPath, order: output.length, value: value as string | number | boolean });
+    }
     return output;
   }
   if (Array.isArray(value)) {
@@ -176,7 +178,53 @@ function tokenPositions(text: string, token: string): number[] {
   return positions;
 }
 
-function leafWindow(leaf: FlatValue & { rawOffset: number }, query: string, maximum: number, exact: boolean, anchors: string[]): { text: string; offsetStart: number; offsetEnd: number } | undefined {
+type JsonLeaf = FlatValue & { rawOffsetAt: (logicalOffset: number) => number };
+
+function skipJsonWhitespace(raw: string, offset: number): number {
+  let index = offset;
+  while (index < raw.length && /\s/.test(raw[index]!)) index += 1;
+  return index;
+}
+
+function isJsonValueBoundary(raw: string, start: number, end: number): boolean {
+  let before = start - 1;
+  while (before >= 0 && /\s/.test(raw[before]!)) before -= 1;
+  const after = skipJsonWhitespace(raw, end);
+  const beforeValue = before < 0 || "{[,:".includes(raw[before]!);
+  const afterValue = after >= raw.length || ",]}".includes(raw[after]!);
+  return beforeValue && afterValue;
+}
+
+function findJsonValueToken(raw: string, leaf: FlatValue, cursor: number): { start: number; end: number; token: string } | undefined {
+  const token = JSON.stringify(leaf.value);
+  if (typeof token !== "string") return undefined;
+  let search = cursor;
+  while (search < raw.length) {
+    const start = raw.indexOf(token, search);
+    if (start < 0) return undefined;
+    const end = start + token.length;
+    if (isJsonValueBoundary(raw, start, end)) return { start, end, token };
+    search = end;
+  }
+  return undefined;
+}
+
+function decodedStringRawOffset(tokenStart: number, token: string, logicalOffset: number): number {
+  let logical = 0;
+  let index = 1;
+  while (index < token.length - 1) {
+    if (logical >= logicalOffset) return tokenStart + index;
+    if (token[index] === "\\") {
+      index += token[index + 1] === "u" ? 6 : 2;
+    } else {
+      index += 1;
+    }
+    logical += 1;
+  }
+  return tokenStart + token.length - 1;
+}
+
+function leafWindow(leaf: JsonLeaf, query: string, maximum: number, exact: boolean, anchors: string[]): { text: string; offsetStart: number; offsetEnd: number } | undefined {
   if (exact) {
     const exactWindow = boundedWindow(leaf.text, query, maximum);
     return exactWindow ?? { text: leaf.text.slice(0, maximum), offsetStart: 0, offsetEnd: Math.min(leaf.text.length, maximum) };
@@ -189,7 +237,7 @@ function leafWindow(leaf: FlatValue & { rawOffset: number }, query: string, maxi
 }
 
 type ExcerptCandidate = {
-  leaf: FlatValue & { rawOffset: number };
+  leaf: JsonLeaf;
   exact: boolean;
   coverage: number;
   span: number;
@@ -336,7 +384,8 @@ export class FileSourceStore {
     const add = (path: string, text: string, offsetStart: number, offsetEnd: number, budget: number) => {
       if (!text || remaining <= 0 || excerpts.some((item) => item.path === path && item.text === text)) return;
       const bounded = text.slice(0, Math.min(remaining, budget, 1_000));
-      const item = { ref: excerptRef(source.ref, path, offsetStart, offsetStart + bounded.length, bounded), sourceRef: source.ref, path, offsetStart, offsetEnd: offsetStart + bounded.length, text: bounded };
+      const boundedOffsetEnd = bounded.length === text.length ? offsetEnd : offsetStart + bounded.length;
+      const item = { ref: excerptRef(source.ref, path, offsetStart, boundedOffsetEnd, bounded), sourceRef: source.ref, path, offsetStart, offsetEnd: boundedOffsetEnd, text: bounded };
       this.excerptIndex.set(item.ref, item);
       excerpts.push({ ref: item.ref, path: item.path, offsetStart: item.offsetStart, offsetEnd: item.offsetEnd, text: item.text });
       remaining -= bounded.length;
@@ -344,11 +393,16 @@ export class FileSourceStore {
     if (source.mimeType.includes("json")) {
       const parsedLeaves = flatten(JSON.parse(raw));
       let rawCursor = 0;
-      const leaves = parsedLeaves.map((leaf) => {
-        const rawOffset = raw.indexOf(leaf.text, rawCursor);
-        if (rawOffset >= 0) rawCursor = rawOffset + leaf.text.length;
-        return { ...leaf, rawOffset: rawOffset >= 0 ? rawOffset : Math.max(0, raw.indexOf(leaf.text)) };
-      });
+      const leaves: JsonLeaf[] = [];
+      for (const leaf of parsedLeaves) {
+        const location = findJsonValueToken(raw, leaf, rawCursor);
+        if (!location) continue;
+        rawCursor = location.end;
+        const rawOffsetAt = typeof leaf.value === "string"
+          ? (logicalOffset: number) => decodedStringRawOffset(location.start, location.token, logicalOffset)
+          : (logicalOffset: number) => location.start + logicalOffset;
+        leaves.push({ ...leaf, rawOffsetAt });
+      }
       const sourceTokenCounts = new Map<string, number>();
       for (const leaf of leaves) {
         for (const token of excerptTokens(leaf.text)) sourceTokenCounts.set(token, (sourceTokenCounts.get(token) ?? 0) + 1);
@@ -374,7 +428,6 @@ export class FileSourceStore {
             .sort((left, right) => (sourceTokenCounts.get(left)! - sourceTokenCounts.get(right)!) || left.localeCompare(right))
             .slice(0, 3);
           if (present.length < 2) continue;
-          const anchorSet = new Set(present);
           const fallbackCandidates: ExcerptCandidate[] = [];
           for (const leaf of leaves) {
             const leafTokens = new Set(excerptTokens(leaf.text));
@@ -408,7 +461,7 @@ export class FileSourceStore {
         for (const candidate of selected) {
           const window = leafWindow(candidate.leaf, query, Math.min(1_000, perWindowBudget), candidate.exact, candidate.anchors);
           if (!window) continue;
-          add(candidate.leaf.path, window.text, candidate.leaf.rawOffset + window.offsetStart, candidate.leaf.rawOffset + window.offsetEnd, perWindowBudget);
+          add(candidate.leaf.path, window.text, candidate.leaf.rawOffsetAt(window.offsetStart), candidate.leaf.rawOffsetAt(window.offsetEnd), perWindowBudget);
         }
       }
     } else {
