@@ -4,6 +4,7 @@ import { capabilityNames, type Capability } from "../core/capabilities.ts";
 
 export const toolNames = [
   "web.search",
+  "web.search.batch",
   "web.fetch",
   "professional.profile",
   "professional.activity",
@@ -30,9 +31,12 @@ const contextSchema = z.object({
 });
 
 const searchText = z.string().trim().min(2).max(1_000);
+const deepFocusText = z.string().trim().min(2).max(600).refine((value) => !/[\u0000-\u001f\u007f-\u009f]/u.test(value), "deepFocus must contain printable text.");
 const httpUrl = z.url().refine((value) => ["http:", "https:"].includes(new URL(value).protocol));
+const sourceRef = z.string().regex(/^S[1-9]\d*$/);
 const searchDomainPattern = /^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/;
-const searchModeSchema = z.enum(["fast", "auto", "deep", "deep-reasoning"]);
+const searchModeSchema = z.enum(["fast", "auto", "deep-lite", "deep", "deep-reasoning"]);
+const searchCategorySchema = z.enum(["company", "people", "publication", "news", "personal site", "financial report"]);
 
 function normalizeSearchDomains(values: string[]): string[] {
   return [...new Set(values.map((value) => {
@@ -56,17 +60,25 @@ const utcTimestampSchema = z.iso.datetime({ offset: true })
 type SearchRoute = {
   query: string;
   mode: z.infer<typeof searchModeSchema>;
+  category?: z.infer<typeof searchCategorySchema>;
   additionalQueries?: string[];
+  deepFocus?: string;
   includeDomains?: string[];
   excludeDomains?: string[];
   startPublishedDate?: string;
   endPublishedDate?: string;
+  maxAgeHours?: number;
+  livecrawlTimeout?: number;
 };
 
 type FetchRoute = {
+  url?: string;
+  discoveryRef?: string;
   subpages?: number;
   subpageTarget?: string[];
 };
+
+type BatchSearchRoute = Omit<SearchRoute, "mode" | "additionalQueries" | "deepFocus">;
 
 function normalizedSearchQuery(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
@@ -94,6 +106,18 @@ function searchRouteErrors(value: SearchRoute): Array<{ path: string[]; message:
   if (value.additionalQueries?.some((query) => normalizedSearchQuery(query) === normalizedSearchQuery(value.query))) {
     errors.push({ path: ["additionalQueries"], message: "additionalQueries cannot duplicate the primary query." });
   }
+  if (value.deepFocus && !["deep", "deep-reasoning"].includes(value.mode)) {
+    errors.push({ path: ["deepFocus"], message: "deepFocus requires deep or deep-reasoning mode." });
+  }
+  if (value.category === "people" && (value.includeDomains || value.excludeDomains || value.startPublishedDate || value.endPublishedDate)) {
+    errors.push({ path: ["category"], message: "People search does not accept domain or date filters." });
+  }
+  if (value.category === "company" && (value.includeDomains || value.excludeDomains || value.startPublishedDate || value.endPublishedDate)) {
+    errors.push({ path: ["category"], message: "Company search does not accept domain or date filters." });
+  }
+  if (value.livecrawlTimeout !== undefined && (value.maxAgeHours === undefined || value.maxAgeHours < 0)) {
+    errors.push({ path: ["livecrawlTimeout"], message: "livecrawlTimeout requires a non-negative maxAgeHours." });
+  }
   if (value.includeDomains?.some((domain) => value.excludeDomains?.some((excluded) => domainsOverlap(domain, excluded)))) {
     errors.push({ path: ["excludeDomains"], message: "includeDomains and excludeDomains cannot overlap." });
   }
@@ -108,6 +132,9 @@ function validateSearchRoute(value: SearchRoute, context: { addIssue(issue: { co
 }
 
 function validateFetchRoute(value: FetchRoute, context: { addIssue(issue: { code: "custom"; path: string[]; message: string }): void }): void {
+  if ((value.url === undefined) === (value.discoveryRef === undefined)) {
+    context.addIssue({ code: "custom", path: ["url"], message: "Exactly one of url or discoveryRef must be supplied." });
+  }
   if ((value.subpages === undefined) !== (value.subpageTarget === undefined)) {
     context.addIssue({ code: "custom", path: [value.subpages === undefined ? "subpages" : "subpageTarget"], message: "subpages and subpageTarget must be supplied together." });
   }
@@ -117,26 +144,51 @@ const webSearchArguments = {
   query: searchText,
   mode: searchModeSchema.default("auto"),
   highlightQuery: searchText.optional(),
-  resultLimit: z.number().int().min(1).max(10).default(5),
+  resultLimit: z.number().int().min(1).max(10).default(10),
+  category: searchCategorySchema.optional(),
+  deepFocus: deepFocusText.optional(),
   includeDomains: searchDomainsSchema.optional(),
   additionalQueries: z.array(searchText).min(1).max(6).optional(),
   excludeDomains: searchDomainsSchema.optional(),
   startPublishedDate: utcTimestampSchema.optional(),
   endPublishedDate: utcTimestampSchema.optional(),
+  maxAgeHours: z.number().int().min(-1).max(8_760).optional(),
+  livecrawlTimeout: z.number().int().min(1_000).max(15_000).optional(),
 };
 const webSearchSchema = contextSchema.extend(webSearchArguments)
   .superRefine((value, context) => validateSearchRoute(value, context));
+const batchSearchItemArguments = {
+  query: searchText,
+  highlightQuery: searchText.optional(),
+  category: searchCategorySchema.optional(),
+  includeDomains: searchDomainsSchema.optional(),
+  excludeDomains: searchDomainsSchema.optional(),
+  startPublishedDate: utcTimestampSchema.optional(),
+  endPublishedDate: utcTimestampSchema.optional(),
+  maxAgeHours: z.number().int().min(-1).max(8_760).optional(),
+  livecrawlTimeout: z.number().int().min(1_000).max(15_000).optional(),
+};
+const batchSearchItemSchema = z.object(batchSearchItemArguments).strict()
+  .superRefine((value, context) => validateSearchRoute({ ...value, mode: "auto" } satisfies BatchSearchRoute & { mode: "auto" }, context));
+const batchSearchArguments = { searches: z.array(batchSearchItemSchema).min(2).max(6) };
+const batchSearchSchema = z.object(batchSearchArguments).strict()
+  .superRefine((value, context) => {
+    const queries = value.searches.map((item) => normalizedSearchQuery(item.query));
+    if (new Set(queries).size !== queries.length) context.addIssue({ code: "custom", path: ["searches"], message: "Batch search queries must be distinct." });
+  });
 const webFetchArguments = {
-  url: httpUrl,
+  url: httpUrl.optional(),
+  discoveryRef: sourceRef.optional(),
   focus: searchText.optional(),
-  subpages: z.number().int().min(1).max(5).optional(),
-  subpageTarget: z.array(searchText).min(1).max(5).optional(),
+  subpages: z.number().int().min(1).max(10).optional(),
+  subpageTarget: z.array(searchText).min(1).max(10).optional(),
 };
 const webFetchSchema = contextSchema.extend(webFetchArguments).superRefine((value, context) => validateFetchRoute(value, context));
 
 const headlessSchemas = {
   "web.search": z.object(webSearchArguments).strict()
     .superRefine((value, context) => validateSearchRoute(value, context)),
+  "web.search.batch": batchSearchSchema,
   "web.fetch": z.object(webFetchArguments).strict().superRefine((value, context) => validateFetchRoute(value, context)),
   "professional.profile": z.object({ username: z.string().trim().min(2).max(200), requiredMaterialField: professionalMaterialFieldSchema.default("IDENTITY") }).strict(),
   "professional.activity": z.object({ username: z.string().trim().min(2).max(200) }).strict(),
@@ -161,6 +213,10 @@ const headlessSchemas = {
 
 const schemas = {
   "web.search": webSearchSchema,
+  "web.search.batch": contextSchema.extend(batchSearchArguments).superRefine((value, context) => {
+    const queries = value.searches.map((item) => normalizedSearchQuery(item.query));
+    if (new Set(queries).size !== queries.length) context.addIssue({ code: "custom", path: ["searches"], message: "Batch search queries must be distinct." });
+  }),
   "web.fetch": webFetchSchema,
   "professional.profile": contextSchema.extend({ username: z.string().trim().min(2).max(200), requiredMaterialField: professionalMaterialFieldSchema.default("IDENTITY") }),
   "professional.activity": contextSchema.extend({ username: z.string().trim().min(2).max(200) }),
@@ -209,6 +265,7 @@ export function parseHeadlessToolRequest(input: unknown): HeadlessParsedToolRequ
 
 export const toolCapabilities: Record<ToolName, Capability> = {
   "web.search": "WEB_SEARCH",
+  "web.search.batch": "WEB_SEARCH",
   "web.fetch": "WEB_SEARCH",
   "professional.profile": "LINKEDIN_PROFILE",
   "professional.activity": "LINKEDIN_ACTIVITY",
@@ -243,6 +300,7 @@ export type ToolResult<T = unknown> = {
   data?: T;
   artifactIds: string[];
   evidenceEligibleArtifactIds: string[];
+  artifactRefs?: Array<{ ref: string; kind: string; sourceUrl?: string }>;
   observedAt: string;
   costUsd: number;
   costSource: ProviderCostSource;

@@ -20,6 +20,9 @@ const utcTimestamp = z.iso.datetime({ offset: true })
   .refine((value) => value.endsWith("Z") && !Number.isNaN(Date.parse(value)), "Expected an ISO-8601 UTC timestamp.")
   .refine((value) => new Date(value).toISOString().slice(0, 10) === value.slice(0, 10), "Expected a valid UTC calendar date.")
   .transform((value) => new Date(value).toISOString());
+const searchCategory = z.enum(["company", "people", "publication", "news", "personal site", "financial report"]);
+const deepFocus = z.string().trim().min(2).max(600).refine((value) => !/[\u0000-\u001f\u007f-\u009f]/u.test(value), "deepFocus must contain printable text.");
+const sourceRef = z.string().regex(/^S[1-9]\d*$/);
 const gatewayUrl = process.env.CASE_GATEWAY_URL;
 const token = process.env.CASE_TOKEN;
 const runId = process.env.RUN_ID;
@@ -81,8 +84,28 @@ function compactRefs(refs: string[]): string {
 
 function validatePairedSubpages(value: unknown): void {
   if (!value || typeof value !== "object") return;
-  const candidate = value as { subpages?: number; subpageTarget?: string[] };
+  const candidate = value as { url?: string; discoveryRef?: string; subpages?: number; subpageTarget?: string[] };
+  if ((candidate.url === undefined) === (candidate.discoveryRef === undefined)) throw new Error("Exactly one of url or discoveryRef must be supplied.");
   if ((candidate.subpages === undefined) !== (candidate.subpageTarget === undefined)) throw new Error("subpages and subpageTarget must be supplied together.");
+}
+
+function validateSearchRoute(value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  const candidate = value as { mode?: string; category?: string; deepFocus?: string; additionalQueries?: string[]; query: string; includeDomains?: string[]; excludeDomains?: string[]; startPublishedDate?: string; endPublishedDate?: string; maxAgeHours?: number; livecrawlTimeout?: number };
+  if (candidate.additionalQueries && !["deep", "deep-reasoning"].includes(candidate.mode ?? "auto")) throw new Error("additionalQueries require deep or deep-reasoning mode.");
+  if (candidate.deepFocus && !["deep", "deep-reasoning"].includes(candidate.mode ?? "auto")) throw new Error("deepFocus requires deep or deep-reasoning mode.");
+  if (candidate.additionalQueries?.some((query) => query.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US") === candidate.query.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US"))) throw new Error("additionalQueries cannot duplicate the primary query.");
+  if (candidate.category === "people" && (candidate.includeDomains || candidate.excludeDomains || candidate.startPublishedDate || candidate.endPublishedDate)) throw new Error("People search does not accept domain or date filters.");
+  if (candidate.category === "company" && (candidate.includeDomains || candidate.excludeDomains || candidate.startPublishedDate || candidate.endPublishedDate)) throw new Error("Company search does not accept domain or date filters.");
+  if (candidate.livecrawlTimeout !== undefined && (candidate.maxAgeHours === undefined || candidate.maxAgeHours < 0)) throw new Error("livecrawlTimeout requires a non-negative maxAgeHours.");
+}
+
+function validateBatchSearch(value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  const searches = (value as { searches?: Array<{ query: string }> }).searches ?? [];
+  const normalized = searches.map(({ query }) => query.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US"));
+  if (new Set(normalized).size !== normalized.length) throw new Error("Batch search queries must be distinct.");
+  for (const search of searches) validateSearchRoute({ ...search, mode: "auto" });
 }
 
 const claim = {
@@ -158,8 +181,9 @@ const plugin: Plugin = async () => {
   }
 
   const tools = {
-    "web.search": gatewayTool("web.search", "Select fast/auto/deep/deep-reasoning mode and use bounded domains, dates, additionalQueries, and excludeDomains only when they materially improve source discovery. Search output is discovery only: fetch a promising known URL before citing it.", { query: z.string().trim().min(2).max(1000), mode: z.enum(["fast", "auto", "deep", "deep-reasoning"]).default("auto"), highlightQuery: z.string().trim().min(2).max(1000).optional(), resultLimit: z.number().int().min(1).max(10).default(5), includeDomains: searchDomains.optional(), additionalQueries: z.array(z.string().trim().min(2).max(1000)).min(1).max(6).optional(), excludeDomains: searchDomains.optional(), startPublishedDate: utcTimestamp.optional(), endPublishedDate: utcTimestamp.optional() }),
-    "web.fetch": gatewayTool("web.fetch", "Capture direct evidence from a known authoritative URL. Request bounded target subpages only from an authoritative hub, supplying subpages (1-5) and subpageTarget (1-5 prioritization terms) together; this is not discovery.", { url: z.string().url(), focus: z.string().min(2).max(1000).optional(), subpages: z.number().int().min(1).max(5).optional(), subpageTarget: z.array(z.string().trim().min(2).max(1000)).min(1).max(5).optional() }, validatePairedSubpages),
+    "web.search": gatewayTool("web.search", "Search broadly with Exa. Use ten highlighted leads by default; search is discovery only, so fetch a promising URL or discoveryRef before citing it. Use deep routes only for a material unresolved gap.", { query: z.string().trim().min(2).max(1000), mode: z.enum(["fast", "auto", "deep-lite", "deep", "deep-reasoning"]).default("auto"), highlightQuery: z.string().trim().min(2).max(1000).optional(), resultLimit: z.number().int().min(1).max(10).default(10), category: searchCategory.optional(), deepFocus: deepFocus.optional(), includeDomains: searchDomains.optional(), additionalQueries: z.array(z.string().trim().min(2).max(1000)).min(1).max(6).optional(), excludeDomains: searchDomains.optional(), startPublishedDate: utcTimestamp.optional(), endPublishedDate: utcTimestamp.optional(), maxAgeHours: z.number().int().min(-1).max(8760).optional(), livecrawlTimeout: z.number().int().min(1000).max(15000).optional() }, validateSearchRoute),
+    "web.search.batch": gatewayTool("web.search.batch", "Run two to six independent ordinary Exa searches concurrently. Each item returns ten highlighted discovery leads; use this for the initial portfolio, not deep escalation.", { searches: z.array(z.object({ query: z.string().trim().min(2).max(1000), highlightQuery: z.string().trim().min(2).max(1000).optional(), category: searchCategory.optional(), includeDomains: searchDomains.optional(), excludeDomains: searchDomains.optional(), startPublishedDate: utcTimestamp.optional(), endPublishedDate: utcTimestamp.optional(), maxAgeHours: z.number().int().min(-1).max(8760).optional(), livecrawlTimeout: z.number().int().min(1000).max(15000).optional() }).strict()).min(2).max(6) }, validateBatchSearch),
+    "web.fetch": gatewayTool("web.fetch", "Capture direct evidence from a known authoritative URL or a SEARCH_DISCOVERY discoveryRef. Request bounded target subpages from an authoritative hub with paired controls; this is not discovery.", { url: z.string().url().optional(), discoveryRef: sourceRef.optional(), focus: z.string().min(2).max(1000).optional(), subpages: z.number().int().min(1).max(10).optional(), subpageTarget: z.array(z.string().trim().min(2).max(1000)).min(1).max(10).optional() }, validatePairedSubpages),
     "professional.profile": gatewayTool("professional.profile", "Retrieve one professional profile for a material identity or chronology question.", { username: z.string().min(2).max(200), requiredMaterialField: z.enum(["IDENTITY", "CURRENT_POSITION", "EMPLOYMENT_HISTORY", "EDUCATION"]).default("IDENTITY") }),
     "professional.activity": gatewayTool("professional.activity", "Retrieve professional activity only for a material chronology or ownership gap.", { username: z.string().min(2).max(200) }),
     "social.profile": gatewayTool("social.profile", "Retrieve a public social profile only for an explicitly allowed material reason.", { platform: z.enum(["X", "INSTAGRAM", "TIKTOK"]), handle: z.string().min(1).max(200), reason: z.enum(["EXPLICIT_SOCIAL_CLAIM", "PUBLIC_IDENTITY_CROSS_LINK", "MATERIAL_ACTIVITY_QUESTION"]) }),

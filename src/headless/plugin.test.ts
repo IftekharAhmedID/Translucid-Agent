@@ -70,7 +70,7 @@ test("web fetch forwards optional focus and the plugin forwards material search 
   }
 });
 
-test("plugin web search defaults to five highlighted discovery results", async () => {
+test("plugin web search defaults to ten highlighted discovery results", async () => {
   const originalFetch = globalThis.fetch;
   let captured: Record<string, unknown> | undefined;
   globalThis.fetch = async (_input, init) => {
@@ -84,7 +84,7 @@ test("plugin web search defaults to five highlighted discovery results", async (
     const search = hooks.tool!["web.search"]!;
     const values = tool.schema.object(search.args).parse({ query: "five results" });
     await search.execute(values, { sessionID: "default-search", agent: "lead-researcher", abort: new AbortController().signal } as never);
-    assert.equal(captured?.resultLimit, 5);
+    assert.equal(captured?.resultLimit, 10);
   } finally {
     globalThis.fetch = originalFetch;
   }

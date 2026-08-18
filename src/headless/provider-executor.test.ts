@@ -73,13 +73,61 @@ test("forwards normalized Exa material-route controls and a host-owned deep prom
   assert.deepEqual(networkArguments[0]?.excludeDomains, ["linkedin.com"]);
   assert.equal(networkArguments[0]?.startPublishedDate, "2020-01-02T03:04:05.000Z");
   assert.equal(networkArguments[0]?.endPublishedDate, "2021-01-02T03:04:05.123Z");
-  assert.equal(networkArguments[0]?.systemPrompt, "Professional verification research.\n\nPrefer original institutional, employer, and work records;\ncontemporaneous historical records; and independent witnesses.\nUse discovered anchors to reach the underlying record. Avoid\nduplicate, mirrored, syndicated, or biography-derived routes.\nReturn materially different evidence routes, not repetitions.");
+  assert.match(String(networkArguments[0]?.systemPrompt), /Professional verification research/);
+  assert.match(String(networkArguments[0]?.systemPrompt), /evidence-objective/);
   assert.deepEqual(networkArguments[0]?.contents, { highlights: true });
   assert.deepEqual(networkArguments[1]?.contents, { highlights: true });
   assert.deepEqual(networkArguments[2]?.contents, { highlights: { query: "Principal Engineer", maxCharacters: 1_200 } });
   assert.equal(networkArguments[0]?.type, "deep");
   assert.equal("includeDomains" in networkArguments[1]!, false);
   assert.equal("systemPrompt" in networkArguments[1]!, false);
+});
+
+test("runs ordinary search batches concurrently and returns every bounded lead with source refs", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-search-batch-"));
+  const originalFetch = globalThis.fetch;
+  const active: number[] = [];
+  let maximumActive = 0;
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    const budget = new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 50, repositoryClones: 3, socialProfiles: 1 });
+    const executor = new ProviderExecutor(
+      { PROVIDER_MODE: "live", EXA_API_KEY: "test-key", EXA_SEARCH_CONCURRENCY: "6" },
+      createFileProviderBackend({ sourceStore, budget, deadlineAt: Date.now() + 60_000 }),
+    );
+    globalThis.fetch = async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url !== "https://api.exa.ai/search") throw new Error(`Unexpected request: ${url}`);
+      active.push(1);
+      maximumActive = Math.max(maximumActive, active.length);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      active.pop();
+      const body = JSON.parse(String(init?.body)) as { query: string; contents?: Record<string, unknown> };
+      return new Response(JSON.stringify({ results: Array.from({ length: 10 }, (_, index) => ({
+        url: index === 0 ? `https://example.test/${"long-".repeat(300)}${body.query}` : `https://example.test/${body.query.replaceAll(" ", "-")}/${index}`,
+        title: `Title ${index} ${"x".repeat(400)}`,
+        publishedDate: "2024-01-01T00:00:00Z",
+        author: "Author",
+        highlights: ["Evidence ".repeat(500)],
+      })) }), { headers: { "content-type": "application/json" } });
+    };
+    const result = await executor.executeHeadless({ tool: "web.search.batch", arguments: { searches: [{ query: "Candidate employer", maxAgeHours: 24, livecrawlTimeout: 12_000 }, { query: "Candidate project" }] } }, { runId: "run-batch", agent: "lead-researcher", sessionId: "session-batch" });
+    assert.equal(result.status, "OK");
+    assert.ok(maximumActive >= 2);
+    assert.equal(result.sourceRefs.length, 22);
+    assert.equal(result.evidenceEligibleSourceRefs.length, 0);
+    assert.ok(Buffer.byteLength(result.preview, "utf8") <= 40 * 1024);
+    const preview = JSON.parse(result.preview) as { searches: Array<{ results: Array<Record<string, unknown>> }> };
+    assert.equal(preview.searches.length, 2);
+    assert.equal(preview.searches[0]?.results.length, 10);
+    assert.match(String(preview.searches[0]?.results[0]?.discoveryRef), /^S\d+$/);
+    assert.equal(preview.searches[0]?.results[0]?.url, null);
+    assert.equal(preview.searches[0]?.results[0]?.urlOversize, true);
+    assert.equal((await sourceStore.list()).filter((source) => source.kind === "SEARCH_DISCOVERY").length, 22);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("keeps Exa search leads non-citable until a direct fetch captures the same URL", async () => {

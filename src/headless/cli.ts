@@ -14,7 +14,7 @@ import { parseInvestigationArguments } from "./cli-options.ts";
 import { classifyInvestigationFailure, HeadlessInvestigationController } from "./controller.ts";
 import { createHeadlessFixtureCompletion } from "./fixture-model.ts";
 import { createHeadlessGateway } from "./gateway.ts";
-import { createFileProviderBackend } from "./provider-store.ts";
+import { createFileProviderBackend, summarizeProviderIntervals, type ProviderActivityEvent } from "./provider-store.ts";
 import { leanReportResultSchema, ReportStore } from "./report-store.ts";
 import { ResearchStateStore, researchSnapshotSha256, verifyResearchSnapshot, writeResearchSnapshot } from "./research-state.ts";
 import { renderAuditReport, renderRecruiterReport, verifyInvestigationReport } from "./report.ts";
@@ -133,6 +133,7 @@ async function main(): Promise<void> {
       researchState,
     });
     const activity = { lastProgressAt: Date.now(), modelStartedAt: undefined as number | undefined };
+    const providerIntervals: ProviderActivityEvent[] = [];
     let leadSessionId = "";
     const persistSnapshot = async () => {
       const integrity = await workspace!.sourceStore.verify();
@@ -160,7 +161,15 @@ async function main(): Promise<void> {
       }
       return sha256;
     };
-    const providerExecutor = new ProviderExecutor(environment, createFileProviderBackend({ sourceStore: workspace.sourceStore, budget, ...(researchCutoff ? { deadlineAt: researchCutoff.getTime() } : {}) }));
+    const providerExecutor = new ProviderExecutor(environment, createFileProviderBackend({
+      sourceStore: workspace.sourceStore,
+      budget,
+      ...(researchCutoff ? { deadlineAt: researchCutoff.getTime() } : {}),
+      onProviderActivity: (event) => {
+        providerIntervals.push(event);
+        void timeline?.record({ kind: `provider.${event.kind}`, provider: event.provider, name: event.providerRoute, ...(event.batchId ? { batchId: event.batchId } : {}), ...(event.batchIndex !== undefined ? { batchIndex: event.batchIndex } : {}), ...(event.elapsedMs !== undefined ? { elapsedProviderMs: event.elapsedMs } : {}) });
+      },
+    }));
     const researchProvider = process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
     const fixture = createHeadlessFixtureCompletion();
     gateway = createHeadlessGateway({
@@ -315,6 +324,7 @@ async function main(): Promise<void> {
       providerCallsDuringSynthesis: telemetry.providerCallsDuringSynthesis,
       modelTiming: telemetry.modelTiming,
       providerTiming: telemetry.providerTiming,
+      providerIntervals: summarizeProviderIntervals(providerIntervals),
       providerStats,
       leadSession: output.leadSession,
       modelConfig: { protocol: modelSpec.protocol, requestedVariant: modelSpec.variant, variant: modelSpec.variant, reasoningEffort: modelSpec.reasoningEffort, effectiveReasoningEffort: modelSpec.effectiveReasoningEffort, upstreamFamily: researchProvider, observedReasoningEfforts: telemetry.observedReasoningEfforts },

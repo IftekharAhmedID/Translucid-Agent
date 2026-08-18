@@ -15,7 +15,7 @@ test("headless provider requests contain only network-semantic arguments", () =>
     arguments: { query: "Casey Morgan Project Atlas", mode: "fast" },
   });
   assert.equal(parsed.tool, "web.search");
-  assert.equal(parsed.arguments.resultLimit, 5);
+  assert.equal(parsed.arguments.resultLimit, 10);
   assert.equal(parsed.arguments.highlightQuery, undefined);
   assert.equal("questionId" in parsed.arguments, false);
 
@@ -48,7 +48,7 @@ test("web search exposes bounded Exa modes with an auto default", () => {
   if (standard.tool !== "web.search") throw new Error("Unexpected parsed tool.");
   assert.equal(standard.arguments.mode, "auto");
 
-  for (const mode of ["instant", "deep-lite", "bogus"]) {
+  for (const mode of ["instant", "bogus"]) {
     assert.throws(() => parseHeadlessToolRequest({ tool: "web.search", arguments: { ...base, mode } }));
   }
 });
@@ -131,7 +131,7 @@ test("tool requests require a durable question and public rationale", () => {
     },
   });
   assert.equal(parsed.tool, "web.search");
-  assert.equal(parsed.arguments.resultLimit, 5);
+  assert.equal(parsed.arguments.resultLimit, 10);
   assert.equal(parsed.arguments.highlightQuery, undefined);
 });
 
@@ -143,8 +143,49 @@ test("web search preserves explicit highlight queries and web fetch keeps paired
   if (paired.tool !== "web.fetch") throw new Error("Unexpected parsed tool.");
   assert.equal(paired.arguments.subpages, 3);
   assert.deepEqual(paired.arguments.subpageTarget, ["release", "author"]);
-  for (const arguments_ of [{ subpages: 3 }, { subpageTarget: ["release"] }, { subpages: 0, subpageTarget: ["release"] }, { subpages: 6, subpageTarget: ["release"] }, { subpages: 3, subpageTarget: [] }]) {
+  for (const arguments_ of [{ subpages: 3 }, { subpageTarget: ["release"] }, { subpages: 0, subpageTarget: ["release"] }, { subpages: 11, subpageTarget: ["release"] }, { subpages: 3, subpageTarget: [] }]) {
     assert.throws(() => parseHeadlessToolRequest({ tool: "web.fetch", arguments: { url: "https://example.test/hub", ...arguments_ } }));
+  }
+  const discoveryFetch = parseHeadlessToolRequest({ tool: "web.fetch", arguments: { discoveryRef: "S9" } });
+  if (discoveryFetch.tool !== "web.fetch") throw new Error("Unexpected tool.");
+  assert.equal(discoveryFetch.arguments.discoveryRef, "S9");
+});
+
+test("web search exposes safe freshness, category, and deep-focus controls", () => {
+  const parsed = parseHeadlessToolRequest({
+    tool: "web.search",
+    arguments: {
+      query: "Current Principal Engineer",
+      mode: "deep",
+      category: "publication",
+      deepFocus: "Find an original institutional record for the exact employment transition.",
+      maxAgeHours: 24,
+      livecrawlTimeout: 12_000,
+    },
+  });
+  if (parsed.tool !== "web.search") throw new Error("Unexpected tool.");
+  assert.equal(parsed.arguments.maxAgeHours, 24);
+  assert.equal(parsed.arguments.livecrawlTimeout, 12_000);
+  for (const arguments_ of [
+    { category: "people", includeDomains: ["example.com"] },
+    { category: "people", startPublishedDate: "2024-01-01T00:00:00Z" },
+    { category: "company", excludeDomains: ["example.com"] },
+    { livecrawlTimeout: 12_000 },
+    { maxAgeHours: -1, livecrawlTimeout: 12_000 },
+    { mode: "auto", deepFocus: "not a deep route" },
+    { mode: "deep-lite", additionalQueries: ["orthogonal route"] },
+  ]) assert.throws(() => parseHeadlessToolRequest({ tool: "web.search", arguments: { query: "Candidate", ...arguments_ } }));
+});
+
+test("web search batch requires two to six distinct ordinary searches", () => {
+  const parsed = parseHeadlessToolRequest({
+    tool: "web.search.batch",
+    arguments: { searches: [{ query: "Candidate employer" }, { query: "Candidate project" }] },
+  });
+  assert.equal(parsed.tool, "web.search.batch");
+  assert.equal(parsed.arguments.searches.length, 2);
+  for (const searches of [[], [{ query: "one" }], Array.from({ length: 7 }, (_, index) => ({ query: `query ${index}` })), [{ query: "same" }, { query: " same " }]]) {
+    assert.throws(() => parseHeadlessToolRequest({ tool: "web.search.batch", arguments: { searches } }));
   }
 });
 

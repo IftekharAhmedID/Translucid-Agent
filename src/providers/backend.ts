@@ -6,6 +6,9 @@ export type ProviderExecutionContext = {
   agent: string;
   sessionId: string;
   investigationId?: string;
+  resolvedDiscoveryRef?: string;
+  batchId?: string;
+  batchIndex?: number;
 };
 
 export type ProviderArtifactInput = {
@@ -34,6 +37,7 @@ export type ConcreteProviderResult = ProviderNetworkResult & {
   providerRoute: string;
   artifactIds: string[];
   evidenceEligibleArtifactIds: string[];
+  artifactRefs?: Array<{ ref: string; kind: string; sourceUrl?: string }>;
   reused: boolean;
 };
 

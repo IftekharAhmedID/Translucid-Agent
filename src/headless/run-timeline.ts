@@ -8,6 +8,9 @@ export type RunTimelineEvent = {
   name?: string;
   model?: string;
   provider?: string;
+  batchId?: string;
+  batchIndex?: number;
+  elapsedProviderMs?: number;
   status?: string;
   detail?: string;
 };

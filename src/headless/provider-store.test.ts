@@ -6,7 +6,7 @@ import test from "node:test";
 
 import type { ProviderCallInput } from "../providers/backend.ts";
 import { MemoryRunBudget } from "./budget.ts";
-import { createFileProviderBackend } from "./provider-store.ts";
+import { createFileProviderBackend, summarizeProviderIntervals } from "./provider-store.ts";
 import { FileSourceStore } from "./source-store.ts";
 
 function request(run: ProviderCallInput["run"], sessionId: string): ProviderCallInput {
@@ -104,4 +104,13 @@ test("does not disclose a provider result when durable source capture fails", as
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("summarizes overlapping provider intervals independently of completion order", () => {
+  assert.deepEqual(summarizeProviderIntervals([
+    { kind: "provider-start", provider: "exa", providerRoute: "exa.search", semanticTool: "web.search", startedMono: 0, batchId: "b", batchIndex: 0 },
+    { kind: "provider-start", provider: "exa", providerRoute: "exa.search", semanticTool: "web.search", startedMono: 5, batchId: "b", batchIndex: 1 },
+    { kind: "provider-end", provider: "exa", providerRoute: "exa.search", semanticTool: "web.search", startedMono: 5, endedMono: 15, elapsedMs: 10, batchId: "b", batchIndex: 1 },
+    { kind: "provider-end", provider: "exa", providerRoute: "exa.search", semanticTool: "web.search", startedMono: 0, endedMono: 20, elapsedMs: 20, batchId: "b", batchIndex: 0 },
+  ]), { requestCount: 2, totalElapsedMs: 30, maxConcurrent: 2, unionElapsedMs: 20 });
 });

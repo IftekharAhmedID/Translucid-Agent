@@ -276,15 +276,28 @@ export function createHeadlessGateway(input: GatewayInput) {
         if (!toolNames.includes(name as (typeof toolNames)[number])) throw new GatewayError(403, "State and database tools are unavailable in headless runs.");
         if (!input.executor) throw new GatewayError(403, "Research providers are unavailable after publication begins.");
         input.researchState?.recordRoute(name);
+        let providerArguments = body.arguments;
+        let resolvedDiscoveryRef: string | undefined;
+        if (name === "web.fetch" && body.arguments && typeof body.arguments === "object") {
+          const fetchArguments = body.arguments as { url?: unknown; discoveryRef?: unknown };
+          if (typeof fetchArguments.discoveryRef === "string") {
+            const source = await input.sourceStore.get(fetchArguments.discoveryRef);
+            if (source.kind !== "SEARCH_DISCOVERY" || !source.sourceUrl) throw new GatewayError(422, "discoveryRef must identify a captured SEARCH_DISCOVERY source with a public URL.");
+            resolvedDiscoveryRef = fetchArguments.discoveryRef;
+            const { discoveryRef: _discoveryRef, ...rest } = fetchArguments;
+            providerArguments = { ...rest, url: source.sourceUrl };
+          }
+        }
         providersInFlight += 1;
         if (synthesisActive) providerCallsDuringSynthesis += 1;
         const providerStarted = performance.now();
         input.onActivity?.({ kind: "tool-start", name, at: Date.now() });
         try {
-          const result = await input.executor.executeHeadless({ tool: name, arguments: body.arguments }, {
+          const result = await input.executor.executeHeadless({ tool: name, arguments: providerArguments }, {
             runId: input.runId,
             agent: typeof operational.agent === "string" ? operational.agent : "unknown-agent",
             sessionId: typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session",
+            ...(resolvedDiscoveryRef ? { resolvedDiscoveryRef } : {}),
           });
           return json(response, 200, {
             ...result,
