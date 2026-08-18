@@ -164,7 +164,7 @@ async function render(value: LeanReportResult, mode: "recruiter" | "audit"): Pro
       if ("remainingGap" in finding && finding.remainingGap) {
         label("Remaining gap");
         paragraph(finding.remainingGap);
-      } else if (finding.notes?.trim()) {
+      } else if (!("rationale" in finding) && finding.notes?.trim()) {
         label("Notes");
         paragraph(finding.notes);
       }
