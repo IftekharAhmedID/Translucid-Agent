@@ -39,6 +39,11 @@ test("headless runtime keeps a tool-free report writer separate from its one inv
   const plugin = await readFile(join(root, "plugin", "translucid.ts"), "utf8");
   assert.match(plugin, /source\.inventory/);
   assert.match(plugin, /research\.state\.set/);
+  assert.match(plugin, /subpages: z\.number\(\)\.int\(\)\.min\(1\)\.max\(5\)/);
+  assert.match(plugin, /subpageTarget: z\.array/);
+  assert.match(plugin, /validatePairedSubpages/);
+  assert.match(plugin, /Search output is discovery only/);
+  assert.match(plugin, /Reuse one immutable local source before making a provider call/);
   assert.doesNotMatch(plugin, /task-memo|research\.memo\.persist|tool\.execute\.before/);
 });
 

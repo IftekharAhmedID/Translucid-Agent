@@ -16,7 +16,7 @@ test("headless provider requests contain only network-semantic arguments", () =>
   });
   assert.equal(parsed.tool, "web.search");
   assert.equal(parsed.arguments.resultLimit, 10);
-  assert.equal(parsed.arguments.highlightQuery, "Casey Morgan Project Atlas");
+  assert.equal(parsed.arguments.highlightQuery, undefined);
   assert.equal("questionId" in parsed.arguments, false);
 
   assert.throws(() => parseHeadlessToolRequest({
@@ -132,7 +132,20 @@ test("tool requests require a durable question and public rationale", () => {
   });
   assert.equal(parsed.tool, "web.search");
   assert.equal(parsed.arguments.resultLimit, 10);
-  assert.equal(parsed.arguments.highlightQuery, "Casey Morgan Project Atlas");
+  assert.equal(parsed.arguments.highlightQuery, undefined);
+});
+
+test("web search preserves explicit highlight queries and web fetch keeps paired subpage controls", () => {
+  const highlighted = parseHeadlessToolRequest({ tool: "web.search", arguments: { query: "Casey Morgan", highlightQuery: "Principal Engineer" } });
+  if (highlighted.tool !== "web.search") throw new Error("Unexpected parsed tool.");
+  assert.equal(highlighted.arguments.highlightQuery, "Principal Engineer");
+  const paired = parseHeadlessToolRequest({ tool: "web.fetch", arguments: { url: "https://example.test/hub", subpages: 3, subpageTarget: ["release", "author"] } });
+  if (paired.tool !== "web.fetch") throw new Error("Unexpected parsed tool.");
+  assert.equal(paired.arguments.subpages, 3);
+  assert.deepEqual(paired.arguments.subpageTarget, ["release", "author"]);
+  for (const arguments_ of [{ subpages: 3 }, { subpageTarget: ["release"] }, { subpages: 0, subpageTarget: ["release"] }, { subpages: 6, subpageTarget: ["release"] }, { subpages: 3, subpageTarget: [] }]) {
+    assert.throws(() => parseHeadlessToolRequest({ tool: "web.fetch", arguments: { url: "https://example.test/hub", ...arguments_ } }));
+  }
 });
 
 test("web fetch accepts optional claim focus without requiring it", () => {

@@ -63,6 +63,11 @@ type SearchRoute = {
   endPublishedDate?: string;
 };
 
+type FetchRoute = {
+  subpages?: number;
+  subpageTarget?: string[];
+};
+
 function normalizedSearchQuery(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
 }
@@ -102,6 +107,12 @@ function validateSearchRoute(value: SearchRoute, context: { addIssue(issue: { co
   for (const issue of searchRouteErrors(value)) context.addIssue({ code: "custom", ...issue });
 }
 
+function validateFetchRoute(value: FetchRoute, context: { addIssue(issue: { code: "custom"; path: string[]; message: string }): void }): void {
+  if ((value.subpages === undefined) !== (value.subpageTarget === undefined)) {
+    context.addIssue({ code: "custom", path: [value.subpages === undefined ? "subpages" : "subpageTarget"], message: "subpages and subpageTarget must be supplied together." });
+  }
+}
+
 const webSearchArguments = {
   query: searchText,
   mode: searchModeSchema.default("auto"),
@@ -114,14 +125,19 @@ const webSearchArguments = {
   endPublishedDate: utcTimestampSchema.optional(),
 };
 const webSearchSchema = contextSchema.extend(webSearchArguments)
-  .superRefine((value, context) => validateSearchRoute(value, context))
-  .transform((value) => ({ ...value, highlightQuery: value.highlightQuery ?? value.query }));
+  .superRefine((value, context) => validateSearchRoute(value, context));
+const webFetchArguments = {
+  url: httpUrl,
+  focus: searchText.optional(),
+  subpages: z.number().int().min(1).max(5).optional(),
+  subpageTarget: z.array(searchText).min(1).max(5).optional(),
+};
+const webFetchSchema = contextSchema.extend(webFetchArguments).superRefine((value, context) => validateFetchRoute(value, context));
 
 const headlessSchemas = {
   "web.search": z.object(webSearchArguments).strict()
-    .superRefine((value, context) => validateSearchRoute(value, context))
-    .transform((value) => ({ ...value, highlightQuery: value.highlightQuery ?? value.query })),
-  "web.fetch": z.object({ url: httpUrl, focus: searchText.optional() }).strict(),
+    .superRefine((value, context) => validateSearchRoute(value, context)),
+  "web.fetch": z.object(webFetchArguments).strict().superRefine((value, context) => validateFetchRoute(value, context)),
   "professional.profile": z.object({ username: z.string().trim().min(2).max(200), requiredMaterialField: professionalMaterialFieldSchema.default("IDENTITY") }).strict(),
   "professional.activity": z.object({ username: z.string().trim().min(2).max(200) }).strict(),
   "social.profile": z.object({
@@ -145,7 +161,7 @@ const headlessSchemas = {
 
 const schemas = {
   "web.search": webSearchSchema,
-  "web.fetch": contextSchema.extend({ url: httpUrl, focus: searchText.optional() }),
+  "web.fetch": webFetchSchema,
   "professional.profile": contextSchema.extend({ username: z.string().trim().min(2).max(200), requiredMaterialField: professionalMaterialFieldSchema.default("IDENTITY") }),
   "professional.activity": contextSchema.extend({ username: z.string().trim().min(2).max(200) }),
   "social.profile": contextSchema.extend({

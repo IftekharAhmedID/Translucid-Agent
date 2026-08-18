@@ -53,3 +53,15 @@ test("material-route controls alter Exa request fingerprints", () => {
     { ...base, endPublishedDate: "2021-01-01T00:00:00.000Z" },
   ]) assert.notEqual(providerRequestFingerprint("exa.search", arguments_), fingerprint);
 });
+
+test("highlight omission and explicit highlights produce distinct Exa payload fingerprints", () => {
+  const omitted = providerRequestFingerprint("exa.search", { query: "Exact Candidate Name", contents: { highlights: true } });
+  const explicit = providerRequestFingerprint("exa.search", { query: "Exact Candidate Name", contents: { highlights: { query: "Principal Engineer", maxCharacters: 1_200 } } });
+  assert.notEqual(omitted, explicit);
+});
+
+test("bounded subpage controls are part of the Exa contents fingerprint", () => {
+  const base = providerRequestFingerprint("exa.contents", { urls: ["https://example.test/hub"], text: true, highlights: true });
+  const bounded = providerRequestFingerprint("exa.contents", { urls: ["https://example.test/hub"], text: true, highlights: true, subpages: 3, subpageTarget: ["release"] });
+  assert.notEqual(base, bounded);
+});

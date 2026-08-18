@@ -70,6 +70,12 @@ function compactRefs(refs: string[]): string {
   return ranges.join(", ");
 }
 
+function validatePairedSubpages(value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  const candidate = value as { subpages?: number; subpageTarget?: string[] };
+  if ((candidate.subpages === undefined) !== (candidate.subpageTarget === undefined)) throw new Error("subpages and subpageTarget must be supplied together.");
+}
+
 const claim = {
   id: z.string().trim().min(1).max(100),
   claim: z.string().trim().min(1).max(6_000),
@@ -110,26 +116,26 @@ const plugin: Plugin = async () => {
     return body;
   }
 
-  function gatewayTool(name: string, description: string, args: Parameters<typeof tool>[0]["args"]) {
-    return tool({ description, args, async execute(values, context) { return execute(name, values, context); } });
+  function gatewayTool(name: string, description: string, args: Parameters<typeof tool>[0]["args"], validate?: (values: unknown) => void) {
+    return tool({ description, args, async execute(values, context) { validate?.(values); return execute(name, values, context); } });
   }
 
   const tools = {
-    "web.search": gatewayTool("web.search", "Search public sources. Every captured result has an immutable S reference; search results are leads and not report citations.", { query: z.string().trim().min(2).max(1000), mode: z.enum(["fast", "auto", "deep", "deep-reasoning"]).default("auto"), highlightQuery: z.string().trim().min(2).max(1000).optional(), resultLimit: z.number().int().min(1).max(10).default(10), includeDomains: searchDomains.optional(), additionalQueries: z.array(z.string().trim().min(2).max(1000)).min(1).max(6).optional(), excludeDomains: searchDomains.optional(), startPublishedDate: utcTimestamp.optional(), endPublishedDate: utcTimestamp.optional() }),
-    "web.fetch": gatewayTool("web.fetch", "Capture one direct investigation lead as an immutable source. Add focus when a claim or gap should guide the returned preview.", { url: z.string().url(), focus: z.string().min(2).max(1000).optional() }),
+    "web.search": gatewayTool("web.search", "Select fast/auto/deep/deep-reasoning mode and use bounded domains, dates, additionalQueries, and excludeDomains only when they materially improve source discovery. Search output is discovery only: fetch a promising known URL before citing it.", { query: z.string().trim().min(2).max(1000), mode: z.enum(["fast", "auto", "deep", "deep-reasoning"]).default("auto"), highlightQuery: z.string().trim().min(2).max(1000).optional(), resultLimit: z.number().int().min(1).max(10).default(10), includeDomains: searchDomains.optional(), additionalQueries: z.array(z.string().trim().min(2).max(1000)).min(1).max(6).optional(), excludeDomains: searchDomains.optional(), startPublishedDate: utcTimestamp.optional(), endPublishedDate: utcTimestamp.optional() }),
+    "web.fetch": gatewayTool("web.fetch", "Capture direct evidence from a known authoritative URL. Request bounded target subpages only from an authoritative hub, supplying subpages (1-5) and subpageTarget (1-5 prioritization terms) together; this is not discovery.", { url: z.string().url(), focus: z.string().min(2).max(1000).optional(), subpages: z.number().int().min(1).max(5).optional(), subpageTarget: z.array(z.string().trim().min(2).max(1000)).min(1).max(5).optional() }, validatePairedSubpages),
     "professional.profile": gatewayTool("professional.profile", "Retrieve one professional profile for a material identity or chronology question.", { username: z.string().min(2).max(200), requiredMaterialField: z.enum(["IDENTITY", "CURRENT_POSITION", "EMPLOYMENT_HISTORY", "EDUCATION"]).default("IDENTITY") }),
     "professional.activity": gatewayTool("professional.activity", "Retrieve professional activity only for a material chronology or ownership gap.", { username: z.string().min(2).max(200) }),
     "social.profile": gatewayTool("social.profile", "Retrieve a public social profile only for an explicitly allowed material reason.", { platform: z.enum(["X", "INSTAGRAM", "TIKTOK"]), handle: z.string().min(1).max(200), reason: z.enum(["EXPLICIT_SOCIAL_CLAIM", "PUBLIC_IDENTITY_CROSS_LINK", "MATERIAL_ACTIVITY_QUESTION"]) }),
     "github.graphql": gatewayTool("github.graphql", "Query public GitHub contribution records.", { query: z.string().min(1).max(20000), variables: z.record(z.string(), z.any()).default({}) }),
     "github.rest": gatewayTool("github.rest", "Read an allowlisted public GitHub REST resource.", { path: z.string().min(2).max(1000) }),
     "github.clone": gatewayTool("github.clone", "Inspect bounded public repository history only when API records are insufficient.", { repository: z.string().min(3).max(201), ref: z.string().max(200).optional(), authorHint: z.string().max(200).optional() }),
-    "archives.search": gatewayTool("archives.search", "Find dated public archive captures.", { url: z.string().url(), fromYear: z.number().int().min(1996).max(2100).optional(), toYear: z.number().int().min(1996).max(2100).optional() }),
+    "archives.search": gatewayTool("archives.search", "Use only for a known historical URL or domain and return dated archive captures; an archive snapshot supports the captured page, not every claim about it.", { url: z.string().url(), fromYear: z.number().int().min(1996).max(2100).optional(), toYear: z.number().int().min(1996).max(2100).optional() }),
     "public_records.search": gatewayTool("public_records.search", "Search one relevant public record route.", { recordType: z.enum(["PATENT", "SEC", "IETF"]), query: z.string().min(2).max(1000) }),
     "scholarly.search": gatewayTool("scholarly.search", "Search one relevant scholarly route.", { query: z.string().min(2).max(1000) }),
-    "packages.inspect": gatewayTool("packages.inspect", "Inspect public package metadata.", { registry: z.enum(["NPM", "PYPI", "HUGGING_FACE"]), package: z.string().min(1).max(300) }),
+    "packages.inspect": gatewayTool("packages.inspect", "Inspect one named package's public registry metadata for package identity, releases, authorship, or maintenance context; do not infer impact from package existence alone.", { registry: z.enum(["NPM", "PYPI", "HUGGING_FACE"]), package: z.string().min(1).max(300) }),
     "security_records.search": gatewayTool("security_records.search", "Search one relevant public vulnerability route.", { ecosystem: z.string().max(100).optional(), package: z.string().max(300).optional(), cve: z.string().max(40).optional() }),
     "source.inventory": gatewayTool("source.inventory", "List every captured source reference, including discovery leads. Discovery records are not citable.", { cursor: z.string().regex(/^S[1-9]\d*$/).optional(), limit: z.number().int().min(1).max(100).default(100) }),
-    "source.excerpts": gatewayTool("source.excerpts", "Search one immutable local source for exact detail without a network call.", { sourceRef: z.string().regex(/^S[1-9]\d*$/), queries: z.array(z.string().min(1).max(500)).min(1).max(12), maxCharacters: z.number().int().min(1).max(60000).optional() }),
+    "source.excerpts": gatewayTool("source.excerpts", "Reuse one immutable local source before making a provider call. Ask for several short anchors when a claim has multiple facets; returned wording and S references come from stored content.", { sourceRef: z.string().regex(/^S[1-9]\d*$/), queries: z.array(z.string().min(1).max(500)).min(1).max(12), maxCharacters: z.number().int().min(1).max(60000).optional() }),
     "research.state.set": gatewayTool("research.state.set", "Persist the final machine-readable claim ledger. Set publicationReady true only after the final gap pass is genuinely complete.", { publicationReady: z.boolean(), claims: z.array(z.object(claim).strict()).min(1).max(500), identityAnchors: z.array(z.string().min(1).max(500)).max(100).default([]) }),
     "research.state.get": gatewayTool("research.state.get", "Recover the frozen durable claim ledger in deterministic pages of at most 25 claims. This is read-only.", { cursor: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/).optional(), limit: z.number().int().min(1).max(25).default(25) }),
     "report.summary.set": gatewayTool("report.summary.set", "Set the final investigation summary and link it to frozen research claims.", { summary: z.string().min(1).max(50000), researchClaimIds: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).min(1).max(500) }),
