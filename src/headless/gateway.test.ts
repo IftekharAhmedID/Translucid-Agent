@@ -16,6 +16,38 @@ function budget(): MemoryRunBudget {
   return new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 300, repositoryClones: 3, socialProfiles: 1 });
 }
 
+test("the gateway verifies and records the sanitized medium reasoning effort", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-reasoning-gateway-"));
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    const gateway = createHeadlessGateway({
+      runId: "run-reasoning",
+      allowedTools: new Set(),
+      allowedModels: new Set(["deepseek-v4-pro"]),
+      agentTools: new Map([[
+        "lead-researcher",
+        new Set(),
+      ]]),
+      sourceStore,
+      budget: budget(),
+      providerMode: "fixture",
+      expectedReasoningEffort: "medium",
+      fixtureCompletion: async () => ({ content: "ok" }),
+    });
+    gateway.setLeadSession("lead-reasoning");
+    const server = await listen(gateway);
+    const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-reasoning", "x-opencode-agent": "lead-researcher" };
+    const request = (reasoning_effort: string) => fetch(`${server.origin}/internal/llm/v1/chat/completions`, { method: "POST", headers, body: JSON.stringify({ model: "deepseek-v4-pro", messages: [{ role: "user", content: "hello" }], reasoning_effort, stream: false }) });
+    assert.equal((await request("medium")).status, 200);
+    assert.equal((await request("high")).status, 400);
+    assert.deepEqual(gateway.telemetry().observedReasoningEfforts, ["medium"]);
+    gateway.cancel();
+    await server.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 async function listen(gateway: ReturnType<typeof createHeadlessGateway>): Promise<{ origin: string; close: () => Promise<void> }> {
   await new Promise<void>((resolve) => gateway.server.listen(0, "127.0.0.1", resolve));
   const address = gateway.server.address();

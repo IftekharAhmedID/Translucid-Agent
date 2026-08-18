@@ -110,6 +110,7 @@ type Input = {
   signal: AbortSignal;
   runtime: "LOCAL" | "E2B";
   researchModel: string;
+  researchVariant: string;
   reportStore: ReportStore;
   researchState: ResearchStateStore;
   sourceStore: FileSourceStore;
@@ -141,7 +142,7 @@ export function classifyInvestigationFailure(error: Error, aborted: boolean, run
 export class HeadlessInvestigationController {
   async run(input: Input): Promise<HeadlessControllerOutput> {
     const client = createOpencodeClient({ baseUrl: input.handle.openCodeUrl, headers: input.handle.accessHeaders, throwOnError: false });
-    const lead = unwrap(await client.session.create({ directory, title: "Headless DeepSeek V4 Pro investigation", agent: "lead-researcher", model: { id: input.researchModel, providerID: "translucid", variant: "xhigh" } }, { signal: input.signal }), "lead session creation");
+    const lead = unwrap(await client.session.create({ directory, title: "Headless DeepSeek V4 Pro investigation", agent: "lead-researcher", model: { id: input.researchModel, providerID: "translucid", variant: input.researchVariant } }, { signal: input.signal }), "lead session creation");
     const leadId = lead.id;
     const sessionMetadata = (session: Record<string, unknown>, observedAfterCommit = false): Record<string, unknown> => {
       const model = session.model && typeof session.model === "object" ? session.model as Record<string, unknown> : {};
@@ -171,7 +172,7 @@ export class HeadlessInvestigationController {
         directory,
         agent: "lead-researcher",
         model: { providerID: "translucid", modelID: input.researchModel },
-        variant: "xhigh",
+        variant: input.researchVariant,
         parts: [{ type: "text", text: researchPrompt(researchDeadline === undefined ? undefined : new Date(researchDeadline).toISOString()) }],
       }, { signal: researchAbort.signal });
       if (launch.error) throw new Error("Lead research prompt failed: " + describeSdkError(launch.error));
@@ -194,7 +195,7 @@ export class HeadlessInvestigationController {
           directory,
           agent: "lead-researcher",
           model: { providerID: "translucid", modelID: input.researchModel },
-          variant: "xhigh",
+          variant: input.researchVariant,
           parts: [{ type: "text", text: synthesisRecoveryPrompt }],
         }, { signal: researchAbort.signal }), "synthesis recovery prompt");
         if (recovery) await waitForResearchIdle({
@@ -228,7 +229,7 @@ export class HeadlessInvestigationController {
       input.signal.removeEventListener("abort", abort);
     }
     const result = await input.reportStore.result(new Date().toISOString());
-    const finalSession = await client.session.get({ sessionID: leadId, directory }).then((value) => value.data ? sessionMetadata(value.data as unknown as Record<string, unknown>, true) : ({ id: leadId, agent: "lead-researcher", model: { id: input.researchModel, providerID: "translucid", variant: "xhigh" } }));
+    const finalSession = await client.session.get({ sessionID: leadId, directory }).then((value) => value.data ? sessionMetadata(value.data as unknown as Record<string, unknown>, true) : ({ id: leadId, agent: "lead-researcher", model: { id: input.researchModel, providerID: "translucid", variant: input.researchVariant } }));
     return { result, leadSessionId: lead.id, leadSession: finalSession, childSessions: [] };
   }
 }

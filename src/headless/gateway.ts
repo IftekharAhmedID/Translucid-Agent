@@ -57,10 +57,17 @@ type GatewayInput = {
   reportStore?: ReportStore;
   researchState?: ResearchStateStore;
   researchUpstreamFamily?: ResearchUpstreamFamily;
+  expectedReasoningEffort?: string;
   fixtureCompletion?: (body: Record<string, unknown>, agent: string, model: string) => Promise<{ content?: string; toolCall?: { name: string; arguments: Record<string, unknown> } }>;
-  onModelRequest?: (request: { agent: string; estimatedInputTokens: number }) => void;
+  onModelRequest?: (request: { agent: string; estimatedInputTokens: number; reasoningEffort: string | null }) => void;
   onActivity?: (event: { kind: "model-start" | "model-end" | "tool-start" | "tool-end"; name: string; at: number }) => void;
 };
+
+export function sanitizeReasoningEffort(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLocaleLowerCase("en-US");
+  return ["low", "medium", "high", "max", "xhigh"].includes(normalized) ? normalized : null;
+}
 
 export function createHeadlessGateway(input: GatewayInput) {
   const token = randomBytes(32).toString("base64url");
@@ -93,6 +100,7 @@ export function createHeadlessGateway(input: GatewayInput) {
   let modelRequests = 0;
   let nonLeadSemanticModelRequests = 0;
   let reportWriterModelRequests = 0;
+  const observedReasoningEfforts = new Set<string>();
   const modelTiming = new Map<string, { requests: number; totalElapsedMs: number; maxElapsedMs: number }>();
   const providerTiming = new Map<string, { requests: number; totalElapsedMs: number; maxElapsedMs: number }>();
   const providerDrainWaiters: Array<() => void> = [];
@@ -310,7 +318,12 @@ export function createHeadlessGateway(input: GatewayInput) {
         const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
         const remainingMs = (input.researchDeadlineAt ?? input.deadlineAt) === undefined ? undefined : (input.researchDeadlineAt ?? input.deadlineAt)! - Date.now();
         if (remainingMs !== undefined && remainingMs <= 0) throw new GatewayError(401, "Investigation deadline reached.");
-        input.onModelRequest?.({ agent, estimatedInputTokens: estimateModelInputTokens(body) });
+        const observedReasoningEffort = sanitizeReasoningEffort(body.reasoning_effort ?? body.reasoningEffort);
+        if (input.expectedReasoningEffort && observedReasoningEffort !== input.expectedReasoningEffort) {
+          throw new GatewayError(400, `Model reasoning_effort mismatch: expected ${input.expectedReasoningEffort}, observed ${observedReasoningEffort ?? "missing"}.`);
+        }
+        if (observedReasoningEffort) observedReasoningEfforts.add(observedReasoningEffort);
+        input.onModelRequest?.({ agent, estimatedInputTokens: estimateModelInputTokens(body), reasoningEffort: observedReasoningEffort });
         modelRequests += 1;
         if (agent !== "lead-researcher") nonLeadSemanticModelRequests += 1;
         if (agent === "report-writer") reportWriterModelRequests += 1;
@@ -370,6 +383,7 @@ export function createHeadlessGateway(input: GatewayInput) {
       providerCallsDuringSynthesis,
       nonLeadSemanticModelRequests,
       reportWriterModelRequests,
+      observedReasoningEfforts: [...observedReasoningEfforts].sort(),
       modelTiming: Object.fromEntries(modelTiming),
       providerTiming: Object.fromEntries(providerTiming),
     }),

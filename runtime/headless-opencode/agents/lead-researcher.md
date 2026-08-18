@@ -1,7 +1,7 @@
 ---
 description: Performs one source-backed investigation and freezes a publication-ready claim ledger.
 mode: primary
-variant: xhigh
+variant: medium
 permission:
   "*": deny
   read: allow

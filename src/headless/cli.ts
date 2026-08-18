@@ -103,15 +103,15 @@ async function main(): Promise<void> {
     timeline = new RunTimeline(join(workspace.root, "provenance", "run-timeline.jsonl"));
     await timeline.start();
     const expectedManifestHash = await getPinnedLocalManifestHash();
-    const modelSpec = resolveResearchModel(process.env.RESEARCH_MODEL);
+    const modelSpec = resolveResearchModel(process.env.RESEARCH_MODEL, process.env.RESEARCH_REASONING_VARIANT);
     const researchModel = modelSpec.id;
     const environment = providerEnvironment(options.providerMode, options.qualification);
     const capabilities = buildCapabilityRegistry(environment);
     await atomicWrite(join(workspace.root, "provenance", "capability-preflight.json"), `${JSON.stringify({ schemaVersion: 1, providerMode: options.providerMode, required: ["WEB_SEARCH", "GITHUB"], registry: capabilities }, null, 2)}\n`);
     await timeline.record({ kind: "capability.preflight.completed", status: "OK" });
     if (options.qualification && options.providerMode === "live") {
-      if (researchModel !== "deepseek-v4-pro" || modelSpec.protocol !== "CHAT_COMPLETIONS" || modelSpec.variant !== "xhigh" || modelSpec.reasoningEffort !== "max" || process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN") {
-        throw new Error("Qualification requires deepseek-v4-pro Chat Completions on the GO route with xhigh/max reasoning.");
+      if (researchModel !== "deepseek-v4-pro" || modelSpec.protocol !== "CHAT_COMPLETIONS" || modelSpec.variant !== "medium" || modelSpec.reasoningEffort !== "medium" || process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN") {
+        throw new Error("Qualification requires deepseek-v4-pro Chat Completions on the GO route with medium reasoning.");
       }
       for (const capability of ["WEB_SEARCH", "GITHUB"] as const) if (capabilities[capability].state !== "READY") throw new Error(`Qualification capability preflight failed: ${capability} is ${capabilities[capability].state}.`);
       preflightPath = join(workspace.root, "provenance", "model-preflight.json");
@@ -176,7 +176,11 @@ async function main(): Promise<void> {
       budget,
       providerMode: options.providerMode,
       researchUpstreamFamily: researchProvider,
+      expectedReasoningEffort: modelSpec.reasoningEffort,
       fixtureCompletion: (body, agent) => fixture(body, agent),
+      onModelRequest: ({ reasoningEffort }) => {
+        void timeline?.record({ kind: "model.reasoning-effort.observed", model: researchModel, status: reasoningEffort === modelSpec.reasoningEffort ? "OK" : "ERROR", detail: reasoningEffort ?? "missing" });
+      },
       onActivity: (event) => {
         activity.lastProgressAt = event.at;
         if (event.kind === "model-start") activity.modelStartedAt = event.at;
@@ -220,6 +224,7 @@ async function main(): Promise<void> {
       signal: abort.signal,
       runtime: options.runtime,
       researchModel,
+      researchVariant: modelSpec.variant,
       reportStore,
       researchState,
       sourceStore: workspace.sourceStore,
@@ -247,7 +252,7 @@ async function main(): Promise<void> {
     }
     if (output.result.schemaVersion !== 4) throw new Error("Only result-v4 may be published by a new v3 run.");
     const actualLeadModel = output.leadSession.model && typeof output.leadSession.model === "object" ? output.leadSession.model as Record<string, unknown> : {};
-    if (options.qualification && (output.leadSession.agent !== "lead-researcher" || actualLeadModel.id !== "deepseek-v4-pro" || actualLeadModel.providerID !== "translucid" || actualLeadModel.variant !== "xhigh")) throw new Error("Lead session metadata does not prove the required DeepSeek V4 Pro lead configuration.");
+    if (options.qualification && (output.leadSession.agent !== "lead-researcher" || actualLeadModel.id !== "deepseek-v4-pro" || actualLeadModel.providerID !== "translucid" || actualLeadModel.variant !== "medium")) throw new Error("Lead session metadata does not prove the required DeepSeek V4 Pro medium lead configuration.");
     await verifyResearchSnapshot(workspace.root);
     const actualSnapshotSha256 = await researchSnapshotSha256(workspace.root);
     const draft = await reportStore.progress();
@@ -267,9 +272,12 @@ async function main(): Promise<void> {
     handle = undefined;
     await mkdir(join(workspace.root, "provenance"), { recursive: true });
     const progress = await reportStore.progress();
-    const telemetry = gateway?.telemetry() ?? { semanticAgentCount: 0, modelRequests: 0, providerCallsDuringSynthesis: 0, nonLeadSemanticModelRequests: 0, reportWriterModelRequests: 0, modelTiming: {}, providerTiming: {} };
+    const telemetry = gateway?.telemetry() ?? { semanticAgentCount: 0, modelRequests: 0, providerCallsDuringSynthesis: 0, nonLeadSemanticModelRequests: 0, reportWriterModelRequests: 0, observedReasoningEfforts: [], modelTiming: {}, providerTiming: {} };
     if (telemetry.semanticAgentCount !== 1 || telemetry.nonLeadSemanticModelRequests !== 0 || telemetry.reportWriterModelRequests !== 0) {
       throw new Error("Semantic provenance invariant failed: expected exactly one lead agent and no non-lead or report-writer model requests.");
+    }
+    if (options.qualification && (telemetry.observedReasoningEfforts.length !== 1 || telemetry.observedReasoningEfforts[0] !== "medium")) {
+      throw new Error(`Qualification reasoning telemetry failed: expected one sanitized medium request, observed ${telemetry.observedReasoningEfforts.join(", ") || "none"}.`);
     }
     const citedSourceRefs = [...new Set(output.result.findings.flatMap(({ sources }) => sources.map(({ sourceRef }) => sourceRef)))].sort();
     const capturedSources = await workspace.sourceStore.list();
@@ -300,7 +308,7 @@ async function main(): Promise<void> {
       providerTiming: telemetry.providerTiming,
       providerStats,
       leadSession: output.leadSession,
-      modelConfig: { protocol: modelSpec.protocol, variant: modelSpec.variant, reasoningEffort: modelSpec.reasoningEffort, upstreamFamily: researchProvider },
+      modelConfig: { protocol: modelSpec.protocol, requestedVariant: modelSpec.variant, variant: modelSpec.variant, reasoningEffort: modelSpec.reasoningEffort, effectiveReasoningEffort: modelSpec.effectiveReasoningEffort, upstreamFamily: researchProvider, observedReasoningEfforts: telemetry.observedReasoningEfforts },
       modelRoutePreflight: preflightPath ? "provenance/model-preflight.json" : null,
       capabilityPreflight: "provenance/capability-preflight.json",
       timeline: "provenance/run-timeline.jsonl",

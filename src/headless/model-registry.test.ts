@@ -11,8 +11,9 @@ test("DeepSeek V4 Pro is the canonical default and Luna is an explicit rollback"
     id: "deepseek-v4-pro",
     displayName: "DeepSeek V4 Pro",
     protocol: "CHAT_COMPLETIONS",
-    variant: "xhigh",
-    reasoningEffort: "max",
+    variant: "medium",
+    reasoningEffort: "medium",
+    effectiveReasoningEffort: "high",
     contextLimit: 1_000_000,
     outputLimit: 384_000,
     default: true,
@@ -23,7 +24,10 @@ test("DeepSeek V4 Pro is the canonical default and Luna is an explicit rollback"
 
 test("model resolution fails closed for unsupported models", () => {
   assert.equal(resolveResearchModel(undefined).id, "deepseek-v4-pro");
+  assert.deepEqual(resolveResearchModel(undefined), MODEL_REGISTRY["deepseek-v4-pro"]);
+  assert.equal(resolveResearchModel("deepseek-v4-pro", "xhigh").reasoningEffort, "max");
   assert.equal(resolveResearchModel("gpt-5.6-luna").id, "gpt-5.6-luna");
+  assert.throws(() => resolveResearchModel("gpt-5.6-luna", "medium"), /does not support/i);
   assert.throws(() => resolveResearchModel("unknown-model"), /Unsupported research model/);
 });
 
