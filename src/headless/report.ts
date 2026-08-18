@@ -4,11 +4,11 @@ import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { leanReportResultSchema, type LeanReportResult } from "./report-store.ts";
 
 const findingStatusLabels: Record<LeanReportResult["findings"][number]["status"], string> = {
-  [-2]: "Directly contradicted by multiple credible sources",
-  [-1]: "Materially inconsistent with available evidence",
-  [0]: "Unclear or insufficient credible public evidence",
-  [1]: "Corroborated with a minor caveat",
-  [2]: "Fully corroborated",
+  [-2]: "Contradicted",
+  [-1]: "Conflicting evidence",
+  [0]: "Unresolved / insufficient evidence",
+  [1]: "Partially established",
+  [2]: "Established",
 };
 
 export async function renderLeanReport(value: LeanReportResult): Promise<Buffer> {
@@ -74,10 +74,20 @@ export async function renderLeanReport(value: LeanReportResult): Promise<Buffer>
       : "independently discovered finding";
     subheading(`${finding.findingId} · ${finding.status}: ${findingStatusLabels[finding.status]} · ${anchorLabel}`);
     label("Claim");
-    paragraph(finding.claim);
+    paragraph("predicate" in finding ? finding.predicate : finding.claim);
+    if ("conclusion" in finding) {
+      label("Finding");
+      paragraph(finding.conclusion);
+    }
     label("Evidence");
     paragraph(finding.evidence);
-    if (finding.notes?.trim()) {
+    if ("rationale" in finding || "remainingGap" in finding) {
+      label("Analysis / limitation");
+      paragraph([
+        "rationale" in finding ? finding.rationale : "",
+        "remainingGap" in finding && finding.remainingGap ? `Remaining gap: ${finding.remainingGap}` : "",
+      ].filter(Boolean).join(" "));
+    } else if (finding.notes?.trim()) {
       label("Notes");
       paragraph(finding.notes);
     }

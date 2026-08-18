@@ -18,6 +18,7 @@ export const reportToolNames = [
 const sourceRefSchema = z.string().regex(/^S[1-9]\d*$/);
 const researchClaimIdSchema = z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/);
 const findingStatusSchema = z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2)]);
+const evidenceRelationSchema = z.enum(["SUPPORTS", "CONTRADICTS", "CONTEXT"]);
 
 export const pdfTextAnchorSchema = researchPdfTextAnchorSchema;
 const reportAnchorSchema = z.discriminatedUnion("kind", [pdfTextAnchorSchema, discoveredAnchorSchema]);
@@ -50,6 +51,18 @@ const storedFindingSchema = reportFindingFieldsSchema.extend({
   order: z.number().int().positive(),
   sources: z.array(reportSourceSchema),
 }).strict();
+const enrichedEvidenceEntrySchema = z.object({
+  sourceRef: sourceRefSchema,
+  relation: evidenceRelationSchema,
+  comment: z.string().trim().min(1).max(6_000),
+}).strict();
+const enrichedStoredFindingSchema = storedFindingSchema.extend({
+  predicate: z.string().trim().min(1).max(6_000),
+  conclusion: z.string().trim().min(1).max(6_000),
+  rationale: z.string().trim().min(1).max(12_000),
+  remainingGap: z.string().trim().max(2_000).nullable(),
+  evidenceEntries: z.array(enrichedEvidenceEntrySchema).max(200),
+}).strict();
 const legacyStoredFindingSchema = storedFindingSchema.omit({ researchClaimIds: true });
 
 const runSchema = z.object({
@@ -77,7 +90,7 @@ const draftSchema = z.object({
   researchSnapshotSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
   summary: z.string().max(50_000),
   summaryResearchClaimIds: z.array(researchClaimIdSchema).max(500),
-  findings: z.array(storedFindingSchema),
+  findings: z.array(z.union([storedFindingSchema, enrichedStoredFindingSchema])),
 }).strict();
 
 const legacyLeanReportResultSchema = z.object({
@@ -102,7 +115,7 @@ const currentLeanReportResultSchema = z.object({
   findings: z.array(storedFindingSchema.omit({ sourceRefs: true })).min(1),
 }).strict();
 
-const v4LeanReportResultSchema = z.object({
+const legacyV4LeanReportResultSchema = z.object({
   schemaVersion: z.literal(4),
   run: runSchema.extend({
     status: z.literal("COMPLETED"),
@@ -114,7 +127,19 @@ const v4LeanReportResultSchema = z.object({
   findings: z.array(storedFindingSchema.omit({ sourceRefs: true })).min(1),
 }).strict();
 
-export const leanReportResultSchema = z.union([legacyLeanReportResultSchema, currentLeanReportResultSchema, v4LeanReportResultSchema]);
+const v4LeanReportResultSchema = z.object({
+  schemaVersion: z.literal(4),
+  run: runSchema.extend({
+    status: z.literal("COMPLETED"),
+    completedAt: z.string().min(1),
+  }).strict(),
+  researchSnapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  summary: z.string().trim().min(1).max(50_000),
+  summaryResearchClaimIds: z.array(researchClaimIdSchema).max(500),
+  findings: z.array(enrichedStoredFindingSchema.omit({ sourceRefs: true })).min(1),
+}).strict();
+
+export const leanReportResultSchema = z.union([legacyLeanReportResultSchema, currentLeanReportResultSchema, v4LeanReportResultSchema, legacyV4LeanReportResultSchema]);
 
 const documentSchema = z.object({
   pages: z.array(z.object({
@@ -128,6 +153,11 @@ type Draft = z.infer<typeof draftSchema>;
 type AnyDraft = Draft | LegacyDraft;
 export type ReportFindingInput = z.infer<typeof reportFindingInputSchema>;
 export type LeanReportResult = z.infer<typeof leanReportResultSchema>;
+export type EnrichedLeanReportResult = z.infer<typeof v4LeanReportResultSchema>;
+
+export function isEnrichedV4Report(value: LeanReportResult): value is EnrichedLeanReportResult {
+  return value.schemaVersion === 4 && value.findings.length > 0 && "predicate" in value.findings[0];
+}
 export type ReportProgress = AnyDraft;
 
 export type ReportMutationResult = {
@@ -347,7 +377,8 @@ export class ReportStore {
       const findings = state.targets.map((target, index) => {
         const finding = state.findings.find(({ targetId }) => targetId === target.id);
         if (!finding) throw new ReportStoreError("INCOMPLETE_REPORT", "Target " + target.id + " has no finding.", "findings");
-        const evidence = finding.evidence.map(({ sourceRef, comment }) => comment + " [" + sourceRef + "]").join("\n") || "No eligible source evidence was captured.";
+        const evidenceEntries = finding.evidence.map(({ sourceRef, relation, comment }) => ({ sourceRef, relation, comment }));
+        const evidence = evidenceEntries.map(({ sourceRef, relation, comment }) => `${relation} — ${comment} [${sourceRef}]`).join("\n") || "No eligible source evidence was captured.";
         if (evidence.length > 12_000) throw new ReportStoreError("EVIDENCE_TOO_LARGE", "Finding " + target.id + " evidence comments exceed the report limit.", "evidence");
         const sourceRefs = [...new Set(finding.evidence.map(({ sourceRef }) => sourceRef))].sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
         const sources = sourceRefs.map((sourceRef) => {
@@ -360,8 +391,13 @@ export class ReportStore {
           findingId: target.id,
           section: target.section,
           claim: target.predicate,
+          predicate: target.predicate,
+          conclusion: finding.conclusion,
           anchor: target.anchor,
           evidence,
+          evidenceEntries,
+          rationale: finding.rationale,
+          remainingGap: finding.remainingGap,
           notes: [
             target.anchor.kind === "DISCOVERED" ? "Anchor basis: " + target.anchor.basis : "",
             finding.rationale,

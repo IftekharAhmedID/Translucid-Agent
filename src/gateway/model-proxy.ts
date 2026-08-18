@@ -32,6 +32,43 @@ export function modelRequestTimeoutMs(remainingMs: number): number {
   return Math.max(1, Math.min(360_000, remainingMs - 15_000));
 }
 
+export type ModelRoutePreflight = {
+  family: ResearchUpstreamFamily;
+  protocol: "CHAT_COMPLETIONS" | "RESPONSES";
+  model: string;
+  startedAt: string;
+  completedAt: string;
+  latencyMs: number;
+  status: "OK";
+};
+
+export async function preflightResearchModel(input: {
+  family: ResearchUpstreamFamily;
+  model: string;
+  apiKey?: string;
+  fetchImpl?: typeof fetch;
+  now?: () => number;
+}): Promise<ModelRoutePreflight> {
+  if (!input.apiKey) throw new Error("OPENCODE_API_KEY is not configured for model route preflight.");
+  const started = input.now?.() ?? Date.now();
+  const startedAt = new Date(started).toISOString();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new DOMException("Model route preflight timed out.", "TimeoutError")), 15_000);
+  try {
+    const response = await (input.fetchImpl ?? fetch)(resolveResearchUpstream(input.family, input.model), {
+      method: "POST",
+      headers: modelUpstreamHeaders(input.apiKey),
+      body: JSON.stringify({ model: input.model, messages: [{ role: "user", content: "Reply with OK." }], max_tokens: 1, stream: false }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`Model route preflight returned HTTP ${response.status}.`);
+    const completed = input.now?.() ?? Date.now();
+    return { family: input.family, protocol: modelUsesResponses(input.model) ? "RESPONSES" : "CHAT_COMPLETIONS", model: input.model, startedAt, completedAt: new Date(completed).toISOString(), latencyMs: Math.max(0, completed - started), status: "OK" };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function requestUpstream(url: string, headers: Record<string, string>, body: string, signal: AbortSignal): Promise<IncomingMessage> {
   const target = new URL(url);
   if (target.protocol !== "https:") throw new Error("LLM upstream must use HTTPS.");

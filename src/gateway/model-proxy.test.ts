@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { estimateModelInputTokens, modelCostReservation, modelRequestTimeoutMs, modelUpstreamHeaders, resolveResearchUpstream } from "./model-proxy.ts";
+import { estimateModelInputTokens, modelCostReservation, modelRequestTimeoutMs, modelUpstreamHeaders, preflightResearchModel, resolveResearchUpstream } from "./model-proxy.ts";
 
 test("model requests use one bounded timeout with a run-time safety reserve", () => {
   assert.equal(modelRequestTimeoutMs(900_000), 360_000);
@@ -35,4 +35,25 @@ test("upstream headers use the host API key", () => {
     authorization: "Bearer host-secret",
     "content-type": "application/json",
   });
+});
+
+test("model route preflight probes only the canonical DeepSeek chat route", async () => {
+  let request: RequestInit | undefined;
+  const result = await preflightResearchModel({
+    family: "GO",
+    model: "deepseek-v4-pro",
+    apiKey: "secret",
+    now: (() => { let value = 1_000; return () => value += 25; })(),
+    fetchImpl: async (_url, init) => { request = init; return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), { status: 200 }); },
+  });
+  assert.equal(result.model, "deepseek-v4-pro");
+  assert.equal(result.protocol, "CHAT_COMPLETIONS");
+  assert.equal(result.family, "GO");
+  assert.equal(result.latencyMs, 25);
+  assert.deepEqual(JSON.parse(String(request?.body)), { model: "deepseek-v4-pro", messages: [{ role: "user", content: "Reply with OK." }], max_tokens: 1, stream: false });
+});
+
+test("model route preflight fails closed for missing credentials and upstream errors", async () => {
+  await assert.rejects(() => preflightResearchModel({ family: "GO", model: "deepseek-v4-pro" }), /OPENCODE_API_KEY/);
+  await assert.rejects(() => preflightResearchModel({ family: "GO", model: "deepseek-v4-pro", apiKey: "secret", fetchImpl: async () => new Response("no", { status: 503 }) }), /HTTP 503/);
 });

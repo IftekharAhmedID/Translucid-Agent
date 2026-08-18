@@ -494,19 +494,27 @@ export class FileSourceStore {
     await appendFile(join(this.root, "sources", "requests.jsonl"), `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
   }
 
-  async requestStats(): Promise<{ providerCalls: number; cacheHits: number }> {
+  async requestStats(): Promise<{ providerCalls: number; cacheHits: number; totalLatencyMs: number; totalCostUsd: number; failures: number; routeCounts: Record<string, number>; invalidRows: number }> {
     let raw = "";
     try { raw = await readFile(join(this.root, "sources", "requests.jsonl"), "utf8"); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
+    let invalidRows = 0;
     const rows = raw.split("\n").filter(Boolean).flatMap((line) => {
-      try { return [JSON.parse(line) as { cache?: unknown }]; }
-      catch { return []; }
+      try { return [JSON.parse(line) as { cache?: unknown; latencyMs?: unknown; costUsd?: unknown; status?: unknown; providerRoute?: unknown }]; }
+      catch { invalidRows += 1; return []; }
     });
+    const routeCounts: Record<string, number> = {};
+    for (const row of rows) if (typeof row.providerRoute === "string") routeCounts[row.providerRoute] = (routeCounts[row.providerRoute] ?? 0) + 1;
     return {
       providerCalls: rows.filter((row) => row.cache === "MISS").length,
       cacheHits: rows.filter((row) => row.cache === "HIT").length,
+      totalLatencyMs: rows.reduce((sum, row) => sum + (typeof row.latencyMs === "number" ? row.latencyMs : 0), 0),
+      totalCostUsd: rows.reduce((sum, row) => sum + (typeof row.costUsd === "number" ? row.costUsd : 0), 0),
+      failures: rows.filter((row) => row.status !== "OK").length,
+      routeCounts,
+      invalidRows,
     };
   }
 

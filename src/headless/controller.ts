@@ -106,7 +106,7 @@ type Input = {
   root: string;
   handle: RunHandle;
   deadlineAt?: Date;
-  publishingReserveMs?: number;
+  researchDeadlineAt?: Date;
   signal: AbortSignal;
   runtime: "LOCAL" | "E2B";
   researchModel: string;
@@ -117,12 +117,14 @@ type Input = {
   persistResearchSnapshot: () => Promise<string>;
   bindResearchSnapshot: (sha256: string) => void | Promise<void>;
   onLeadStarted?: (sessionId: string) => void | Promise<void>;
+  onLeadSessionMetadata?: (stage: "created" | "committed", metadata: Record<string, unknown>) => void | Promise<void>;
   onProgress?: (message: string) => void;
 };
 
 export type HeadlessControllerOutput = {
   result: LeanReportResult;
   leadSessionId: string;
+  leadSession: Record<string, unknown>;
   childSessions: [];
 };
 
@@ -141,9 +143,22 @@ export class HeadlessInvestigationController {
     const client = createOpencodeClient({ baseUrl: input.handle.openCodeUrl, headers: input.handle.accessHeaders, throwOnError: false });
     const lead = unwrap(await client.session.create({ directory, title: "Headless DeepSeek V4 Pro investigation", agent: "lead-researcher", model: { id: input.researchModel, providerID: "translucid", variant: "xhigh" } }, { signal: input.signal }), "lead session creation");
     const leadId = lead.id;
+    const sessionMetadata = (session: Record<string, unknown>, observedAfterCommit = false): Record<string, unknown> => {
+      const model = session.model && typeof session.model === "object" ? session.model as Record<string, unknown> : {};
+      const time = session.time && typeof session.time === "object" ? session.time as Record<string, unknown> : {};
+      return {
+        id: session.id,
+        agent: session.agent,
+        model: { id: model.id, providerID: model.providerID, ...(model.variant ? { variant: model.variant } : {}) },
+        ...(typeof time.created === "number" ? { createdAt: new Date(time.created).toISOString() } : {}),
+        ...(observedAfterCommit ? { observedAfterCommit: { model: { id: model.id, providerID: model.providerID, ...(model.variant ? { variant: model.variant } : {}) }, ...(session.cost !== undefined ? { cost: session.cost } : {}), ...(session.tokens !== undefined ? { tokens: session.tokens } : {}), ...(typeof time.updated === "number" ? { updatedAt: new Date(time.updated).toISOString() } : {}) } } : {}),
+      };
+    };
+    const createdSession = unwrap(await client.session.get({ sessionID: leadId, directory }, { signal: input.signal }), "lead session metadata");
+    await input.onLeadSessionMetadata?.("created", sessionMetadata(createdSession as unknown as Record<string, unknown>));
     await input.onLeadStarted?.(leadId);
     input.onProgress?.("Single lead investigation session " + leadId + " started.");
-    const researchDeadline = input.deadlineAt ? input.deadlineAt.getTime() - (input.publishingReserveMs ?? 0) : undefined;
+    const researchDeadline = input.researchDeadlineAt?.getTime() ?? input.deadlineAt?.getTime();
     const researchAbort = new AbortController();
     const timeout = researchDeadline === undefined
       ? undefined
@@ -198,6 +213,8 @@ export class HeadlessInvestigationController {
       if (!state || state.schemaVersion !== 3 || state.phase !== "COMMITTED") {
         throw new ResearchFreezeError("RESEARCH_STATE_NOT_READY", "The lead must commit a valid v3 investigation before publication.");
       }
+      const committedSession = unwrap(await client.session.get({ sessionID: leadId, directory }, { signal: input.signal }), "committed lead session metadata");
+      await input.onLeadSessionMetadata?.("committed", sessionMetadata(committedSession as unknown as Record<string, unknown>, true));
       const snapshotSha256 = await input.persistResearchSnapshot();
       await input.bindResearchSnapshot(snapshotSha256);
       await input.reportStore.materializeV3();
@@ -211,6 +228,7 @@ export class HeadlessInvestigationController {
       input.signal.removeEventListener("abort", abort);
     }
     const result = await input.reportStore.result(new Date().toISOString());
-    return { result, leadSessionId: lead.id, childSessions: [] };
+    const finalSession = await client.session.get({ sessionID: leadId, directory }).then((value) => value.data ? sessionMetadata(value.data as unknown as Record<string, unknown>, true) : ({ id: leadId, agent: "lead-researcher", model: { id: input.researchModel, providerID: "translucid", variant: "xhigh" } }));
+    return { result, leadSessionId: lead.id, leadSession: finalSession, childSessions: [] };
   }
 }

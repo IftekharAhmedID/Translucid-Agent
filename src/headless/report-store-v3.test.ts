@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { ReportStore } from "./report-store.ts";
+import { isEnrichedV4Report, ReportStore } from "./report-store.ts";
 import { ResearchStateStore } from "./research-state.ts";
 import { FileSourceStore } from "./source-store.ts";
 
@@ -30,7 +30,14 @@ test("materializes committed v3 findings deterministically without a semantic wr
     await store.materializeV3();
     const result = await store.result("2026-08-18T01:00:00.000Z");
     assert.equal(result.schemaVersion, 4);
-    assert.equal(result.findings[0]?.evidence, "The record establishes contribution, not leadership. [S1]");
+    assert.ok(isEnrichedV4Report(result));
+    assert.equal(result.findings[0]?.claim, "Made a material contribution");
+    assert.equal(result.findings[0]?.predicate, "Made a material contribution");
+    assert.equal(result.findings[0]?.conclusion, "Contribution is established.");
+    assert.equal(result.findings[0]?.evidence, "SUPPORTS — The record establishes contribution, not leadership. [S1]");
+    assert.deepEqual(result.findings[0]?.evidenceEntries, [{ sourceRef: "S1", relation: "SUPPORTS", comment: "The record establishes contribution, not leadership." }]);
+    assert.equal(result.findings[0]?.rationale, "Direct record.");
+    assert.equal(result.findings[0]?.remainingGap, null);
     assert.equal(result.findings[1]?.anchor.kind, "DISCOVERED");
     assert.deepEqual(result.summaryResearchClaimIds, ["contribution"]);
   } finally {

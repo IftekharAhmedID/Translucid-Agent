@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { performance } from "node:perf_hooks";
 
 import { estimateModelInputTokens, modelCostReservation, proxyModelCompletion, type ResearchUpstreamFamily } from "../gateway/model-proxy.ts";
 import { toolNames } from "../providers/contracts.ts";
@@ -45,6 +46,7 @@ function json(response: ServerResponse, status: number, body: unknown): void {
 type GatewayInput = {
   runId: string;
   deadlineAt?: number;
+  researchDeadlineAt?: number;
   allowedTools: Set<string>;
   allowedModels: Set<string>;
   executor?: ProviderExecutor;
@@ -91,6 +93,8 @@ export function createHeadlessGateway(input: GatewayInput) {
   let modelRequests = 0;
   let nonLeadSemanticModelRequests = 0;
   let reportWriterModelRequests = 0;
+  const modelTiming = new Map<string, { requests: number; totalElapsedMs: number; maxElapsedMs: number }>();
+  const providerTiming = new Map<string, { requests: number; totalElapsedMs: number; maxElapsedMs: number }>();
   const providerDrainWaiters: Array<() => void> = [];
   let commitOperation: Promise<{ ok: true; phase: "FROZEN"; revision: number }> | undefined;
 
@@ -151,7 +155,8 @@ export function createHeadlessGateway(input: GatewayInput) {
     if (bearer && alternate && bearer !== alternate) throw new GatewayError(401, "Conflicting run credentials.");
     const provided = bearer || alternate;
     const providedDigest = digest(provided);
-    if (!active || (input.deadlineAt !== undefined && Date.now() >= input.deadlineAt) || provided.length > 256 || !timingSafeEqual(providedDigest, tokenDigest)) throw new GatewayError(401, "Unauthorized or expired run token.");
+    const now = Date.now();
+    if (!active || (input.deadlineAt !== undefined && now >= input.deadlineAt) || provided.length > 256 || !timingSafeEqual(providedDigest, tokenDigest)) throw new GatewayError(401, "Unauthorized or expired run token.");
     if (request.headers["x-run-id"] !== input.runId) throw new GatewayError(401, "Run scope mismatch.");
     const allowed = kind === "tool" ? input.allowedTools : input.allowedModels;
     if (!allowed.has(name)) throw new GatewayError(403, `Run scope denies ${name}.`);
@@ -167,12 +172,14 @@ export function createHeadlessGateway(input: GatewayInput) {
       if (reportTools.has(name) && phase !== "PUBLISHING") throw new GatewayError(403, "Report tools are unavailable until publishing begins.");
       if (investigationTools.has(name) && !input.researchState) throw new GatewayError(403, "Investigation state is unavailable in this run.");
       if (investigationMutationTools.has(name) && (phase === "COMMITTING" || phase === "FROZEN" || phase === "FREEZING" || phase === "PUBLISHING")) throw new GatewayError(403, "Investigation state is immutable while committing or after commit.");
+      if (input.researchDeadlineAt !== undefined && now >= input.researchDeadlineAt && phase !== "COMMITTING") throw new GatewayError(403, "Research deadline reached; no new provider calls or semantic mutations are allowed.");
       if (name === "research.state.set" && phase !== "RESEARCHING" && phase !== "ACTIVE") throw new GatewayError(403, "Research state is immutable after research ends.");
       if (name !== "source.excerpts" && name !== "source.inventory" && name !== "research.state.set" && name !== "research.state.get" && !investigationTools.has(name) && !reportTools.has(name) && phase !== "RESEARCHING" && phase !== "ACTIVE") {
         throw new GatewayError(403, `Publishing phase denies ${name}.`);
       }
       if (investigationTools.has(name) && name !== "investigation.progress.get" && phase === "PUBLISHING") throw new GatewayError(403, "Publishing phase denies investigation mutations.");
     }
+    if (kind === "model" && input.researchDeadlineAt !== undefined && now >= input.researchDeadlineAt) throw new GatewayError(401, "Research deadline reached; no new semantic model requests are allowed.");
   };
 
   const server = createServer(async (request, response) => {
@@ -263,6 +270,7 @@ export function createHeadlessGateway(input: GatewayInput) {
         input.researchState?.recordRoute(name);
         providersInFlight += 1;
         if (synthesisActive) providerCallsDuringSynthesis += 1;
+        const providerStarted = performance.now();
         input.onActivity?.({ kind: "tool-start", name, at: Date.now() });
         try {
           const result = await input.executor.executeHeadless({ tool: name, arguments: body.arguments }, {
@@ -273,13 +281,17 @@ export function createHeadlessGateway(input: GatewayInput) {
           return json(response, 200, {
             ...result,
             ...(input.deadlineAt === undefined ? {} : { timing: {
-              convergeAt: input.deadlineAt - 10 * 60_000,
-              researchDeadlineAt: input.deadlineAt - 6 * 60_000,
+              ...(input.researchDeadlineAt === undefined ? {} : { researchDeadlineAt: input.researchDeadlineAt }),
               totalDeadlineAt: input.deadlineAt,
-              convergeNow: Date.now() >= input.deadlineAt - 10 * 60_000,
             } }),
           });
         } finally {
+          const elapsedMs = Math.max(0, Math.round(performance.now() - providerStarted));
+          const timing = providerTiming.get(name) ?? { requests: 0, totalElapsedMs: 0, maxElapsedMs: 0 };
+          timing.requests += 1;
+          timing.totalElapsedMs += elapsedMs;
+          timing.maxElapsedMs = Math.max(timing.maxElapsedMs, elapsedMs);
+          providerTiming.set(name, timing);
           input.onActivity?.({ kind: "tool-end", name, at: Date.now() });
           finishProviderCall();
         }
@@ -296,13 +308,14 @@ export function createHeadlessGateway(input: GatewayInput) {
           throw new GatewayError(400, `Model ${model || "unknown"} must use the ${responsesModel ? "Responses" : "Chat Completions"} endpoint.`);
         }
         const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
-        const remainingMs = input.deadlineAt === undefined ? undefined : input.deadlineAt - Date.now();
+        const remainingMs = (input.researchDeadlineAt ?? input.deadlineAt) === undefined ? undefined : (input.researchDeadlineAt ?? input.deadlineAt)! - Date.now();
         if (remainingMs !== undefined && remainingMs <= 0) throw new GatewayError(401, "Investigation deadline reached.");
         input.onModelRequest?.({ agent, estimatedInputTokens: estimateModelInputTokens(body) });
         modelRequests += 1;
         if (agent !== "lead-researcher") nonLeadSemanticModelRequests += 1;
         if (agent === "report-writer") reportWriterModelRequests += 1;
         input.onActivity?.({ kind: "model-start", name: model, at: Date.now() });
+        const modelStarted = performance.now();
         try {
           await input.budget.reserveModel(modelCostReservation(body, model));
           await proxyModelCompletion({
@@ -318,6 +331,12 @@ export function createHeadlessGateway(input: GatewayInput) {
             fixtureCompletion: () => input.fixtureCompletion?.(body, agent, model) ?? Promise.resolve({ content: "Headless fixture model completed." }),
           });
         } finally {
+          const elapsedMs = Math.max(0, Math.round(performance.now() - modelStarted));
+          const timing = modelTiming.get(model) ?? { requests: 0, totalElapsedMs: 0, maxElapsedMs: 0 };
+          timing.requests += 1;
+          timing.totalElapsedMs += elapsedMs;
+          timing.maxElapsedMs = Math.max(timing.maxElapsedMs, elapsedMs);
+          modelTiming.set(model, timing);
           input.onActivity?.({ kind: "model-end", name: model, at: Date.now() });
         }
         return;
@@ -351,6 +370,8 @@ export function createHeadlessGateway(input: GatewayInput) {
       providerCallsDuringSynthesis,
       nonLeadSemanticModelRequests,
       reportWriterModelRequests,
+      modelTiming: Object.fromEntries(modelTiming),
+      providerTiming: Object.fromEntries(providerTiming),
     }),
     setPhase: (value: "RESEARCHING" | "FREEZING" | "PUBLISHING" | "ACTIVE" | "COMMITTING" | "FROZEN") => { phase = value; },
     commitInvestigation,

@@ -181,7 +181,7 @@ type FailureInput = {
 export async function sealRunFailure(root: string, input: FailureInput): Promise<void> {
   const diagnostics: Record<string, string | number | boolean | null> = {};
   for (const [key, value] of Object.entries(input.diagnostics ?? {})) {
-    if (!new Set(["stderr", "stdout", "sessionId", "sandboxId", "exitCode"]).has(key)) continue;
+    if (!new Set(["stderr", "stdout", "sessionId", "sandboxId", "exitCode", "timelinePath", "preflightPath", "leadSessionPath", "elapsedMs", "eventCount"]).has(key)) continue;
     if (typeof value === "string") diagnostics[key] = value.slice(0, 8_000);
     else if (typeof value === "number" || typeof value === "boolean" || value === null) diagnostics[key] = value;
   }

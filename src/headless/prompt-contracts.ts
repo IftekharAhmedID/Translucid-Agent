@@ -2,7 +2,7 @@ export const RESEARCH_PROMPT_CONTRACT = "Begin from /workspace/case/input/manife
 
 export function researchPrompt(deadline?: string): string {
   const hostLimit = deadline
-    ? `The host research-freeze deadline is ${deadline}; the total run ceiling is thirty minutes. If research completes early, leave the remaining time for publication.`
+    ? `The host research-freeze deadline is ${deadline}. Commit before that deadline; after commit, the host owns deterministic snapshot, report, PDF, provenance, and result publication.`
     : "This is an uncapped qualification run: no host time or budget limit is enforced. Preserve usage telemetry and stop only when the inquiry is genuinely complete.";
   return `${RESEARCH_PROMPT_CONTRACT} ${hostLimit} State uncertainty honestly and do not manufacture corroboration.`;
 }

@@ -116,13 +116,17 @@ test("routes research providers and local excerpts, then blocks providers in pub
     const sourceStore = await FileSourceStore.open(directory);
     const runBudget = budget();
     const executor = new ProviderExecutor({ PROVIDER_MODE: "fixture" }, createFileProviderBackend({ sourceStore, budget: runBudget, deadlineAt: Date.now() + 60_000 }));
-    const gateway = createHeadlessGateway({ runId: "run-gateway", deadlineAt: Date.now() + 60_000, allowedTools: new Set(["web.search", "source.inventory", "source.excerpts"]), allowedModels: new Set(), agentTools: new Map([["lead-researcher", new Set(["web.search", "source.inventory", "source.excerpts"])]]), executor, sourceStore, budget: runBudget, providerMode: "fixture" });
+    const totalDeadlineAt = Date.now() + 180_000;
+    const researchCutoff = totalDeadlineAt - 120_000;
+    const gateway = createHeadlessGateway({ runId: "run-gateway", deadlineAt: totalDeadlineAt, researchDeadlineAt: researchCutoff, allowedTools: new Set(["web.search", "source.inventory", "source.excerpts"]), allowedModels: new Set(), agentTools: new Map([["lead-researcher", new Set(["web.search", "source.inventory", "source.excerpts"])]]), executor, sourceStore, budget: runBudget, providerMode: "fixture" });
     gateway.setLeadSession("session-a");
     const server = await listen(gateway);
     const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-gateway", "x-opencode-agent": "lead-researcher" };
     const provider = await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "web.search", arguments: { query: "Synthetic Candidate Principal Engineer" }, operational: { agent: "lead-researcher", sessionId: "session-a" } }) });
     assert.equal(provider.status, 200);
-    assert.deepEqual((await provider.json() as { sourceRefs: string[] }).sourceRefs, ["S1"]);
+    const providerBody = await provider.json() as { sourceRefs: string[]; timing?: Record<string, unknown> };
+    assert.deepEqual(providerBody.sourceRefs, ["S1"]);
+    assert.deepEqual(providerBody.timing, { researchDeadlineAt: researchCutoff, totalDeadlineAt });
     const inventory = await fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool: "source.inventory", arguments: { limit: 100 }, operational: { sessionId: "session-a" } }) });
     assert.equal(inventory.status, 200);
     assert.deepEqual((await inventory.json() as { sources: Array<Record<string, unknown>> }).sources, [{ ref: "S1", url: "https://example.test/fixtures/web.search", title: null, date: null, route: "fixture.web.search", highlight: null, sourceKind: "PROVIDER_RESPONSE", citationEligible: true }]);
@@ -167,6 +171,25 @@ test("freezing waits for an in-flight provider and rejects new external calls", 
     await freezing;
     assert.equal(drained, true);
     assert.equal((await provider).status, 200);
+    gateway.cancel();
+    await server.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("research cutoff rejects new provider and semantic mutations while total publication time remains valid", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-research-cutoff-"));
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    const totalDeadlineAt = Date.now() + 60_000;
+    const gateway = createHeadlessGateway({ runId: "run-cutoff", deadlineAt: totalDeadlineAt, researchDeadlineAt: Date.now() - 1, allowedTools: new Set(["web.search", "investigation.plan.set"]), allowedModels: new Set(), agentTools: new Map([["lead-researcher", new Set(["web.search", "investigation.plan.set"])]]), sourceStore, budget: budget(), providerMode: "fixture" });
+    gateway.setLeadSession("session-cutoff");
+    const server = await listen(gateway);
+    const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-cutoff", "x-opencode-agent": "lead-researcher" };
+    const execute = (tool: string) => fetch(`${server.origin}/internal/tools/execute`, { method: "POST", headers, body: JSON.stringify({ tool, arguments: {}, operational: { sessionId: "session-cutoff" } }) });
+    assert.equal((await execute("web.search")).status, 403);
+    assert.equal((await execute("investigation.plan.set")).status, 403);
     gateway.cancel();
     await server.close();
   } finally {

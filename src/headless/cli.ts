@@ -4,6 +4,7 @@ import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/prom
 import { join, resolve } from "node:path";
 
 import { toolNames } from "../providers/contracts.ts";
+import { buildCapabilityRegistry } from "../core/capabilities.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
 import { E2BRuntime } from "../runtime/e2b.ts";
 import { getPinnedLocalManifestHash, LocalDockerRuntime } from "../runtime/local-docker.ts";
@@ -20,9 +21,9 @@ import { renderLeanReport, verifyInvestigationReport } from "./report.ts";
 import { createRunWorkspace, removeRunDiagnostics, sealRunFailure, type RunWorkspace } from "./run-workspace.ts";
 import { attachOpenCodeTui } from "./visible-tui.ts";
 import { resolveResearchModel } from "./model-registry.ts";
-
-const RUN_TIMEOUT_MS = 30 * 60_000;
-const PUBLISHING_RESERVE_MS = 6 * 60_000;
+import { preflightResearchModel } from "../gateway/model-proxy.ts";
+import { RUN_TIMEOUT_MS, researchDeadlineAt } from "./deadlines.ts";
+import { RunTimeline } from "./run-timeline.ts";
 
 async function atomicWrite(path: string, bytes: Uint8Array | string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -70,7 +71,8 @@ async function main(): Promise<void> {
   const options = parseInvestigationArguments(process.argv.slice(2));
   const runId = randomUUID();
   const startedAt = new Date().toISOString();
-  const deadlineAt = options.qualification ? undefined : new Date(Date.now() + RUN_TIMEOUT_MS);
+  const runDeadline = options.qualification ? undefined : new Date(Date.now() + RUN_TIMEOUT_MS);
+  const researchCutoff = runDeadline ? new Date(researchDeadlineAt(runDeadline.getTime())) : undefined;
   let workspace: RunWorkspace | undefined;
   let runtime: InvestigatorRuntime | undefined;
   let handle: RunHandle | undefined;
@@ -78,6 +80,8 @@ async function main(): Promise<void> {
   let watchProcess: ChildProcess | undefined;
   let attachPath: string | undefined;
   let reportTemporaryPath: string | undefined;
+  let timeline: RunTimeline | undefined;
+  let preflightPath: string | undefined;
   const abort = new AbortController();
   const abortHandler = () => abort.abort(new DOMException("Investigation cancelled by signal.", "AbortError"));
   process.once("SIGINT", abortHandler);
@@ -96,8 +100,26 @@ async function main(): Promise<void> {
       startedAt,
       runId,
     });
+    timeline = new RunTimeline(join(workspace.root, "provenance", "run-timeline.jsonl"));
+    await timeline.start();
     const expectedManifestHash = await getPinnedLocalManifestHash();
-    const researchModel = resolveResearchModel(process.env.RESEARCH_MODEL).id;
+    const modelSpec = resolveResearchModel(process.env.RESEARCH_MODEL);
+    const researchModel = modelSpec.id;
+    const environment = providerEnvironment(options.providerMode, options.qualification);
+    const capabilities = buildCapabilityRegistry(environment);
+    await atomicWrite(join(workspace.root, "provenance", "capability-preflight.json"), `${JSON.stringify({ schemaVersion: 1, providerMode: options.providerMode, required: ["WEB_SEARCH", "GITHUB"], registry: capabilities }, null, 2)}\n`);
+    await timeline.record({ kind: "capability.preflight.completed", status: "OK" });
+    if (options.qualification && options.providerMode === "live") {
+      if (researchModel !== "deepseek-v4-pro" || modelSpec.protocol !== "CHAT_COMPLETIONS" || modelSpec.variant !== "xhigh" || modelSpec.reasoningEffort !== "max" || process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN") {
+        throw new Error("Qualification requires deepseek-v4-pro Chat Completions on the GO route with xhigh/max reasoning.");
+      }
+      for (const capability of ["WEB_SEARCH", "GITHUB"] as const) if (capabilities[capability].state !== "READY") throw new Error(`Qualification capability preflight failed: ${capability} is ${capabilities[capability].state}.`);
+      preflightPath = join(workspace.root, "provenance", "model-preflight.json");
+      await timeline.record({ kind: "model.preflight.started", model: researchModel, provider: "GO" });
+      const preflight = await preflightResearchModel({ family: "GO", model: researchModel, apiKey: process.env.OPENCODE_API_KEY });
+      await atomicWrite(preflightPath, `${JSON.stringify(preflight, null, 2)}\n`);
+      await timeline.record({ kind: "model.preflight.completed", model: researchModel, provider: "GO", status: "OK" });
+    }
     const budget = new MemoryRunBudget(options.qualification ? unboundedBudgetCeilings() : headlessBudgetCeilings(), { onChange: () => undefined });
     const researchState = await ResearchStateStore.open(workspace.root, workspace.sourceStore);
     const reportStore = await ReportStore.open(workspace.root, {
@@ -137,12 +159,13 @@ async function main(): Promise<void> {
       }
       return sha256;
     };
-    const providerExecutor = new ProviderExecutor(providerEnvironment(options.providerMode, options.qualification), createFileProviderBackend({ sourceStore: workspace.sourceStore, budget, ...(deadlineAt ? { deadlineAt: deadlineAt.getTime() } : {}) }));
+    const providerExecutor = new ProviderExecutor(environment, createFileProviderBackend({ sourceStore: workspace.sourceStore, budget, ...(researchCutoff ? { deadlineAt: researchCutoff.getTime() } : {}) }));
     const researchProvider = process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
     const fixture = createHeadlessFixtureCompletion();
     gateway = createHeadlessGateway({
       runId,
-      ...(deadlineAt ? { deadlineAt: deadlineAt.getTime() } : {}),
+      ...(runDeadline ? { deadlineAt: runDeadline.getTime() } : {}),
+      ...(researchCutoff ? { researchDeadlineAt: researchCutoff.getTime() } : {}),
       allowedTools: new Set([...toolNames, "source.inventory", "source.excerpts", "investigation.plan.set", "investigation.target.add", "investigation.synthesis.begin", "investigation.finding.upsert", "investigation.progress.get", "investigation.summary.set", "investigation.commit"]),
       allowedModels: new Set([researchModel]),
       agentTools: agentToolAllowlist(),
@@ -158,6 +181,7 @@ async function main(): Promise<void> {
         activity.lastProgressAt = event.at;
         if (event.kind === "model-start") activity.modelStartedAt = event.at;
         if (event.kind === "model-end") activity.modelStartedAt = undefined;
+        void timeline?.record({ kind: `gateway.${event.kind}`, name: event.name });
       },
     });
     const gatewayPort = await listen(gateway.server, options.runtime === "E2B" ? integerEnvironment("HEADLESS_GATEWAY_PORT", 3001) : 0);
@@ -180,7 +204,7 @@ async function main(): Promise<void> {
       expectedManifestHash,
       timeoutMs: RUN_TIMEOUT_MS,
       mode: "headless",
-      ...(deadlineAt ? { deadlineAt: deadlineAt.toISOString() } : {}),
+      ...(runDeadline ? { deadlineAt: runDeadline.toISOString() } : {}),
     });
     if (handle.kind === "LOCAL") {
       const attachDirectory = resolve(".debug", "headless");
@@ -192,7 +216,7 @@ async function main(): Promise<void> {
     const output = await controller.run({
       root: workspace.root,
       handle,
-      ...(deadlineAt ? { deadlineAt, publishingReserveMs: PUBLISHING_RESERVE_MS } : {}),
+      ...(runDeadline ? { deadlineAt: runDeadline, researchDeadlineAt: researchCutoff } : {}),
       signal: abort.signal,
       runtime: options.runtime,
       researchModel,
@@ -205,8 +229,13 @@ async function main(): Promise<void> {
       onLeadStarted: async (sessionId) => {
         leadSessionId = sessionId;
         gateway?.setLeadSession(sessionId);
+        await timeline?.record({ kind: "lead.session.started", name: sessionId });
         process.stderr.write(`Run ${runId}: lead session ${sessionId} is visible${options.watch ? " in the attached TUI" : ` with npm run attach -- ${runId}`}.\n`);
         if (options.watch && handle) watchProcess = attachOpenCodeTui(handle, password, sessionId);
+      },
+      onLeadSessionMetadata: async (stage, metadata) => {
+        await atomicWrite(join(workspace!.root, ".work", "lead-session.json"), `${JSON.stringify({ schemaVersion: 1, stage, ...metadata }, null, 2)}\n`);
+        await timeline?.record({ kind: `lead.session.${stage}`, status: "OK" });
       },
       onProgress: (message) => { if (!options.watch) process.stderr.write(`Run ${runId}: ${message}\n`); },
     });
@@ -217,6 +246,8 @@ async function main(): Promise<void> {
       throw error;
     }
     if (output.result.schemaVersion !== 4) throw new Error("Only result-v4 may be published by a new v3 run.");
+    const actualLeadModel = output.leadSession.model && typeof output.leadSession.model === "object" ? output.leadSession.model as Record<string, unknown> : {};
+    if (options.qualification && (output.leadSession.agent !== "lead-researcher" || actualLeadModel.id !== "deepseek-v4-pro" || actualLeadModel.providerID !== "translucid" || actualLeadModel.variant !== "xhigh")) throw new Error("Lead session metadata does not prove the required DeepSeek V4 Pro lead configuration.");
     await verifyResearchSnapshot(workspace.root);
     const actualSnapshotSha256 = await researchSnapshotSha256(workspace.root);
     const draft = await reportStore.progress();
@@ -231,11 +262,12 @@ async function main(): Promise<void> {
     await rm(reportTemporaryPath, { force: true });
     await atomicWrite(reportTemporaryPath, await renderLeanReport(output.result));
     await verifyInvestigationReport(await readFile(reportTemporaryPath));
+    await timeline?.record({ kind: "publication.pdf.verified", status: "OK" });
     await runtime.stop(handle);
     handle = undefined;
     await mkdir(join(workspace.root, "provenance"), { recursive: true });
     const progress = await reportStore.progress();
-    const telemetry = gateway?.telemetry() ?? { semanticAgentCount: 0, modelRequests: 0, providerCallsDuringSynthesis: 0, nonLeadSemanticModelRequests: 0, reportWriterModelRequests: 0 };
+    const telemetry = gateway?.telemetry() ?? { semanticAgentCount: 0, modelRequests: 0, providerCallsDuringSynthesis: 0, nonLeadSemanticModelRequests: 0, reportWriterModelRequests: 0, modelTiming: {}, providerTiming: {} };
     if (telemetry.semanticAgentCount !== 1 || telemetry.nonLeadSemanticModelRequests !== 0 || telemetry.reportWriterModelRequests !== 0) {
       throw new Error("Semantic provenance invariant failed: expected exactly one lead agent and no non-lead or report-writer model requests.");
     }
@@ -246,6 +278,10 @@ async function main(): Promise<void> {
     const eligibleUrls = [...new Set(eligibleSources.flatMap(({ sourceUrl }) => sourceUrl ? [sourceUrl] : []))].sort();
     const citedUrls = [...new Set(eligibleSources.filter(({ ref }) => citedRefSet.has(ref)).flatMap(({ sourceUrl }) => sourceUrl ? [sourceUrl] : []))].sort();
     const uncitedEligibleUrls = eligibleUrls.filter((url) => !citedUrls.includes(url));
+    const providerStats = await workspace.sourceStore.requestStats();
+    if (providerStats.invalidRows) throw new Error(`Provider request ledger contains ${providerStats.invalidRows} invalid row(s).`);
+    await timeline?.record({ kind: "publication.provenance.written", status: "OK" });
+    await timeline?.flush();
     await atomicWrite(join(workspace.root, "provenance", "report.json"), `${JSON.stringify({
       schemaVersion: 1,
       runId,
@@ -260,6 +296,14 @@ async function main(): Promise<void> {
       nonLeadSemanticModelRequests: telemetry.nonLeadSemanticModelRequests,
       reportWriterModelRequests: telemetry.reportWriterModelRequests,
       providerCallsDuringSynthesis: telemetry.providerCallsDuringSynthesis,
+      modelTiming: telemetry.modelTiming,
+      providerTiming: telemetry.providerTiming,
+      providerStats,
+      leadSession: output.leadSession,
+      modelConfig: { protocol: modelSpec.protocol, variant: modelSpec.variant, reasoningEffort: modelSpec.reasoningEffort, upstreamFamily: researchProvider },
+      modelRoutePreflight: preflightPath ? "provenance/model-preflight.json" : null,
+      capabilityPreflight: "provenance/capability-preflight.json",
+      timeline: "provenance/run-timeline.jsonl",
       sourceRefs: citedSourceRefs,
       coverage: { eligibleUrlCount: eligibleUrls.length, citedUrlCount: citedUrls.length, uncitedEligibleUrls },
     }, null, 2)}\n`);
@@ -272,10 +316,14 @@ async function main(): Promise<void> {
     const pdfMtime = (await stat(reportPath)).mtimeMs;
     const resultMtime = (await stat(resultPath)).mtimeMs;
     if (writtenResult.schemaVersion !== 4 || writtenResult.researchSnapshotSha256 !== actualSnapshotSha256 || resultMtime < pdfMtime) throw new Error("Published result failed final digest or ordering validation.");
+    await timeline?.record({ kind: "publication.result.written", status: "OK" });
+    await timeline?.flush();
     process.stdout.write(`${JSON.stringify({ runId, result: resultPath, report: reportPath, sources: join(workspace.root, "sources") }, null, 2)}\n`);
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error("Unknown headless investigation failure.");
     if (workspace) {
+      await timeline?.record({ kind: "run.failed", status: "ERROR", detail: error.message });
+      await timeline?.flush();
       const failure = classifyInvestigationFailure(error, abort.signal.aborted, Boolean(handle));
       await mkdir(join(workspace.root, "diagnostics"), { recursive: true });
       await sealRunFailure(workspace.root, {
@@ -287,6 +335,9 @@ async function main(): Promise<void> {
         diagnostics: {
           ...(handle?.kind === "E2B" ? { sandboxId: handle.id } : {}),
           ...(handle?.kind === "LOCAL" ? { sessionId: handle.id } : {}),
+          ...(timeline ? { timelinePath: "provenance/run-timeline.jsonl", ...timeline.summary() } : {}),
+          ...(preflightPath ? { preflightPath: "provenance/model-preflight.json" } : {}),
+          ...(workspace ? { leadSessionPath: ".work/lead-session.json" } : {}),
         },
       }).catch(() => undefined);
     }
@@ -298,7 +349,6 @@ async function main(): Promise<void> {
     process.removeListener("SIGINT", abortHandler);
     process.removeListener("SIGTERM", abortHandler);
     if (attachPath) await rm(attachPath, { force: true });
-    if (reportTemporaryPath) await rm(reportTemporaryPath, { force: true });
     if (watchProcess && !watchProcess.killed) watchProcess.kill("SIGTERM");
     gateway?.cancel();
     if (gateway) await closeServer(gateway.server);

@@ -168,12 +168,10 @@ Use `source.inventory` and `source.excerpts` to recover captured material.
 
 Never refetch it merely to regain context.
 
-For qualification runs, complete the run-level route audit before freezing:
-make at least one `deep` or `deep-reasoning` `web.search` call with three or
-more genuinely orthogonal `additionalQueries`, and make one justified search
-using `excludeDomains` to reach an independent source family. This is one
-qualification audit, not a per-claim search quota; explain the material gap or
-route decision that each call addresses.
+For any run, use `deep` or `deep-reasoning`, extra `additionalQueries`, or
+`excludeDomains` only when a material unresolved gap would benefit from that
+route. Explain the gap and the independent source family the route is meant
+to reach. Qualification does not create a search quota or ritual.
 
 Before freezing, paginate `source.inventory` to completion and run a local-only
 reverse sweep for unresolved Tier-A targets and unusually rich sources. Local
