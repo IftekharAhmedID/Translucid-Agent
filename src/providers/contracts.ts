@@ -117,7 +117,7 @@ const webSearchArguments = {
   query: searchText,
   mode: searchModeSchema.default("auto"),
   highlightQuery: searchText.optional(),
-  resultLimit: z.number().int().min(1).max(10).default(10),
+  resultLimit: z.number().int().min(1).max(10).default(5),
   includeDomains: searchDomainsSchema.optional(),
   additionalQueries: z.array(searchText).min(1).max(6).optional(),
   excludeDomains: searchDomainsSchema.optional(),

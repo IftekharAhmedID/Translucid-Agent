@@ -70,6 +70,26 @@ test("web fetch forwards optional focus and the plugin forwards material search 
   }
 });
 
+test("plugin web search defaults to five highlighted discovery results", async () => {
+  const originalFetch = globalThis.fetch;
+  let captured: Record<string, unknown> | undefined;
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { arguments?: Record<string, unknown> };
+    captured = body.arguments;
+    return new Response(JSON.stringify({ sourceRefs: [] }));
+  };
+  try {
+    const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
+    const hooks = await plugin({} as Parameters<typeof plugin>[0]);
+    const search = hooks.tool!["web.search"]!;
+    const values = tool.schema.object(search.args).parse({ query: "five results" });
+    await search.execute(values, { sessionID: "default-search", agent: "lead-researcher", abort: new AbortController().signal } as never);
+    assert.equal(captured?.resultLimit, 5);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("plugin finding and summary schemas report compact word overflows", async () => {
   const { default: plugin } = await import("../../runtime/headless-opencode/plugin/translucid.ts");
   const hooks = await plugin({} as Parameters<typeof plugin>[0]);

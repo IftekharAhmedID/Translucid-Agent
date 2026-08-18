@@ -15,7 +15,7 @@ test("headless provider requests contain only network-semantic arguments", () =>
     arguments: { query: "Casey Morgan Project Atlas", mode: "fast" },
   });
   assert.equal(parsed.tool, "web.search");
-  assert.equal(parsed.arguments.resultLimit, 10);
+  assert.equal(parsed.arguments.resultLimit, 5);
   assert.equal(parsed.arguments.highlightQuery, undefined);
   assert.equal("questionId" in parsed.arguments, false);
 
@@ -131,7 +131,7 @@ test("tool requests require a durable question and public rationale", () => {
     },
   });
   assert.equal(parsed.tool, "web.search");
-  assert.equal(parsed.arguments.resultLimit, 10);
+  assert.equal(parsed.arguments.resultLimit, 5);
   assert.equal(parsed.arguments.highlightQuery, undefined);
 });
 
