@@ -66,13 +66,17 @@ test("forwards normalized Exa material-route controls and a host-owned deep prom
     endPublishedDate: "2021-01-02T03:04:05.123Z",
   } }, context);
   await executor.executeHeadless({ tool: "web.search", arguments: { query: "Exact Candidate Name without filter" } }, context);
+  await executor.executeHeadless({ tool: "web.search", arguments: { query: "Exact Candidate Name", highlightQuery: "Principal Engineer" } }, context);
 
   assert.deepEqual(networkArguments[0]?.includeDomains, ["*.example.edu", "rowan.example.edu"]);
   assert.deepEqual(networkArguments[0]?.additionalQueries, ["Exact Candidate Name Arm"]);
   assert.deepEqual(networkArguments[0]?.excludeDomains, ["linkedin.com"]);
   assert.equal(networkArguments[0]?.startPublishedDate, "2020-01-02T03:04:05.000Z");
   assert.equal(networkArguments[0]?.endPublishedDate, "2021-01-02T03:04:05.123Z");
-  assert.equal(networkArguments[0]?.systemPrompt, "Professional verification research.\n\nPrioritize distinct primary, institutional, employer,\ntechnical, governance, contemporaneous, and independent\nrecords.\n\nPrefer original records over summaries and contemporaneous\nrecords for historical claims. Avoid duplicate, mirrored,\nsyndicated, or biography-derived sources where independence\nis requested.\n\nReturn materially different evidence routes, not repetitions.");
+  assert.equal(networkArguments[0]?.systemPrompt, "Professional verification research.\n\nPrefer original institutional, employer, and work records;\ncontemporaneous historical records; and independent witnesses.\nUse discovered anchors to reach the underlying record. Avoid\nduplicate, mirrored, syndicated, or biography-derived routes.\nReturn materially different evidence routes, not repetitions.");
+  assert.deepEqual(networkArguments[0]?.contents, { highlights: true });
+  assert.deepEqual(networkArguments[1]?.contents, { highlights: true });
+  assert.deepEqual(networkArguments[2]?.contents, { highlights: { query: "Principal Engineer", maxCharacters: 1_200 } });
   assert.equal(networkArguments[0]?.type, "deep");
   assert.equal("includeDomains" in networkArguments[1]!, false);
   assert.equal("systemPrompt" in networkArguments[1]!, false);
@@ -101,7 +105,7 @@ test("keeps Exa search leads non-citable until a direct fetch captures the same 
         }), { headers: { "content-type": "application/json" } });
       }
       if (url === "https://api.exa.ai/contents") {
-        return new Response(JSON.stringify({ results: [{ url: "https://example.test/b", title: "B", text: "Directly fetched source content" }] }), { headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify({ statuses: [{ id: "https://example.test/b", status: "success" }], results: [{ url: "https://example.test/b", title: "B", text: "Directly fetched source content" }] }), { headers: { "content-type": "application/json" } });
       }
       throw new Error(`Unexpected request: ${url}`);
     };
@@ -129,6 +133,86 @@ test("keeps Exa search leads non-citable until a direct fetch captures the same 
     globalThis.fetch = originalFetch;
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("rejects a successful-looking Exa HTTP response when the parent status failed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-exa-failed-status-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    const budget = new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 10, repositoryClones: 3, socialProfiles: 1 });
+    const executor = new ProviderExecutor({ PROVIDER_MODE: "live", EXA_API_KEY: "test-key" }, createFileProviderBackend({ sourceStore, budget, deadlineAt: Date.now() + 60_000 }));
+    globalThis.fetch = async () => new Response(JSON.stringify({ statuses: [{ id: "https://example.test/failed", status: "error" }], results: [{ url: "https://example.test/failed", text: "Should not be citable" }] }), { headers: { "content-type": "application/json" } });
+    const result = await executor.executeHeadless({ tool: "web.fetch", arguments: { url: "https://example.test/failed" } }, { runId: "run-failed-status", agent: "lead-researcher", sessionId: "session-failed-status" });
+    assert.equal(result.status, "OK");
+    assert.deepEqual(result.sourceRefs, []);
+    assert.deepEqual(result.evidenceEligibleSourceRefs, []);
+    assert.equal((await sourceStore.list()).length, 0);
+    assert.match(result.preview, /Should not be citable/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("projects a successful Exa parent and bounded direct subpages into separate citable sources", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-exa-subpages-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    const budget = new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 10, repositoryClones: 3, socialProfiles: 1 });
+    const executor = new ProviderExecutor({ PROVIDER_MODE: "live", EXA_API_KEY: "test-key" }, createFileProviderBackend({ sourceStore, budget, deadlineAt: Date.now() + 60_000 }));
+    const parentUrl = "https://example.test/hub";
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      requestId: "req-1",
+      statuses: [{ id: "parent-1", status: "success" }],
+      results: [{
+        id: "parent-1",
+        url: parentUrl,
+        title: "Authoritative hub",
+        publishedDate: "2025-01-02",
+        author: "Institution",
+        text: "Parent evidence",
+        highlights: ["Parent highlight"],
+        highlightScores: [0.9],
+        subpages: [
+          { url: "https://example.test/hub/one", title: "One", text: "First subpage evidence" },
+          { url: "https://example.test/hub/two", title: "Two", highlights: ["Second subpage evidence"] },
+          { url: "https://example.test/hub/one", text: "Duplicate" },
+          { url: "not-a-url", text: "Invalid" },
+          { url: "https://example.test/hub/empty", text: "" },
+        ],
+      }],
+    }), { headers: { "content-type": "application/json" } });
+    const result = await executor.executeHeadless({ tool: "web.fetch", arguments: { url: parentUrl, subpages: 3, subpageTarget: ["release"] } }, { runId: "run-subpages", agent: "lead-researcher", sessionId: "session-subpages" });
+    assert.equal(result.status, "OK");
+    assert.deepEqual(result.sourceRefs, ["S1", "S2", "S3"]);
+    assert.deepEqual(result.evidenceEligibleSourceRefs, ["S1", "S2", "S3"]);
+    const sources = await sourceStore.list();
+    assert.deepEqual(sources.map((source) => ({ url: source.sourceUrl, method: source.provenance.captureMethod, parent: source.provenance.parentUrl })), [
+      { url: parentUrl, method: "EXA_CONTENTS_PARENT", parent: undefined },
+      { url: "https://example.test/hub/one", method: "EXA_CONTENTS_SUBPAGE", parent: parentUrl },
+      { url: "https://example.test/hub/two", method: "EXA_CONTENTS_SUBPAGE", parent: parentUrl },
+    ]);
+    const parentBlob = JSON.parse(await readFile(join(directory, sources[0]!.relativePath), "utf8")) as Record<string, unknown>;
+    assert.equal(parentBlob.url, parentUrl);
+    assert.equal("results" in parentBlob, false);
+    assert.equal("statuses" in parentBlob, false);
+    assert.equal("subpages" in parentBlob, false);
+    assert.equal((await readFile(join(directory, "sources", "requests.jsonl"), "utf8")).includes("req-1"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a no-Exa subpage request fails closed while ordinary public fetch remains available", async () => {
+  const backend: ProviderCallBackend = async () => { throw new Error("backend should not be called"); };
+  const executor = new ProviderExecutor({ PROVIDER_MODE: "live" }, backend);
+  const result = await executor.executeHeadless({ tool: "web.fetch", arguments: { url: "https://example.test/hub", subpages: 2, subpageTarget: ["release"] } }, { runId: "run-no-exa-subpages", agent: "lead-researcher", sessionId: "session-no-exa-subpages" });
+  assert.equal(result.status, "ERROR");
+  assert.deepEqual(result.sourceRefs, []);
+  assert.deepEqual(result.evidenceEligibleSourceRefs, []);
 });
 
 test("qualification mode removes per-tool numeric provider ceilings", async () => {

@@ -58,15 +58,10 @@ const defaultToolCeilings: Record<ToolName, number> = {
 
 const deepSearchSystemPrompt = `Professional verification research.
 
-Prioritize distinct primary, institutional, employer,
-technical, governance, contemporaneous, and independent
-records.
-
-Prefer original records over summaries and contemporaneous
-records for historical claims. Avoid duplicate, mirrored,
-syndicated, or biography-derived sources where independence
-is requested.
-
+Prefer original institutional, employer, and work records;
+contemporaneous historical records; and independent witnesses.
+Use discovered anchors to reach the underlying record. Avoid
+duplicate, mirrored, syndicated, or biography-derived routes.
 Return materially different evidence routes, not repetitions.`;
 
 const ceilingEnvironmentKeys: Record<ToolName, string> = {
@@ -176,24 +171,95 @@ function preview(value: unknown): string {
   return serialized.length <= maximum ? serialized : `${serialized.slice(0, maximum)}\n[preview truncated; use source.inventory/source.excerpts]`;
 }
 
-function exaContentMetadata(value: unknown, sourceUrl: string): Pick<ProviderArtifactInput, "title" | "date" | "highlight"> {
-  if (!value || typeof value !== "object") return {};
-  const envelope = value as { results?: unknown };
-  const results = Array.isArray(envelope.results) ? envelope.results : [];
-  const candidate = results.find((item) => item && typeof item === "object" && (item as { url?: unknown }).url === sourceUrl)
-    ?? results[0];
-  if (!candidate || typeof candidate !== "object") return {};
-  const result = candidate as { title?: unknown; publishedDate?: unknown; highlights?: unknown };
+type ExaContentResult = {
+  id?: unknown;
+  url?: unknown;
+  title?: unknown;
+  publishedDate?: unknown;
+  author?: unknown;
+  text?: unknown;
+  highlights?: unknown;
+  highlightScores?: unknown;
+  subpages?: unknown;
+};
+
+function extractableContent(result: ExaContentResult): boolean {
+  const text = typeof result.text === "string" && result.text.trim().length > 0;
+  const highlights = typeof result.highlights === "string"
+    ? result.highlights.trim().length > 0
+    : Array.isArray(result.highlights) && result.highlights.some((item) => typeof item === "string" && item.trim().length > 0);
+  return text || highlights;
+}
+
+function projectedExaContent(result: ExaContentResult, sourceUrl: string, provenance: Record<string, unknown>): ProviderArtifactInput | undefined {
+  const url = publicHttpUrl(result.url);
+  if (!url || !extractableContent(result)) return undefined;
+  const content: Record<string, unknown> = {
+    ...(typeof result.id === "string" ? { id: result.id } : {}),
+    url,
+    ...(typeof result.title === "string" ? { title: result.title } : {}),
+    ...(typeof result.publishedDate === "string" ? { publishedDate: result.publishedDate } : {}),
+    ...(typeof result.author === "string" ? { author: result.author } : {}),
+    ...(typeof result.text === "string" ? { text: result.text } : {}),
+    ...(typeof result.highlights === "string" || Array.isArray(result.highlights) ? { highlights: result.highlights } : {}),
+    ...(Array.isArray(result.highlightScores) ? { highlightScores: result.highlightScores } : {}),
+  };
   const highlight = typeof result.highlights === "string"
     ? result.highlights
     : Array.isArray(result.highlights)
       ? result.highlights.filter((item): item is string => typeof item === "string").join("\n")
       : undefined;
   return {
+    kind: "SOURCE_CONTENT",
+    sourceUrl,
     ...(typeof result.title === "string" ? { title: result.title } : {}),
     ...(typeof result.publishedDate === "string" ? { date: result.publishedDate } : {}),
     ...(highlight ? { highlight } : {}),
+    content,
+    provenance,
   };
+}
+
+function exaContentsArtifacts(value: unknown, requestedUrl: string, subpagesRequested: boolean, requestId?: unknown): ProviderArtifactInput[] {
+  if (!value || typeof value !== "object") return [];
+  const envelope = value as { statuses?: unknown; results?: unknown };
+  const statuses = Array.isArray(envelope.statuses) ? envelope.statuses.filter((item): item is { id?: unknown; status?: unknown } => Boolean(item && typeof item === "object")) : [];
+  const results = Array.isArray(envelope.results) ? envelope.results.filter((item): item is ExaContentResult => Boolean(item && typeof item === "object")) : [];
+  const parent = results.find((result) => result.url === requestedUrl || result.id === requestedUrl)
+    ?? results.find((result) => publicHttpUrl(result.url) === requestedUrl);
+  if (!parent) return [];
+  const parentId = typeof parent.id === "string" ? parent.id : undefined;
+  const status = statuses.find((item) => item.status === "success" && ((parentId && item.id === parentId) || item.id === requestedUrl));
+  if (!status) return [];
+  const requestProvenance = {
+    captureMethod: "EXA_CONTENTS_PARENT",
+    requestedUrl,
+    successfulStatusId: status.id,
+    ...(typeof requestId === "string" ? { requestId } : {}),
+  };
+  const artifacts: ProviderArtifactInput[] = [];
+  const parentArtifact = projectedExaContent(parent, publicHttpUrl(parent.url) ?? "", requestProvenance);
+  if (!parentArtifact) return [];
+  artifacts.push(parentArtifact);
+  if (!subpagesRequested || !Array.isArray(parent.subpages)) return artifacts;
+  const seen = new Set([parentArtifact.sourceUrl]);
+  for (const value of parent.subpages) {
+    if (!value || typeof value !== "object") continue;
+    const child = value as ExaContentResult;
+    const childUrl = publicHttpUrl(child.url);
+    if (!childUrl || seen.has(childUrl)) continue;
+    const artifact = projectedExaContent(child, childUrl, {
+      captureMethod: "EXA_CONTENTS_SUBPAGE",
+      requestedUrl,
+      parentUrl: parentArtifact.sourceUrl,
+      successfulStatusId: status.id,
+      ...(typeof requestId === "string" ? { requestId } : {}),
+    });
+    if (!artifact) continue;
+    seen.add(childUrl);
+    artifacts.push(artifact);
+  }
+  return artifacts;
 }
 
 export function unwrapLinkdProfileResponse(value: unknown): Record<string, unknown> | undefined {
@@ -370,7 +436,9 @@ export class ProviderExecutor {
       ...(request.arguments.endPublishedDate ? { endPublishedDate: request.arguments.endPublishedDate } : {}),
       ...(["deep", "deep-reasoning"].includes(request.arguments.mode) ? { systemPrompt: deepSearchSystemPrompt } : {}),
       contents: {
-        highlights: { query: request.arguments.highlightQuery, maxCharacters: 800 },
+        highlights: request.arguments.highlightQuery
+          ? { query: request.arguments.highlightQuery, maxCharacters: 1_200 }
+          : true,
       },
     };
     return this.call(request, context, capability, "exa", "exa.search", body, async (signal, onAttempt) => {
@@ -404,13 +472,22 @@ export class ProviderExecutor {
 
   private webFetch(request: RequestOf<"web.fetch">, context: ProviderExecutionContext, capability: Capability): Promise<ConcreteProviderResult> {
     const url = request.arguments.url;
+    const subpagesRequested = request.arguments.subpages !== undefined || request.arguments.subpageTarget !== undefined;
+    if (subpagesRequested && !this.environment.EXA_API_KEY) throw new Error("web.fetch subpages require configured Exa contents retrieval.");
     const contents = request.arguments.focus
       ? { text: true, highlights: { query: request.arguments.focus, maxCharacters: 2_000 } }
       : { text: true, highlights: true };
     if (this.environment.EXA_API_KEY) {
-      return this.call(request, context, capability, "exa", "exa.contents", { urls: [url], ...contents }, async (signal, onAttempt) => {
-        const data = await apiFetch("https://api.exa.ai/contents", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.environment.EXA_API_KEY! }, body: JSON.stringify({ urls: [url], ...contents }), signal }, onAttempt);
-        return { data, sourceUrl: url, ...this.exaCost(data), artifacts: [{ kind: "SOURCE_CONTENT", sourceUrl: url, ...exaContentMetadata(data, url), content: data, provenance: { captureMethod: "EXA_CONTENTS" } }] };
+      const networkArguments = {
+        urls: [url],
+        ...contents,
+        ...(request.arguments.subpages !== undefined ? { subpages: request.arguments.subpages } : {}),
+        ...(request.arguments.subpageTarget !== undefined ? { subpageTarget: request.arguments.subpageTarget } : {}),
+      };
+      return this.call(request, context, capability, "exa", "exa.contents", networkArguments, async (signal, onAttempt) => {
+        const data = await apiFetch("https://api.exa.ai/contents", { method: "POST", headers: { "content-type": "application/json", "x-api-key": this.environment.EXA_API_KEY! }, body: JSON.stringify(networkArguments), signal }, onAttempt);
+        const requestId = data && typeof data === "object" ? (data as { requestId?: unknown }).requestId : undefined;
+        return { data, sourceUrl: url, ...this.exaCost(data), artifacts: exaContentsArtifacts(data, url, subpagesRequested, requestId) };
       });
     }
     return this.call(request, context, capability, "public-fetch", "public-fetch", { url, ...(request.arguments.focus ? { focus: request.arguments.focus } : {}) }, async (signal) => {
