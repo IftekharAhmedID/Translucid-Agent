@@ -69,7 +69,11 @@ export type SourceExcerptResult = {
 
 type Manifest = z.infer<typeof manifestSchema>;
 type Excerpt = z.infer<typeof excerptLedgerSchema>["excerpts"][number];
-type FlatValue = { path: string; text: string };
+type FlatValue = { path: string; text: string; parentPath: string; order: number };
+
+const excerptStopWords = new Set([
+  "about", "after", "again", "also", "and", "are", "been", "before", "being", "between", "but", "can", "for", "from", "had", "has", "have", "into", "its", "more", "not", "of", "on", "or", "our", "that", "the", "their", "then", "there", "these", "they", "this", "those", "through", "was", "were", "with", "would", "you", "your",
+]);
 
 function publicSource(source: CapturedSource): CapturedSource {
   return {
@@ -125,7 +129,11 @@ async function atomicWrite(path: string, bytes: Uint8Array | string): Promise<vo
 function flatten(value: unknown, path = "", output: FlatValue[] = [], depth = 0): FlatValue[] {
   if (depth > 12 || value === null || value === undefined) return output;
   if (["string", "number", "boolean", "bigint"].includes(typeof value)) {
-    output.push({ path: path || "$", text: String(value) });
+    const leafPath = path || "$";
+    const dot = leafPath.lastIndexOf(".");
+    const bracket = leafPath.lastIndexOf("[");
+    const parentPath = dot >= 0 ? leafPath.slice(0, dot) || "$" : bracket >= 0 ? leafPath.slice(0, bracket) || "$" : "$";
+    output.push({ path: leafPath, text: String(value), parentPath, order: output.length });
     return output;
   }
   if (Array.isArray(value)) {
@@ -141,11 +149,52 @@ function flatten(value: unknown, path = "", output: FlatValue[] = [], depth = 0)
 function boundedWindow(text: string, query: string, maximum: number): { text: string; offsetStart: number; offsetEnd: number } | undefined {
   const index = text.toLocaleLowerCase("en-US").indexOf(query.toLocaleLowerCase("en-US"));
   if (index < 0) return undefined;
-  const before = Math.floor(Math.max(0, maximum - query.length) / 2);
-  const start = Math.max(0, index - before);
+  return boundedRange(text, index, index + query.length, maximum);
+}
+
+function boundedRange(text: string, matchStart: number, matchEnd: number, maximum: number): { text: string; offsetStart: number; offsetEnd: number } {
+  const before = Math.floor(Math.max(0, maximum - (matchEnd - matchStart)) / 2);
+  const start = Math.max(0, matchStart - before);
   const end = Math.min(text.length, start + maximum);
   return { text: text.slice(start, end), offsetStart: start, offsetEnd: end };
 }
+
+function excerptTokens(value: string): string[] {
+  return [...new Set(value.toLocaleLowerCase("en-US").split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 3 && !excerptStopWords.has(token)))];
+}
+
+function tokenPositions(text: string, token: string): number[] {
+  const positions: number[] = [];
+  const lower = text.toLocaleLowerCase("en-US");
+  let offset = 0;
+  while (offset < lower.length) {
+    const index = lower.indexOf(token, offset);
+    if (index < 0) break;
+    positions.push(index);
+    offset = index + token.length;
+  }
+  return positions;
+}
+
+function leafWindow(leaf: FlatValue & { rawOffset: number }, query: string, maximum: number, exact: boolean, anchors: string[]): { text: string; offsetStart: number; offsetEnd: number } | undefined {
+  if (exact) {
+    const exactWindow = boundedWindow(leaf.text, query, maximum);
+    return exactWindow ?? { text: leaf.text.slice(0, maximum), offsetStart: 0, offsetEnd: Math.min(leaf.text.length, maximum) };
+  }
+  const positions = anchors.flatMap((anchor) => tokenPositions(leaf.text, anchor).map((start) => ({ start, end: start + anchor.length })));
+  if (!positions.length) return undefined;
+  const start = Math.min(...positions.map(({ start: value }) => value));
+  const end = Math.max(...positions.map(({ end: value }) => value));
+  return boundedRange(leaf.text, start, end, maximum);
+}
+
+type ExcerptCandidate = {
+  leaf: FlatValue & { rawOffset: number };
+  exact: boolean;
+  coverage: number;
+  span: number;
+  anchors: string[];
+};
 
 function excerptRef(sourceRef: string, path: string, offsetStart: number, offsetEnd: number, text: string): string {
   return `X${createHash("sha256").update([sourceRef, path, offsetStart, offsetEnd, text].join("\0")).digest("hex")}`;
@@ -284,29 +333,91 @@ export class FileSourceStore {
     let matchCount = 0;
     const excerpts: SourceExcerptResult["excerpts"] = [];
     const previousCount = this.excerptIndex.size;
-    const add = (path: string, text: string, offsetStart: number, offsetEnd: number) => {
+    const add = (path: string, text: string, offsetStart: number, offsetEnd: number, budget: number) => {
       if (!text || remaining <= 0 || excerpts.some((item) => item.path === path && item.text === text)) return;
-      const bounded = text.slice(0, Math.min(remaining, 1_000));
+      const bounded = text.slice(0, Math.min(remaining, budget, 1_000));
       const item = { ref: excerptRef(source.ref, path, offsetStart, offsetStart + bounded.length, bounded), sourceRef: source.ref, path, offsetStart, offsetEnd: offsetStart + bounded.length, text: bounded };
       this.excerptIndex.set(item.ref, item);
       excerpts.push({ ref: item.ref, path: item.path, offsetStart: item.offsetStart, offsetEnd: item.offsetEnd, text: item.text });
       remaining -= bounded.length;
     };
     if (source.mimeType.includes("json")) {
+      const parsedLeaves = flatten(JSON.parse(raw));
+      let rawCursor = 0;
+      const leaves = parsedLeaves.map((leaf) => {
+        const rawOffset = raw.indexOf(leaf.text, rawCursor);
+        if (rawOffset >= 0) rawCursor = rawOffset + leaf.text.length;
+        return { ...leaf, rawOffset: rawOffset >= 0 ? rawOffset : Math.max(0, raw.indexOf(leaf.text)) };
+      });
+      const sourceTokenCounts = new Map<string, number>();
+      for (const leaf of leaves) {
+        for (const token of excerptTokens(leaf.text)) sourceTokenCounts.set(token, (sourceTokenCounts.get(token) ?? 0) + 1);
+      }
+      const groups = new Map<string, typeof leaves>();
+      for (const leaf of leaves) groups.set(leaf.parentPath, [...(groups.get(leaf.parentPath) ?? []), leaf]);
+      const queryBudget = Math.max(1, Math.floor(maximum / input.queries.length));
       for (const query of input.queries) {
-        for (const leaf of flatten(JSON.parse(raw))) {
-          if (!`${leaf.path}\n${leaf.text}`.toLocaleLowerCase("en-US").includes(query.toLocaleLowerCase("en-US"))) continue;
-          matchCount += 1;
-          const offsetStart = Math.max(0, raw.indexOf(leaf.text));
-          add(leaf.path, leaf.text, offsetStart, offsetStart + leaf.text.length);
+        const queryLower = query.toLocaleLowerCase("en-US");
+        const exactCandidates: ExcerptCandidate[] = [];
+        for (const leaf of leaves) {
+          const exactInText = leaf.text.toLocaleLowerCase("en-US").includes(queryLower);
+          const exactInPath = leaf.path.toLocaleLowerCase("en-US").includes(queryLower);
+          if (!exactInText && !exactInPath) continue;
+          const anchors = excerptTokens(query).filter((token) => excerptTokens(leaf.text).includes(token));
+          const positions = exactInText ? boundedWindow(leaf.text, query, Math.max(1, queryBudget)) : undefined;
+          exactCandidates.push({ leaf, exact: true, coverage: anchors.length, span: positions?.text.length ?? leaf.text.length, anchors });
+        }
+        let candidates = exactCandidates;
+        if (!candidates.length) {
+          const present = excerptTokens(query)
+            .filter((token) => sourceTokenCounts.has(token))
+            .sort((left, right) => (sourceTokenCounts.get(left)! - sourceTokenCounts.get(right)!) || left.localeCompare(right))
+            .slice(0, 3);
+          if (present.length < 2) continue;
+          const anchorSet = new Set(present);
+          const fallbackCandidates: ExcerptCandidate[] = [];
+          for (const leaf of leaves) {
+            const leafTokens = new Set(excerptTokens(leaf.text));
+            const coverage = present.filter((token) => leafTokens.has(token)).length;
+            if (coverage === present.length) fallbackCandidates.push({ leaf, exact: false, coverage, span: leaf.text.length, anchors: present });
+          }
+          for (const group of groups.values()) {
+            const groupTokens = new Set(group.flatMap((leaf) => excerptTokens(leaf.text)));
+            if (!present.every((token) => groupTokens.has(token))) continue;
+            for (const leaf of group) {
+              const coverage = present.filter((token) => excerptTokens(leaf.text).includes(token)).length;
+              if (coverage > 0) fallbackCandidates.push({ leaf, exact: false, coverage, span: group.reduce((total, item) => total + item.text.length, 0), anchors: present });
+            }
+          }
+          candidates = fallbackCandidates;
+        }
+        candidates.sort((left, right) => Number(right.exact) - Number(left.exact)
+          || right.coverage - left.coverage
+          || left.span - right.span
+          || left.leaf.path.localeCompare(right.leaf.path)
+          || left.leaf.order - right.leaf.order);
+        const selected: ExcerptCandidate[] = [];
+        for (const candidate of candidates) {
+          if (selected.some((item) => item.leaf.path === candidate.leaf.path)) continue;
+          selected.push(candidate);
+          if (selected.length === 3) break;
+        }
+        if (!selected.length) continue;
+        matchCount += selected.length;
+        const perWindowBudget = Math.max(1, Math.floor(queryBudget / selected.length));
+        for (const candidate of selected) {
+          const window = leafWindow(candidate.leaf, query, Math.min(1_000, perWindowBudget), candidate.exact, candidate.anchors);
+          if (!window) continue;
+          add(candidate.leaf.path, window.text, candidate.leaf.rawOffset + window.offsetStart, candidate.leaf.rawOffset + window.offsetEnd, perWindowBudget);
         }
       }
     } else {
+      const queryBudget = Math.max(1, Math.floor(maximum / input.queries.length));
       for (const query of input.queries) {
-        const window = boundedWindow(raw, query, Math.min(1_000, remaining));
+        const window = boundedWindow(raw, query, Math.min(1_000, queryBudget, remaining));
         if (!window) continue;
         matchCount += 1;
-        add("$", window.text, window.offsetStart, window.offsetEnd);
+        add("$", window.text, window.offsetStart, window.offsetEnd, queryBudget);
       }
     }
     if (this.excerptIndex.size !== previousCount) await this.persistExcerpts();

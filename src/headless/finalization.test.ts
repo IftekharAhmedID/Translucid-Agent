@@ -98,7 +98,11 @@ test("host finalization writes every frozen claim from local excerpts before set
       sourceUrl: "https://example.test/synthetic",
       title: "Synthetic record",
       mimeType: "text/plain",
-      content: "Synthetic Candidate held each listed role at Acme Synthetic Labs.",
+      content: {
+        records: Array.from({ length: 6 }, (_, index) => ({
+          evidence: `${"unrelated prefix ".repeat(160)} Synthetic role ${index + 1}`,
+        })),
+      },
       provenance: {},
     });
     const researchState = await ResearchStateStore.open(root, sourceStore);
@@ -148,7 +152,9 @@ test("host finalization writes every frozen claim from local excerpts before set
     assert.equal(progress.state, "READY");
     assert.deepEqual(progress.findings.map(({ findingId }) => findingId).sort(), claims.map(({ id }) => id));
     assert.match(prompts[0]!, /localExcerpts/);
-    assert.equal(prompts.filter((prompt) => /"findings"/.test(prompt)).length, 2);
+    const publicationPrompts = prompts.filter((prompt) => /"findings"/.test(prompt));
+    assert.equal(publicationPrompts.length, 2);
+    for (const claim of claims) assert.ok(publicationPrompts.some((prompt) => prompt.includes(`Synthetic role ${Number(claim.id.slice(1))}`)));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

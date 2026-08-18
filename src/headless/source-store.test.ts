@@ -52,6 +52,42 @@ test("returns bounded JSON and text excerpts from captured local material", asyn
   }
 });
 
+test("centers a JSON excerpt on a late exact match instead of returning the leaf prefix", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-source-late-json-"));
+  try {
+    const store = await FileSourceStore.open(directory);
+    await store.capture({ kind: "SOURCE_CONTENT", provider: "fixture", providerRoute: "fixture.record", sourceUrl: "https://example.test/late", mimeType: "application/json", content: { biography: `${"prefix ".repeat(900)}Principal Software Engineer at Arm` }, provenance: {} });
+    const result = await store.excerpts({ sourceRef: "S1", queries: ["Principal Software Engineer at Arm"] });
+    assert.equal(result.excerpts.length, 1);
+    assert.match(result.excerpts[0]!.text, /Principal Software Engineer at Arm/);
+    assert.ok(result.excerpts[0]!.offsetStart > 5_000);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("prefers an exact phrase and reuses sibling JSON leaves for lexical recall", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-source-ranking-"));
+  try {
+    const store = await FileSourceStore.open(directory);
+    await store.capture({ kind: "SOURCE_CONTENT", provider: "fixture", providerRoute: "fixture.record", sourceUrl: "https://example.test/ranking", mimeType: "application/json", content: {
+      exact: "Principal Software Engineer at Arm",
+      near: "Principal engineer worked with Arm",
+    }, provenance: {} });
+    await store.capture({ kind: "SOURCE_CONTENT", provider: "fixture", providerRoute: "fixture.record", sourceUrl: "https://example.test/siblings", mimeType: "application/json", content: { role: { title: "Principal Software Engineer", company: "Arm" } }, provenance: {} });
+    const exact = await store.excerpts({ sourceRef: "S1", queries: ["Principal Software Engineer at Arm"] });
+    assert.equal(exact.excerpts[0]?.path, "exact");
+    const sibling = await store.excerpts({ sourceRef: "S2", queries: ["Principal Software Engineer from Arm"] });
+    assert.deepEqual(new Set(sibling.excerpts.map(({ path }) => path)), new Set(["role.title", "role.company"]));
+    const generic = await store.excerpts({ sourceRef: "S2", queries: ["generic engineer"] });
+    assert.deepEqual(generic.excerpts, []);
+    const reopened = await FileSourceStore.open(directory);
+    assert.deepEqual(await reopened.excerpts({ sourceRef: "S2", queries: ["Principal Software Engineer from Arm"] }), sibling);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("keeps persisted excerpts within the durable ledger bound", async () => {
   const directory = await mkdtemp(join(tmpdir(), "translucid-source-long-excerpt-"));
   try {
