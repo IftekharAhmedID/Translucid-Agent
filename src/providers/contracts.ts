@@ -106,6 +106,10 @@ function searchRouteErrors(value: SearchRoute): Array<{ path: string[]; message:
   if (value.additionalQueries?.some((query) => normalizedSearchQuery(query) === normalizedSearchQuery(value.query))) {
     errors.push({ path: ["additionalQueries"], message: "additionalQueries cannot duplicate the primary query." });
   }
+  if (value.additionalQueries) {
+    const normalized = value.additionalQueries.map(normalizedSearchQuery);
+    if (new Set(normalized).size !== normalized.length) errors.push({ path: ["additionalQueries"], message: "additionalQueries must be distinct." });
+  }
   if (value.deepFocus && !["deep", "deep-reasoning"].includes(value.mode)) {
     errors.push({ path: ["deepFocus"], message: "deepFocus requires deep or deep-reasoning mode." });
   }

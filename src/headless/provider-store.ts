@@ -19,6 +19,10 @@ export type ProviderActivityEvent = {
   provider: string;
   providerRoute: string;
   semanticTool: string;
+  toolCallId?: string;
+  startedAt: string;
+  endedAt?: string;
+  outcome?: "OK" | "ERROR";
   startedMono: number;
   endedMono?: number;
   elapsedMs?: number;
@@ -26,7 +30,14 @@ export type ProviderActivityEvent = {
   batchIndex?: number;
 };
 
-export function summarizeProviderIntervals(events: ProviderActivityEvent[]): { requestCount: number; totalElapsedMs: number; maxConcurrent: number; unionElapsedMs: number } {
+export function summarizeProviderIntervals(events: ProviderActivityEvent[]): {
+  requestCount: number;
+  exaRequestCount: number;
+  totalElapsedMs: number;
+  maxConcurrent: number;
+  unionElapsedMs: number;
+  batchOutcomes: Array<{ batchId: string; itemCount: number; completed: number; failed: number }>;
+} {
   const intervals = events.filter((event): event is ProviderActivityEvent & { endedMono: number; elapsedMs: number } => event.kind === "provider-end" && event.endedMono !== undefined && event.elapsedMs !== undefined)
     .map((event) => ({ start: event.endedMono - event.elapsedMs, end: event.endedMono }))
     .sort((left, right) => left.start - right.start || left.end - right.end);
@@ -46,7 +57,16 @@ export function summarizeProviderIntervals(events: ProviderActivityEvent[]): { r
     else unionEnd = Math.max(unionEnd!, interval.end);
   }
   if (unionStart !== undefined) unionElapsedMs += unionEnd! - unionStart;
-  return { requestCount: intervals.length, totalElapsedMs: intervals.reduce((sum, interval) => sum + interval.end - interval.start, 0), maxConcurrent, unionElapsedMs: Math.max(0, Math.round(unionElapsedMs)) };
+  const exaRequestCount = events.filter((event) => event.kind === "provider-end" && event.provider === "exa").length;
+  const batchEvents = new Map<string, ProviderActivityEvent[]>();
+  for (const event of events) if (event.kind === "provider-end" && event.batchId) (batchEvents.get(event.batchId) ?? (batchEvents.set(event.batchId, []), batchEvents.get(event.batchId)!)).push(event);
+  const batchOutcomes = [...batchEvents.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([batchId, batch]) => ({
+    batchId,
+    itemCount: new Set(batch.map(({ batchIndex }) => batchIndex).filter((index): index is number => index !== undefined)).size,
+    completed: batch.filter(({ outcome }) => outcome === "OK").length,
+    failed: batch.filter(({ outcome }) => outcome === "ERROR").length,
+  }));
+  return { requestCount: intervals.length, exaRequestCount, totalElapsedMs: intervals.reduce((sum, interval) => sum + interval.end - interval.start, 0), maxConcurrent, unionElapsedMs: Math.max(0, Math.round(unionElapsedMs)), batchOutcomes };
 }
 
 function errorStatus(error: unknown): string {
@@ -105,13 +125,16 @@ export function createFileProviderBackend(options: Options): ProviderCallBackend
         ? new AbortController().signal
         : AbortSignal.timeout(providerDeadlineMs(input.providerRoute, options.deadlineAt));
       const startedMono = performance.now();
-      options.onProviderActivity?.({ kind: "provider-start", provider: input.provider, providerRoute: input.providerRoute, semanticTool: input.semanticTool, startedMono, ...(input.context.batchId ? { batchId: input.context.batchId } : {}), ...(input.context.batchIndex !== undefined ? { batchIndex: input.context.batchIndex } : {}) });
+      const startedAt = new Date().toISOString();
+      options.onProviderActivity?.({ kind: "provider-start", provider: input.provider, providerRoute: input.providerRoute, semanticTool: input.semanticTool, startedAt, startedMono, ...(input.context.toolCallId ? { toolCallId: input.context.toolCallId } : {}), ...(input.context.batchId ? { batchId: input.context.batchId } : {}), ...(input.context.batchIndex !== undefined ? { batchIndex: input.context.batchIndex } : {}) });
       let result: Awaited<ReturnType<ProviderCallInput["run"]>>;
+      let outcome: "OK" | "ERROR" = "ERROR";
       try {
         result = await input.run(signal, () => undefined);
+        outcome = "OK";
       } finally {
         const endedMono = performance.now();
-        options.onProviderActivity?.({ kind: "provider-end", provider: input.provider, providerRoute: input.providerRoute, semanticTool: input.semanticTool, startedMono, endedMono, elapsedMs: Math.max(0, Math.round(endedMono - startedMono)), ...(input.context.batchId ? { batchId: input.context.batchId } : {}), ...(input.context.batchIndex !== undefined ? { batchIndex: input.context.batchIndex } : {}) });
+        options.onProviderActivity?.({ kind: "provider-end", provider: input.provider, providerRoute: input.providerRoute, semanticTool: input.semanticTool, startedAt, endedAt: new Date().toISOString(), outcome, startedMono, endedMono, elapsedMs: Math.max(0, Math.round(endedMono - startedMono)), ...(input.context.toolCallId ? { toolCallId: input.context.toolCallId } : {}), ...(input.context.batchId ? { batchId: input.context.batchId } : {}), ...(input.context.batchIndex !== undefined ? { batchIndex: input.context.batchIndex } : {}) });
       }
       if (result.costUsd > reserved) await options.budget.recordProvider(result.costUsd - reserved);
       const artifactInputs = result.artifacts ?? [{

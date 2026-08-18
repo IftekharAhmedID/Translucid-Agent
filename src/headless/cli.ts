@@ -169,7 +169,21 @@ async function main(): Promise<void> {
       ...(researchCutoff ? { deadlineAt: researchCutoff.getTime() } : {}),
       onProviderActivity: (event) => {
         providerIntervals.push(event);
-        void timeline?.record({ kind: `provider.${event.kind}`, provider: event.provider, name: event.providerRoute, ...(event.batchId ? { batchId: event.batchId } : {}), ...(event.batchIndex !== undefined ? { batchIndex: event.batchIndex } : {}), ...(event.elapsedMs !== undefined ? { elapsedProviderMs: event.elapsedMs } : {}) });
+        void timeline?.record({
+          kind: `provider.${event.kind}`,
+          provider: event.provider,
+          name: event.providerRoute,
+          semanticTool: event.semanticTool,
+          ...(event.toolCallId ? { toolCallId: event.toolCallId } : {}),
+          ...(event.startedAt ? { providerStartedAt: event.startedAt } : {}),
+          ...(event.endedAt ? { providerEndedAt: event.endedAt } : {}),
+          ...(event.outcome ? { providerOutcome: event.outcome } : {}),
+          ...(event.startedMono !== undefined ? { providerStartedMono: event.startedMono } : {}),
+          ...(event.endedMono !== undefined ? { providerEndedMono: event.endedMono } : {}),
+          ...(event.batchId ? { batchId: event.batchId } : {}),
+          ...(event.batchIndex !== undefined ? { batchIndex: event.batchIndex } : {}),
+          ...(event.elapsedMs !== undefined ? { elapsedProviderMs: event.elapsedMs } : {}),
+        });
       },
     }));
     const researchProvider = process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";

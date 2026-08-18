@@ -297,6 +297,7 @@ export function createHeadlessGateway(input: GatewayInput) {
             runId: input.runId,
             agent: typeof operational.agent === "string" ? operational.agent : "unknown-agent",
             sessionId: typeof operational.sessionId === "string" ? operational.sessionId : "unknown-session",
+            ...(typeof operational.callId === "string" ? { toolCallId: operational.callId } : {}),
             ...(resolvedDiscoveryRef ? { resolvedDiscoveryRef } : {}),
           });
           return json(response, 200, {

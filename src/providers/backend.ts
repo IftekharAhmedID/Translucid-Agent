@@ -6,6 +6,7 @@ export type ProviderExecutionContext = {
   agent: string;
   sessionId: string;
   investigationId?: string;
+  toolCallId?: string;
   resolvedDiscoveryRef?: string;
   batchId?: string;
   batchIndex?: number;

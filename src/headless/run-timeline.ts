@@ -8,6 +8,13 @@ export type RunTimelineEvent = {
   name?: string;
   model?: string;
   provider?: string;
+  semanticTool?: string;
+  toolCallId?: string;
+  providerStartedAt?: string;
+  providerEndedAt?: string;
+  providerOutcome?: "OK" | "ERROR";
+  providerStartedMono?: number;
+  providerEndedMono?: number;
   batchId?: string;
   batchIndex?: number;
   elapsedProviderMs?: number;

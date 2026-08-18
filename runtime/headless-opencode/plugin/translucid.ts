@@ -95,6 +95,10 @@ function validateSearchRoute(value: unknown): void {
   if (candidate.additionalQueries && !["deep", "deep-reasoning"].includes(candidate.mode ?? "auto")) throw new Error("additionalQueries require deep or deep-reasoning mode.");
   if (candidate.deepFocus && !["deep", "deep-reasoning"].includes(candidate.mode ?? "auto")) throw new Error("deepFocus requires deep or deep-reasoning mode.");
   if (candidate.additionalQueries?.some((query) => query.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US") === candidate.query.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US"))) throw new Error("additionalQueries cannot duplicate the primary query.");
+  if (candidate.additionalQueries) {
+    const normalized = candidate.additionalQueries.map((query) => query.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US"));
+    if (new Set(normalized).size !== normalized.length) throw new Error("additionalQueries must be distinct.");
+  }
   if (candidate.category === "people" && (candidate.includeDomains || candidate.excludeDomains || candidate.startPublishedDate || candidate.endPublishedDate)) throw new Error("People search does not accept domain or date filters.");
   if (candidate.category === "company" && (candidate.includeDomains || candidate.excludeDomains || candidate.startPublishedDate || candidate.endPublishedDate)) throw new Error("Company search does not accept domain or date filters.");
   if (candidate.livecrawlTimeout !== undefined && (candidate.maxAgeHours === undefined || candidate.maxAgeHours < 0)) throw new Error("livecrawlTimeout requires a non-negative maxAgeHours.");

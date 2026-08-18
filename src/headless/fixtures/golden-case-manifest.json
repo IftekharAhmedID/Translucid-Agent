@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "status": "FIXTURES_ONLY",
+  "liveLaunchAuthorized": false,
+  "cases": [
+    "strong-open-source-engineer",
+    "sparse-public-footprint-engineer",
+    "common-name-identity-ambiguity",
+    "academia-research-heavy",
+    "long-career",
+    "weak-institutional-startup-history",
+    "intentionally-inflated-claim",
+    "no-usable-linkedin"
+  ],
+  "requirements": {
+    "inputDocument": "authorized-input-document-required",
+    "publicEvidenceExpectation": "required",
+    "executionApproval": "separate-explicit-approval-required"
+  }
+}

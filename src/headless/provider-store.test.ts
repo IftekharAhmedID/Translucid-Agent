@@ -108,9 +108,9 @@ test("does not disclose a provider result when durable source capture fails", as
 
 test("summarizes overlapping provider intervals independently of completion order", () => {
   assert.deepEqual(summarizeProviderIntervals([
-    { kind: "provider-start", provider: "exa", providerRoute: "exa.search", semanticTool: "web.search", startedMono: 0, batchId: "b", batchIndex: 0 },
-    { kind: "provider-start", provider: "exa", providerRoute: "exa.search", semanticTool: "web.search", startedMono: 5, batchId: "b", batchIndex: 1 },
-    { kind: "provider-end", provider: "exa", providerRoute: "exa.search", semanticTool: "web.search", startedMono: 5, endedMono: 15, elapsedMs: 10, batchId: "b", batchIndex: 1 },
-    { kind: "provider-end", provider: "exa", providerRoute: "exa.search", semanticTool: "web.search", startedMono: 0, endedMono: 20, elapsedMs: 20, batchId: "b", batchIndex: 0 },
-  ]), { requestCount: 2, totalElapsedMs: 30, maxConcurrent: 2, unionElapsedMs: 20 });
+    { kind: "provider-start", provider: "exa", providerRoute: "exa.search", semanticTool: "web.search", startedAt: "2026-01-01T00:00:00.000Z", startedMono: 0, toolCallId: "call-1", batchId: "b", batchIndex: 0 },
+    { kind: "provider-start", provider: "exa", providerRoute: "exa.search", semanticTool: "web.search", startedAt: "2026-01-01T00:00:00.005Z", startedMono: 5, toolCallId: "call-1", batchId: "b", batchIndex: 1 },
+    { kind: "provider-end", provider: "exa", providerRoute: "exa.search", semanticTool: "web.search", startedAt: "2026-01-01T00:00:00.005Z", endedAt: "2026-01-01T00:00:00.015Z", startedMono: 5, endedMono: 15, elapsedMs: 10, toolCallId: "call-1", batchId: "b", batchIndex: 1 },
+    { kind: "provider-end", provider: "exa", providerRoute: "exa.search", semanticTool: "web.search", startedAt: "2026-01-01T00:00:00.000Z", endedAt: "2026-01-01T00:00:00.020Z", startedMono: 0, endedMono: 20, elapsedMs: 20, toolCallId: "call-1", batchId: "b", batchIndex: 0 },
+  ]), { requestCount: 2, exaRequestCount: 2, totalElapsedMs: 30, maxConcurrent: 2, unionElapsedMs: 20, batchOutcomes: [{ batchId: "b", itemCount: 2, completed: 0, failed: 0 }] });
 });
