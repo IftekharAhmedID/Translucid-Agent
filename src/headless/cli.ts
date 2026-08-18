@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { type ChildProcess } from "node:child_process";
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -17,7 +17,7 @@ import { createHeadlessGateway } from "./gateway.ts";
 import { createFileProviderBackend } from "./provider-store.ts";
 import { leanReportResultSchema, ReportStore } from "./report-store.ts";
 import { ResearchStateStore, researchSnapshotSha256, verifyResearchSnapshot, writeResearchSnapshot } from "./research-state.ts";
-import { renderLeanReport, verifyInvestigationReport } from "./report.ts";
+import { renderAuditReport, renderRecruiterReport, verifyInvestigationReport } from "./report.ts";
 import { createRunWorkspace, removeRunDiagnostics, sealRunFailure, type RunWorkspace } from "./run-workspace.ts";
 import { attachOpenCodeTui } from "./visible-tui.ts";
 import { resolveResearchModel } from "./model-registry.ts";
@@ -80,6 +80,7 @@ async function main(): Promise<void> {
   let watchProcess: ChildProcess | undefined;
   let attachPath: string | undefined;
   let reportTemporaryPath: string | undefined;
+  let auditTemporaryPath: string | undefined;
   let timeline: RunTimeline | undefined;
   let preflightPath: string | undefined;
   const abort = new AbortController();
@@ -263,11 +264,19 @@ async function main(): Promise<void> {
     }
     const resultPath = join(workspace.root, "result.json");
     const reportPath = join(workspace.root, "report.pdf");
+    const auditPath = join(workspace.root, "audit.pdf");
     reportTemporaryPath = `${reportPath}.tmp`;
+    auditTemporaryPath = `${auditPath}.tmp`;
     await rm(reportTemporaryPath, { force: true });
-    await atomicWrite(reportTemporaryPath, await renderLeanReport(output.result));
-    await verifyInvestigationReport(await readFile(reportTemporaryPath));
-    await timeline?.record({ kind: "publication.pdf.verified", status: "OK" });
+    await rm(auditTemporaryPath, { force: true });
+    const reportBytes = await renderRecruiterReport(output.result);
+    const auditBytes = await renderAuditReport(output.result);
+    await atomicWrite(reportTemporaryPath, reportBytes);
+    await atomicWrite(auditTemporaryPath, auditBytes);
+    const reportVerification = await verifyInvestigationReport(reportBytes);
+    const auditVerification = await verifyInvestigationReport(auditBytes);
+    await timeline?.record({ kind: "publication.report.pdf.verified", status: "OK" });
+    await timeline?.record({ kind: "publication.audit.pdf.verified", status: "OK" });
     await runtime.stop(handle);
     handle = undefined;
     await mkdir(join(workspace.root, "provenance"), { recursive: true });
@@ -314,19 +323,25 @@ async function main(): Promise<void> {
       timeline: "provenance/run-timeline.jsonl",
       sourceRefs: citedSourceRefs,
       coverage: { eligibleUrlCount: eligibleUrls.length, citedUrlCount: citedUrls.length, uncitedEligibleUrls },
+      artifacts: {
+        report: { path: "report.pdf", sha256: createHash("sha256").update(reportBytes).digest("hex"), pageCount: reportVerification.pageCount, verified: true },
+        audit: { path: "audit.pdf", sha256: createHash("sha256").update(auditBytes).digest("hex"), pageCount: auditVerification.pageCount, verified: true },
+      },
     }, null, 2)}\n`);
+    await rename(auditTemporaryPath, auditPath);
+    auditTemporaryPath = undefined;
     await rename(reportTemporaryPath, reportPath);
     reportTemporaryPath = undefined;
     await reportStore.markPublished();
     if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
     await atomicWrite(resultPath, `${JSON.stringify(output.result, null, 2)}\n`);
     const writtenResult = leanReportResultSchema.parse(JSON.parse(await readFile(resultPath, "utf8")));
-    const pdfMtime = (await stat(reportPath)).mtimeMs;
+    const pdfMtime = Math.max((await stat(reportPath)).mtimeMs, (await stat(auditPath)).mtimeMs);
     const resultMtime = (await stat(resultPath)).mtimeMs;
     if (writtenResult.schemaVersion !== 4 || writtenResult.researchSnapshotSha256 !== actualSnapshotSha256 || resultMtime < pdfMtime) throw new Error("Published result failed final digest or ordering validation.");
     await timeline?.record({ kind: "publication.result.written", status: "OK" });
     await timeline?.flush();
-    process.stdout.write(`${JSON.stringify({ runId, result: resultPath, report: reportPath, sources: join(workspace.root, "sources") }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ runId, result: resultPath, report: reportPath, audit: auditPath, sources: join(workspace.root, "sources") }, null, 2)}\n`);
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error("Unknown headless investigation failure.");
     if (workspace) {

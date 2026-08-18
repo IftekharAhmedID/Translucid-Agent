@@ -380,7 +380,7 @@ export class ReportStore {
         const evidenceEntries = finding.evidence.map(({ sourceRef, relation, comment }) => ({ sourceRef, relation, comment }));
         const evidence = evidenceEntries.map(({ sourceRef, relation, comment }) => `${relation} — ${comment} [${sourceRef}]`).join("\n") || "No eligible source evidence was captured.";
         if (evidence.length > 12_000) throw new ReportStoreError("EVIDENCE_TOO_LARGE", "Finding " + target.id + " evidence comments exceed the report limit.", "evidence");
-        const sourceRefs = [...new Set(finding.evidence.map(({ sourceRef }) => sourceRef))].sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
+        const sourceRefs = [...new Set(finding.evidence.map(({ sourceRef }) => sourceRef))];
         const sources = sourceRefs.map((sourceRef) => {
           const source = sourcesByRef.get(sourceRef);
           if (!source) throw new ReportStoreError("UNKNOWN_SOURCE", "Source reference " + sourceRef + " does not exist in this run.", "sourceRefs");

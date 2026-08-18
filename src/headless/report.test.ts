@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
-import { renderLeanReport, verifyInvestigationReport } from "./report.ts";
+import { pdfDisplayText, renderAuditReport, renderLeanReport, renderRecruiterReport, verifyInvestigationReport } from "./report.ts";
 import { leanReportResultSchema, type LeanReportResult } from "./report-store.ts";
 
 const result: LeanReportResult = {
@@ -19,7 +19,7 @@ const result: LeanReportResult = {
 test("renders deterministic lean findings in résumé order", async () => {
   const first = await renderLeanReport(result);
   assert.deepEqual(await renderLeanReport(structuredClone(result)), first);
-  await assert.doesNotReject(() => verifyInvestigationReport(first));
+  assert.deepEqual(await verifyInvestigationReport(first), { pageCount: 1 });
   const pdf = await getDocument({ data: new Uint8Array(first), disableFontFace: true, useSystemFonts: false }).promise;
   const pages: string[] = [];
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
@@ -68,11 +68,53 @@ test("renders enriched v4 conclusions, relation labels, analysis, and discovered
   const text = (await Promise.all(Array.from({ length: pdf.numPages }, async (_, index) => (await (await pdf.getPage(index + 1)).getTextContent()).items.flatMap((item) => "str" in item ? [item.str] : []).join(" ")))).join("\n");
   assert.match(text, /Finding/);
   assert.match(text, /Leadership is unresolved/);
-  assert.match(text, /CONTEXT — The authored commit establishes contribution, not ownership/);
+  assert.match(text, /CONTEXT - The authored commit establishes contribution, not ownership/);
   assert.match(text, /An independent ownership record is still needed/);
   assert.match(text, /Additional independently established findings/);
   assert.match(text, /-1: Conflicting evidence/);
   assert.match(text, /2: Established/);
+});
+
+test("recruiter and audit views are deterministic, bounded, and preserve edge order", async () => {
+  const v4: LeanReportResult = {
+    schemaVersion: 4,
+    run: { id: "run-views", status: "COMPLETED", runtime: "LOCAL", startedAt: "2026-08-14T12:00:00.000Z", completedAt: "2026-08-14T12:10:00.000Z", inputSha256: "b".repeat(64), model: "deepseek-v4-pro" },
+    researchSnapshotSha256: "c".repeat(64),
+    summary: "The claim is partially established.",
+    summaryResearchClaimIds: ["claim"],
+    findings: [{
+      findingId: "claim", order: 1, section: "Career", claim: "Claim", predicate: "Predicate", conclusion: "Conclusion",
+      anchor: { kind: "DISCOVERED", basis: "Material independent record." },
+      evidence: "SUPPORTS - First edge [S1]",
+      evidenceEntries: [
+        { sourceRef: "S1", relation: "SUPPORTS", comment: "First edge." },
+        { sourceRef: "S2", relation: "CONTEXT", comment: "Second edge." },
+        { sourceRef: "S3", relation: "CONTRADICTS", comment: "Third edge." },
+        { sourceRef: "S4", relation: "CONTEXT", comment: "Fourth edge." },
+        { sourceRef: "S5", relation: "SUPPORTS", comment: "Fifth edge." },
+      ],
+      rationale: "The first record supports the predicate but the contradiction remains.", remainingGap: "An independent resolution is needed.", status: 1,
+      researchClaimIds: ["claim"], sources: [1, 2, 3, 4, 5].map((number) => ({ sourceRef: `S${number}`, title: `Source ${number}`, url: `https://example.test/${number}` })),
+    }],
+  } as LeanReportResult;
+  const recruiter = await renderRecruiterReport(v4);
+  const audit = await renderAuditReport(v4);
+  assert.deepEqual(recruiter, await renderRecruiterReport(structuredClone(v4)));
+  const recruiterPdf = await getDocument({ data: new Uint8Array(recruiter), disableFontFace: true, useSystemFonts: false }).promise;
+  const auditPdf = await getDocument({ data: new Uint8Array(audit), disableFontFace: true, useSystemFonts: false }).promise;
+  const extract = async (pdf: any) => (await Promise.all(Array.from({ length: pdf.numPages }, async (_, index) => (await (await pdf.getPage(index + 1)).getTextContent()).items.flatMap((item: any) => "str" in item ? [item.str] : []).join(" ")))).join("\n");
+  const recruiterText = await extract(recruiterPdf);
+  const auditText = await extract(auditPdf);
+  assert.doesNotMatch(recruiterText, /example\.test\/5/);
+  assert.match(auditText, /example\.test\/5/);
+  assert.ok(auditText.indexOf("First edge") < auditText.indexOf("Second edge") && auditText.indexOf("Second edge") < auditText.indexOf("Third edge"));
+  assert.ok((await verifyInvestigationReport(recruiter)).pageCount <= 6);
+  assert.ok((await verifyInvestigationReport(audit)).pageCount >= 1);
+});
+
+test("PDF display text keeps WinAnsi accents and deterministically transliterates unsupported glyphs", () => {
+  assert.equal(pdfDisplayText("Łukasz Langa — “café”… →"), "Lukasz Langa - \"café\"... ->");
+  assert.equal(pdfDisplayText("München, naïve, résumé"), "München, naïve, résumé");
 });
 
 test("rejects malformed report bytes before publication", async () => {

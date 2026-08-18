@@ -214,11 +214,11 @@ test("successful cleanup preserves durable work artifacts and removes disposable
     }
     for (const path of ["INSTRUCTIONS.md", "opencode.json", "runtime-manifest.json"]) await writeFile(join(directory, path), "temporary");
     for (const path of ["input", "sources"]) await mkdir(join(directory, path));
-    for (const path of ["result.json", "report.pdf"]) await writeFile(join(directory, path), "authoritative");
+    for (const path of ["result.json", "report.pdf", "audit.pdf"]) await writeFile(join(directory, path), "authoritative");
 
     await removeRunDiagnostics(directory);
 
-    assert.deepEqual((await import("node:fs/promises").then(({ readdir }) => readdir(directory))).sort(), [".work", "input", "report.pdf", "result.json", "sources"]);
+    assert.deepEqual((await import("node:fs/promises").then(({ readdir }) => readdir(directory))).sort(), [".work", "audit.pdf", "input", "report.pdf", "result.json", "sources"]);
     assert.equal(await readFile(join(directory, ".work", "diagnostic"), "utf8"), "temporary");
   } finally {
     await rm(directory, { recursive: true, force: true });
