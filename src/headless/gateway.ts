@@ -69,6 +69,14 @@ export function sanitizeReasoningEffort(value: unknown): string | null {
   return ["low", "medium", "high", "max", "xhigh"].includes(normalized) ? normalized : null;
 }
 
+export function extractObservedReasoningEffort(body: Record<string, unknown>): string | null {
+  const reasoning = body.reasoning;
+  const nestedEffort = reasoning && typeof reasoning === "object" && !Array.isArray(reasoning)
+    ? (reasoning as Record<string, unknown>).effort
+    : undefined;
+  return sanitizeReasoningEffort(body.reasoning_effort ?? body.reasoningEffort ?? nestedEffort);
+}
+
 export function createHeadlessGateway(input: GatewayInput) {
   const token = randomBytes(32).toString("base64url");
   const tokenDigest = digest(token);
@@ -332,7 +340,7 @@ export function createHeadlessGateway(input: GatewayInput) {
         const agent = typeof request.headers["x-opencode-agent"] === "string" ? request.headers["x-opencode-agent"] : "unknown-agent";
         const remainingMs = (input.researchDeadlineAt ?? input.deadlineAt) === undefined ? undefined : (input.researchDeadlineAt ?? input.deadlineAt)! - Date.now();
         if (remainingMs !== undefined && remainingMs <= 0) throw new GatewayError(401, "Investigation deadline reached.");
-        const observedReasoningEffort = sanitizeReasoningEffort(body.reasoning_effort ?? body.reasoningEffort);
+        const observedReasoningEffort = extractObservedReasoningEffort(body);
         if (input.expectedReasoningEffort && observedReasoningEffort !== input.expectedReasoningEffort) {
           throw new GatewayError(400, `Model reasoning_effort mismatch: expected ${input.expectedReasoningEffort}, observed ${observedReasoningEffort ?? "missing"}.`);
         }

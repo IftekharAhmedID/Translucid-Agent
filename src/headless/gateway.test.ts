@@ -48,6 +48,38 @@ test("the gateway verifies and records the sanitized medium reasoning effort", a
   }
 });
 
+test("the gateway accepts Responses-style nested reasoning effort", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "translucid-responses-reasoning-gateway-"));
+  try {
+    const sourceStore = await FileSourceStore.open(directory);
+    const gateway = createHeadlessGateway({
+      runId: "run-responses-reasoning",
+      allowedTools: new Set(),
+      allowedModels: new Set(["gpt-5.6-luna"]),
+      agentTools: new Map([["lead-researcher", new Set()]]),
+      sourceStore,
+      budget: budget(),
+      providerMode: "fixture",
+      expectedReasoningEffort: "xhigh",
+      fixtureCompletion: async () => ({ content: "ok" }),
+    });
+    gateway.setLeadSession("lead-responses-reasoning");
+    const server = await listen(gateway);
+    const headers = { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-responses-reasoning", "x-opencode-agent": "lead-researcher" };
+    const response = await fetch(`${server.origin}/internal/llm/v1/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "gpt-5.6-luna", input: [{ role: "user", content: "hello" }], reasoning: { effort: "xhigh" }, stream: false }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(gateway.telemetry().observedReasoningEfforts, ["xhigh"]);
+    gateway.cancel();
+    await server.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 async function listen(gateway: ReturnType<typeof createHeadlessGateway>): Promise<{ origin: string; close: () => Promise<void> }> {
   await new Promise<void>((resolve) => gateway.server.listen(0, "127.0.0.1", resolve));
   const address = gateway.server.address();
