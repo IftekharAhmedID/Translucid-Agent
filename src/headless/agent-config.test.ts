@@ -61,7 +61,15 @@ test("the DeepSeek V4 Pro comparison model is configured for maximum reasoning",
 
 test("headless runtime loads the material-investigation skills and requires the initial method", async () => {
   const skills = (await readdir(join(root, "skills"))).sort();
-  assert.deepEqual(skills, ["historical-footprint", "investigation-reporting", "professional-investigation"]);
+  assert.deepEqual(skills, ["exa-investigation", "historical-footprint", "investigation-reporting", "professional-investigation"]);
+
+  for (const skill of skills) {
+    const source = await readFile(join(root, "skills", skill, "SKILL.md"), "utf8");
+    const frontMatter = source.match(/^---\n([\s\S]*?)\n---\n/);
+    assert.ok(frontMatter, `${skill} must declare front matter`);
+    const declaredName = frontMatter?.[1].match(/^name:\s*(\S+)\s*$/m)?.[1];
+    assert.equal(declaredName, skill, `${skill} front matter name must match its copied directory`);
+  }
 
   const lead = await readFile(join(root, "agents", "lead-researcher.md"), "utf8");
   const contract = await readFile(join(process.cwd(), "src", "headless", "prompt-contracts.ts"), "utf8");
@@ -69,6 +77,9 @@ test("headless runtime loads the material-investigation skills and requires the 
   const historical = await readFile(join(root, "skills", "historical-footprint", "SKILL.md"), "utf8");
 
   assert.match(lead, /load `professional-investigation`/i);
+  assert.match(lead, /load `exa-investigation`/i);
+  assert.match(lead, /one initial target plan/i);
+  assert.match(lead, /do not restate the résumé/i);
   assert.match(contract, /load `professional-investigation`/i);
   assert.match(contract, /investigation\.synthesis\.begin/i);
   assert.match(professional, /investigation-reporting/i);
@@ -87,10 +98,23 @@ test("headless runtime loads the material-investigation skills and requires the 
   assert.match(professional, /reverse sweep for unresolved Tier-A targets/i);
   assert.match(professional, /artifact-oriented route/i);
   assert.match(professional, /final skill audit must check/i);
+  assert.match(professional, /subject-only corroboration[\s\S]*UNRESOLVED/i);
   assert.match(historical, /remaining Tier-A historical gap/i);
   assert.match(historical, /reliable metadata/i);
   assert.match(historical, /mailing lists, technical forums,\s+event programmes/i);
   assert.doesNotMatch(lead, /exhaustive factual coverage checklist/i);
   assert.doesNotMatch(contract, /complete claim checklist/i);
   assert.doesNotMatch(professional, /at most four provider calls/i);
+});
+
+test("the Exa investigation skill keeps discovery cheap and escalation bounded", async () => {
+  const exa = await readFile(join(root, "skills", "exa-investigation", "SKILL.md"), "utf8");
+  assert.match(exa, /mode `auto`/i);
+  assert.match(exa, /highlights/i);
+  assert.match(exa, /five results/i);
+  assert.match(exa, /fetch promising original sources/i);
+  assert.match(exa, /one `deep` escalation/i);
+  assert.match(exa, /`deep-reasoning` only/i);
+  assert.match(exa, /LinkdAPI/i);
+  assert.match(exa, /direct GitHub/i);
 });

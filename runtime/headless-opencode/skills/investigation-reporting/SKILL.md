@@ -1,3 +1,9 @@
+---
+name: investigation-reporting
+description: Reconstruct and audit the committed investigation before deterministic publication.
+compatibility: opencode
+---
+
 # Investigation reporting
 
 This skill is the synthesis phase of a single-investigator run. The host owns
@@ -15,6 +21,12 @@ Group related targets into small clusters, but persist one finding per
 investigation.finding.upsert call. Before writing a finding, inspect captured
 sources with source.inventory and source.excerpts. Discovery records are leads,
 never evidence.
+
+Split a résumé section into 2–4 material predicates only when authority,
+timeframe, or confidence differs. Keep the shared résumé section in the
+existing `section` field; do not invent grouping fields. Subject-only
+corroboration is UNRESOLVED unless the subject is the authoritative system of
+record for that exact fact.
 
 ## Recover evidence and test the predicate boundary
 
@@ -55,6 +67,10 @@ Call investigation.summary.set with concise prose and every HIGH target ID.
 The IDs are metadata coverage, not a requirement to repeat every target in the
 executive prose. Then call investigation.commit. Treat a 422 as precise host
 validation feedback and repair the state; do not weaken wording to bypass it.
+
+Aim for compact writing: summary 180 words, conclusion 70, evidence comment 30,
+rationale 60, and remaining gap 30. The host accepts a small safety envelope
+and reports the exact overflowing field and count when repair is needed.
 
 After commit succeeds, do not call providers or semantic mutation tools. The
 host will snapshot and materialize the report deterministically.
