@@ -7,9 +7,26 @@ import { openCodeRuntimeEnvironment, type InvestigatorRuntime, type RunHandle, t
 const imageName = "translucid-investigator:1.18.18";
 let buildPromise: Promise<void> | undefined;
 
+async function runDocker(args: string[], options: { cwd?: string; timeoutMs?: number } = {}): Promise<{ stdout: string; stderr: string }> {
+  try {
+    return await runProcess("docker", args, options);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const unavailable = new Error("Local Docker CLI is unavailable on the investigation process PATH.");
+    unavailable.name = "LOCAL_DOCKER_CLI_UNAVAILABLE";
+    throw unavailable;
+  }
+}
+
 async function ensureImage(): Promise<void> {
-  buildPromise ??= runProcess("docker", ["build", "--pull", "--tag", imageName, "."], { timeoutMs: 10 * 60_000 }).then(() => undefined);
-  return buildPromise;
+  buildPromise ??= runDocker(["build", "--pull", "--tag", imageName, "."], { timeoutMs: 10 * 60_000 }).then(() => undefined);
+  const current = buildPromise;
+  try {
+    await current;
+  } catch (error) {
+    if (buildPromise === current) buildPromise = undefined;
+    throw error;
+  }
 }
 
 export async function getPinnedLocalManifestHash(): Promise<string> {
@@ -26,7 +43,7 @@ export class LocalDockerRuntime implements InvestigatorRuntime {
     await ensureImage();
     const name = `translucid-case-${input.runId}`;
     const gatewayUrl = input.gatewayUrl.replace("127.0.0.1", "host.docker.internal").replace("localhost", "host.docker.internal");
-    await runProcess("docker", [
+    await runDocker([
       "run", "--detach", "--rm", "--name", name, "--label", `com.translucid.run-id=${input.runId}`, "--label", `com.translucid.owner-pid=${process.pid}`,
       "--add-host", "host.docker.internal:host-gateway",
       "--publish", "127.0.0.1::4096",
@@ -47,7 +64,7 @@ export class LocalDockerRuntime implements InvestigatorRuntime {
       "/opt/investigator/runtime/start.sh",
     ], { timeoutMs: 60_000 });
     try {
-      const port = (await runProcess("docker", ["port", name, "4096/tcp"])).stdout.trim().split(":").at(-1);
+      const port = (await runDocker(["port", name, "4096/tcp"])).stdout.trim().split(":").at(-1);
       if (!port) throw new Error("Docker did not publish the OpenCode port.");
       const openCodeUrl = `http://127.0.0.1:${port}`;
       const accessHeaders = { authorization: basicAuth(input.openCodePassword) };
@@ -57,20 +74,20 @@ export class LocalDockerRuntime implements InvestigatorRuntime {
       if (input.expectedManifestHash && manifest.manifestHash !== input.expectedManifestHash) throw new Error("Local publisher runtime manifest differs from the expected manifest.");
       return { kind: "LOCAL", id: name, openCodeUrl, accessHeaders, manifestHash: manifest.manifestHash };
     } catch (error) {
-      await runProcess("docker", ["rm", "--force", name]).catch(() => undefined);
+      await runDocker(["rm", "--force", name]).catch(() => undefined);
       throw error;
     }
   }
 
   async stop(handle: RunHandle): Promise<void> {
     if (handle.kind !== "LOCAL" || basename(handle.id) !== handle.id || !handle.id.startsWith("translucid-case-")) throw new Error("Invalid local runtime handle.");
-    await runProcess("docker", ["rm", "--force", handle.id], { timeoutMs: 30_000 }).catch((error) => {
+    await runDocker(["rm", "--force", handle.id], { timeoutMs: 30_000 }).catch((error) => {
       if (!(error instanceof Error) || !error.message.includes("No such container")) throw error;
     });
   }
 
   async getStatus(handle: RunHandle): Promise<RunStatus> {
-    const result = await runProcess("docker", ["inspect", "--format", "{{.State.Status}}", handle.id]).catch(() => undefined);
+    const result = await runDocker(["inspect", "--format", "{{.State.Status}}", handle.id]).catch(() => undefined);
     if (!result) return "STOPPED";
     return result.stdout.trim() === "running" ? "RUNNING" : result.stdout.trim() === "created" ? "STARTING" : "FAILED";
   }

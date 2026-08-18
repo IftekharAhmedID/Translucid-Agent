@@ -5,14 +5,22 @@ export async function runProcess(command: string, args: string[], options: { cwd
     const child = spawn(command, args, { cwd: options.cwd, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
-    const timer = options.timeoutMs ? setTimeout(() => child.kill("SIGKILL"), options.timeoutMs) : undefined;
-    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-    child.once("error", reject);
-    child.once("exit", (code) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
       if (timer) clearTimeout(timer);
-      if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`${command} exited ${code}: ${stderr.slice(0, 2_000)}`));
+      if (error) reject(error);
+      else resolve({ stdout, stderr });
+    };
+    timer = options.timeoutMs ? setTimeout(() => child.kill("SIGKILL"), options.timeoutMs) : undefined;
+    child.stdout?.on("data", (chunk) => { stdout += String(chunk); });
+    child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+    child.once("error", (error) => finish(error));
+    child.once("close", (code) => {
+      if (code === 0) finish();
+      else finish(new Error(`${command} exited ${code}: ${stderr.slice(0, 2_000)}`));
     });
   });
 }
