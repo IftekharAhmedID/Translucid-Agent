@@ -65,6 +65,10 @@ test("headless runtime loads the material-investigation skills and requires the 
   assert.match(professional, /Investigate the material predicate exactly/i);
   assert.match(professional, /“Organised”\s+means assess material organising work/i);
   assert.match(professional, /Every claimed completed degree creates one material education target/i);
+  assert.match(professional, /issuing institution[\s\S]*canonical domain|canonical domain[\s\S]*issuing institution/i);
+  assert.match(professional, /institutional social[\s\S]*corroborat/i);
+  assert.match(professional, /qualification[\s\S]*deep(?:-reasoning)?[\s\S]*additionalQueries/i);
+  assert.match(professional, /qualification[\s\S]*excludeDomains/i);
   assert.match(professional, /forward local sweep/i);
   assert.match(professional, /reverse sweep for unresolved Tier-A targets/i);
   assert.match(professional, /artifact-oriented route/i);

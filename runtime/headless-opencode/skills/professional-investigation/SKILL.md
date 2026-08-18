@@ -168,6 +168,13 @@ Use `source.inventory` and `source.excerpts` to recover captured material.
 
 Never refetch it merely to regain context.
 
+For qualification runs, complete the run-level route audit before freezing:
+make at least one `deep` or `deep-reasoning` `web.search` call with three or
+more genuinely orthogonal `additionalQueries`, and make one justified search
+using `excludeDomains` to reach an independent source family. This is one
+qualification audit, not a per-claim search quota; explain the material gap or
+route decision that each call addresses.
+
 Before freezing, paginate `source.inventory` to completion and run a local-only
 reverse sweep for unresolved Tier-A targets and unusually rich sources. Local
 reuse is required evidence work, not a reason to make another provider call.
@@ -186,6 +193,13 @@ authoritative system of record for that fact.
 
 Canonical employer, governance, repository, institutional, registry, and
 contemporaneous records can directly establish the appropriate fact.
+
+For credentials and other institutional records, prefer the issuing
+institution's canonical domain or registry as the establishing witness. An
+institutional social-media account can corroborate the record, but it is not a
+canonical witness by itself. If the qualification or assignment names a
+canonical domain, keep the claim provisional until that domain or registry
+itself captures the named person and material record.
 
 For independent corroboration, use a source with a distinct underlying origin.
 
