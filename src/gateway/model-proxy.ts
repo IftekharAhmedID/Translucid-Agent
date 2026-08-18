@@ -3,6 +3,7 @@ import { request as httpsRequest } from "node:https";
 
 import { decodeJsonToolNames, encodeModelToolNames, SseToolNameDecoder } from "./model-tool-names.ts";
 import { writeFixtureCompletion, type Completion } from "./fixture-model.ts";
+import { modelUsesResponses } from "../headless/model-registry.ts";
 
 export function modelCostReservation(body: Record<string, unknown>, model: string): number {
   const estimatedInputTokens = estimateModelInputTokens(body);
@@ -20,7 +21,7 @@ export type ResearchUpstreamFamily = "GO" | "ZEN";
 
 export function resolveResearchUpstream(family: ResearchUpstreamFamily, model: string): string {
   const base = family === "GO" ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1";
-  return `${base}/${model === "gpt-5.6-luna" ? "responses" : "chat/completions"}`;
+  return `${base}/${modelUsesResponses(model) ? "responses" : "chat/completions"}`;
 }
 
 export function modelUpstreamHeaders(key: string): Record<string, string> {

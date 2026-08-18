@@ -1,7 +1,6 @@
 ---
 description: Performs one source-backed investigation and freezes a publication-ready claim ledger.
 mode: primary
-model: translucid/gpt-5.6-luna
 variant: xhigh
 permission:
   "*": deny
