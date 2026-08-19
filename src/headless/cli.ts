@@ -252,6 +252,7 @@ async function main(): Promise<void> {
       runtime: options.runtime,
       researchModel,
       researchVariant: modelSpec.variant,
+      compactContext: process.env.RESEARCH_CONTEXT_MODE === "compact",
       reportStore,
       researchState,
       sourceStore: workspace.sourceStore,

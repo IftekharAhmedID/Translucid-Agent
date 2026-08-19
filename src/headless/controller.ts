@@ -101,6 +101,7 @@ function unwrap<T>(result: { data?: T; error?: unknown }, action: string): T {
 }
 
 const synthesisRecoveryPrompt = "Recover the durable investigation with investigation.progress.get. If synthesis has not started, call investigation.synthesis.begin. Complete every target with one strict finding and assertion-level evidence comments, call investigation.summary.set with every HIGH target ID, then call investigation.commit. Treat host 422 responses as precise validation feedback. Make the tool calls now; do not answer with prose or invent source references.";
+const compactSynthesisRecoveryPrompt = "This is a compact-context recovery. Do not search or fetch again. Call investigation.progress.get now, then investigation.synthesis.begin, write one strict finding for every durable target using only captured S# evidence, mark gaps UNRESOLVED, call investigation.summary.set with every HIGH target ID, and call investigation.commit. Make the tool calls now; do not answer with prose.";
 
 type Input = {
   root: string;
@@ -111,6 +112,7 @@ type Input = {
   runtime: "LOCAL" | "E2B";
   researchModel: string;
   researchVariant: string;
+  compactContext?: boolean;
   reportStore: ReportStore;
   researchState: ResearchStateStore;
   sourceStore: FileSourceStore;
@@ -173,7 +175,7 @@ export class HeadlessInvestigationController {
         agent: "lead-researcher",
         model: { providerID: "translucid", modelID: input.researchModel },
         variant: input.researchVariant,
-        parts: [{ type: "text", text: researchPrompt(researchDeadline === undefined ? undefined : new Date(researchDeadline).toISOString()) }],
+        parts: [{ type: "text", text: researchPrompt(researchDeadline === undefined ? undefined : new Date(researchDeadline).toISOString(), { compactContext: input.compactContext }) }],
       }, { signal: researchAbort.signal });
       if (launch.error) throw new Error("Lead research prompt failed: " + describeSdkError(launch.error));
       await waitForResearchIdle({
@@ -196,7 +198,7 @@ export class HeadlessInvestigationController {
           agent: "lead-researcher",
           model: { providerID: "translucid", modelID: input.researchModel },
           variant: input.researchVariant,
-          parts: [{ type: "text", text: synthesisRecoveryPrompt }],
+          parts: [{ type: "text", text: input.compactContext ? compactSynthesisRecoveryPrompt : synthesisRecoveryPrompt }],
         }, { signal: researchAbort.signal }), "synthesis recovery prompt");
         if (recovery) await waitForResearchIdle({
           readStatus: async () => {

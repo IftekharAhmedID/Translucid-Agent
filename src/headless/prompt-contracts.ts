@@ -12,9 +12,16 @@ Search results are leads, never citations; fetch a lead directly before using it
 
 Call investigation.plan.set once the initial target queue is clear. When discovery is mature, call investigation.synthesis.begin and load investigation-reporting. During synthesis, research again when a material resolvable gap remains; write one concise finding at a time with assertion-level evidence comments. Set the summary with every HIGH target ID and call investigation.commit only after the reverse audit. Then stop.`;
 
-export function researchPrompt(deadline?: string): string {
+export type ResearchPromptOptions = {
+  compactContext?: boolean;
+};
+
+export function researchPrompt(deadline?: string, options: ResearchPromptOptions = {}): string {
   const hostLimit = deadline
     ? `The host research-freeze deadline is ${deadline}. Commit before that deadline; after commit, the host owns deterministic snapshot, report, PDF, provenance, and result publication.`
     : "This is an uncapped qualification run: no host time or budget limit is enforced. Preserve usage telemetry and stop only when the inquiry is genuinely complete.";
-  return `${RESEARCH_PROMPT_CONTRACT} ${hostLimit} State uncertainty honestly and do not manufacture corroboration.`;
+  const compactContextDirective = options.compactContext
+    ? " This is a compact-context rescue run. Prioritize a valid v3 commit before context saturation: after the initial five-direction batch and strongest canonical captures, do not start another broad search wave. Begin investigation.synthesis.begin immediately, use UNRESOLVED for gaps that cannot be closed from captured evidence, set the HIGH-target summary, and call investigation.commit. Do not answer with prose until the commit succeeds."
+    : "";
+  return `${RESEARCH_PROMPT_CONTRACT}${compactContextDirective} ${hostLimit} State uncertainty honestly and do not manufacture corroboration.`;
 }
