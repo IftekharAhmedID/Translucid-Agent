@@ -67,6 +67,16 @@ Per-connection-IP quotas may be conservative behind shared Render edges.
 
 ## Current qualification evidence
 
+- Active Go qualification: the real biography completed with
+  `deepseek-v4.1-flash` on E2B and its 72/100 plain-text report reached the
+  authorized Rice Inbox. Source/snapshot integrity, model identity and
+  single-lead publication passed. Rice rewrote URLs through URL Defense;
+  received report text matches after accounting for that wrapping. The first
+  PDF report also reached Inbox but included a scored validator placeholder.
+  Host target validation now rejects literal placeholders. Subsequent PDF
+  retries did not commit and issued no scores; clean post-fix PDF completion
+  remains unqualified. All 199 tests and type checking pass. See
+  [current Go evidence](tracedog-model-access.md#deepseek-v41-flash-via-the-active-go-subscription).
 - At the user's request, inbox-code verification was removed from the UI,
   API and persisted job model. Validated submissions queue immediately;
   legacy pending-code jobs are retired without launching research. Work-domain

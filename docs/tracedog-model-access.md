@@ -148,3 +148,49 @@ configuration. For the web worker, select
 OpenRouter key and the worker selects its route. This qualification did not
 deploy the web service or enable public submissions. Durable Render hosting,
 public callback routing, and sender-domain verification remain launch work.
+
+## DeepSeek V4.1 Flash via the active Go subscription
+
+The user renewed Go and explicitly selected it for the real-input tests.
+The existing saved Go key matches the repository key; the authenticated Go
+catalog includes `deepseek-v4.1-flash`. Actual E2B OpenCode 1.18.18 requests
+returned HTTP 200 through `https://opencode.ai/zen/go/v1/chat/completions`.
+No OpenRouter or Console route was used for these tests.
+
+Select `TRACEDOG_MODEL=deepseek-v4.1-flash`,
+`RESEARCH_MODEL=deepseek-v4.1-flash`, `RESEARCH_OPENCODE_PROVIDER=GO`,
+and the saved `OPENCODE_API_KEY`. The Render web blueprint and environment
+example now use that route, while public submissions remain disabled.
+The template build is `6aafb9dc-e648-4cff-935a-84aa3bd99999` on the separate
+`tracedog-investigator-email` alias. The original research prompts, tools,
+shell denial, source capture, host commit, ceilings, and text-only publication
+remain. Peak-price reservation is $0.30/M input and $1.20/M output, following
+the [Go model pricing](https://opencode.ai/v2/docs/console/go/).
+Medium reasoning is requested; the model catalog exposes low/high/max, so
+the registry records high as its effective setting.
+
+The real biography run `3b318719-e8e2-456c-a1cf-8e30314ee1c3` committed 13
+findings from 238 captured sources with 30 model requests and 52 provider
+calls. Nine submitted claims contribute to the evidence-support score:
+four established and five partial, yielding 72/100. Four discovered facts
+are excluded. Result-v4, source integrity, snapshot binding, the text artifact,
+and the single lead's actual model metadata passed validation. The plain-text
+report was delivered to the authorized Rice mailbox and found in Inbox.
+
+The first real PDF run `b62d900a-410c-41bc-8f93-d1de1cc2c50e` also committed
+and reached Inbox, but incorrectly included a literal validator `probe` as a
+claim, yielding a preliminary 34/100. Do not treat that preliminary PDF report
+as clean qualification. Host validation now rejects literal probe, placeholder,
+TODO and TBD predicates in both plan creation and target addition, without
+changing the prompt or hiding persisted findings. A regression test failed
+before the fix; all 199 tests and type checking pass afterward.
+
+The next PDF retries `ec3f27b9-7516-46b7-8d65-83a0e933732b` and
+`a63703db-9da9-4870-be04-0f04a79d21a8` stopped before committing and
+failed closed without reports or scores. Native-session diagnostics from the
+latter show recoverable tool errors (a search preview over the 40 KiB bound
+and a scholarly adapter error), but do not establish the termination cause.
+The clean post-fix PDF outcome remains unqualified; the successful biography
+and preliminary PDF prove Go access and the email cycle, not universal run
+reliability. Real-input artifacts and mailbox checks stay under ignored
+`.debug/tracedog-person-live/`; they are never committed.
