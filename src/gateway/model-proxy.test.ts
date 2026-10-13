@@ -53,6 +53,12 @@ test("Responses accounting accepts input and max_output_tokens", () => {
 });
 
 test("research upstream resolution follows the canonical model registry", () => {
+  const model = "deepseek-v4.1-flash";
+  assert.equal(resolveResearchUpstream("GO", model), "https://opencode.ai/zen/go/v1/chat/completions");
+  assert.throws(() => resolveResearchUpstream("OPENROUTER", model), /Unsupported OpenRouter model/);
+  const body = { max_tokens: 1000, reasoning_effort: "medium", messages: [] };
+  assert.deepEqual(modelUpstreamBody(body, "GO", model), { ...body, model });
+  assert.equal(modelCostReservation(body, model), (estimateModelInputTokens(body) * 0.30 + 1000 * 1.20) / 1_000_000);
   assert.equal(resolveResearchUpstream("ZEN", "muse-spark-1.3-contributor-free"), "https://opencode.ai/inference/v1/responses");
   assert.throws(() => resolveResearchUpstream("GO", "muse-spark-1.3-contributor-free"), /Console route/);
   assert.equal(resolveResearchUpstream("GO", "gpt-5.6-luna"), "https://opencode.ai/zen/go/v1/responses");

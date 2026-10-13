@@ -16,6 +16,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "{env:CASE_GATEWAY_URL}/internal/llm/v1", "apiKey": "{env:CASE_TOKEN}", "timeout": 720000 },
       "models": {
+        "deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash", "provider": { "npm": "@ai-sdk/openai-compatible" }, "reasoning": true, "tool_call": true, "variants": { "medium": { "reasoningEffort": "medium" }, "xhigh": { "reasoningEffort": "max" } }, "limit": { "context": 1000000, "output": 384000 } },
         "deepseek/deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash (OpenRouter)", "provider": { "npm": "@ai-sdk/openai-compatible" }, "reasoning": true, "tool_call": true, "variants": { "medium": { "reasoningEffort": "medium" }, "xhigh": { "reasoningEffort": "max" } }, "limit": { "context": 1048576, "output": 384000 } },
         "muse-spark-1.3-contributor-free": { "name": "Muse Spark 1.3 Contributor Free", "provider": { "npm": "@ai-sdk/openai" }, "reasoning": true, "tool_call": true, "variants": { "medium": { "reasoningEffort": "medium" }, "xhigh": { "reasoningEffort": "xhigh" } }, "limit": { "context": 1048576, "output": 131072 } },
         "big-pickle": {"name": "Big Pickle", "provider": {"npm": "@ai-sdk/openai-compatible"}, "reasoning": true, "tool_call": true, "variants": {"default": {}}, "limit": {"context": 200000, "output": 32000}},

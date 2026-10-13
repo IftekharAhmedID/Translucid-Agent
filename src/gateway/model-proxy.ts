@@ -16,7 +16,7 @@ export function modelCostReservation(body: Record<string, unknown>, model: strin
   // Conservative peak rates; no cache discounts. Review against provider pricing before enabling a paid route.
   const rates = model === "deepseek-v4-pro" ? { inputUsdPerMillion: 1.32, outputUsdPerMillion: 3.96 }
     : model === "deepseek-v4-flash" ? { inputUsdPerMillion: 0.30, outputUsdPerMillion: 0.60 }
-    : model === "deepseek/deepseek-v4.1-flash" ? { inputUsdPerMillion: 0.30, outputUsdPerMillion: 1.20 }
+    : model === "deepseek-v4.1-flash" || model === "deepseek/deepseek-v4.1-flash" ? { inputUsdPerMillion: 0.30, outputUsdPerMillion: 1.20 }
     : model === "gpt-5.6-luna" ? { inputUsdPerMillion: 0.40, outputUsdPerMillion: 1.80 }
     : { inputUsdPerMillion: 4, outputUsdPerMillion: 16 };
   return (estimatedInputTokens * rates.inputUsdPerMillion + maximumOutputTokens * rates.outputUsdPerMillion) / 1_000_000;

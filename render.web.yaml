@@ -22,9 +22,9 @@ services:
       - key: TRACEDOG_ACCEPT_SUBMISSIONS
         value: "false"
       - key: TRACEDOG_MODEL
-        value: cat-jam-free
+        value: deepseek-v4.1-flash
       - key: RESEARCH_OPENCODE_PROVIDER
-        value: ZEN
+        value: GO
       - key: TRACEDOG_PDF_REASONING
         value: medium
       - key: RESEND_FROM
