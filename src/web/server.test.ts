@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { request } from "node:http";
 
-test("web API rejects cross-origin, personal email, unknown codes and private routes", async () => {
+test("web API rejects cross-origin, personal email, retired verification and private routes", async () => {
   const root = mkdtempSync(join(tmpdir(), "tracedog-http-"));
   const port = 18987;
   const origin = `http://127.0.0.1:${port}`;
@@ -21,11 +21,11 @@ test("web API rejects cross-origin, personal email, unknown codes and private ro
     const post = (path: string, value: unknown, requestOrigin = origin) => fetch(origin + path, { method: "POST", headers: { origin: requestOrigin, "content-type": "application/json" }, body: JSON.stringify(value) });
     assert.equal((await post("/api/submissions", {}, "https://evil.example")).status, 403);
     assert.equal((await post("/api/submissions", { consent: true, email: "a@gmail.com", kind: "text", text: "x".repeat(25) })).status, 400);
-    assert.equal((await post("/api/verify", { submissionId: "unknown", code: "123456" })).status, 400);
+    assert.equal((await post("/api/verify", { submissionId: "unknown", code: "123456" })).status, 404);
     assert.equal((await fetch(origin + "/gateway/internal/tools/execute", { method: "POST" })).status, 404);
     assert.equal((await fetch(origin + "/.env")).status, 404);
     assert.equal((await fetch(origin + "/api/results")).status, 403);
-    assert.equal((await post("/api/verify", { padding: "x".repeat(2000) })).status, 413);
+    assert.equal((await post("/api/verify", { padding: "x".repeat(2000) })).status, 404);
     const slow = request(origin + "/api/submissions", { method: "POST", headers: { origin, "content-type": "application/json" } });
     slow.on("error", () => undefined);
     slow.write('{"email":');

@@ -38,9 +38,9 @@ async function api(path, value) {
   if (!response.ok) throw new Error(result.error || 'TraceDog is temporarily unavailable.');
   return result;
 }
-byId('send-code').addEventListener('click', async () => {
+byId('send-report').addEventListener('click', async () => {
   if (busy) return;
-  busy = true; byId('send-code').disabled = true;
+  busy = true; byId('send-report').disabled = true;
   try {
     validateInput();
     if (!byId('work-email').value || !byId('work-email').checkValidity()) throw new Error('Enter a valid work email.');
@@ -53,22 +53,11 @@ byId('send-code').addEventListener('click', async () => {
       for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
       value.pdf = btoa(binary);
     }
-    status('Sending your verification code…');
+    status('Starting your investigation…');
     const result = await api('/api/submissions', value);
     submissionId = result.submissionId;
-    byId('email-step').hidden = true; byId('verify-step').hidden = false;
-    byId('verification-code').focus(); status(result.message);
+    byId('email-step').hidden = true;
+    status(result.message);
   } catch (error) { status(error.message); }
-  finally { busy = false; byId('send-code').disabled = false; }
-});
-byId('verify').addEventListener('click', async () => {
-  if (busy) return;
-  const code = byId('verification-code').value;
-  if (!/^\d{6}$/.test(code)) return status('Enter the six-digit verification code.');
-  busy = true; byId('verify').disabled = true;
-  try {
-    const result = await api('/api/verify', { submissionId, code });
-    byId('verify-step').hidden = true; status(result.message);
-  } catch (error) { status(error.message); }
-  finally { busy = false; byId('verify').disabled = false; }
+  finally { busy = false; byId('send-report').disabled = false; }
 });

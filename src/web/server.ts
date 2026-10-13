@@ -1,6 +1,6 @@
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { spawn } from "node:child_process";
-import { readFile, readdir, rm } from "node:fs/promises";
+import { readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { SubmissionError, SubmissionStore, decodePdf, validateText, validateWorkEmail, type Job } from "./submissions.ts";
 import { sendEmail } from "./email.ts";
@@ -80,6 +80,7 @@ async function investigate(job: Job) {
     if (!reportPath) throw new Error("No committed report.");
     store.update(job.id, { status: "REPORT_READY", reportPath });
   } catch {
+    await writeFile(join(root, job.id, "failure-diagnostic.txt"), Buffer.from(stderr).subarray(-4000), { mode: 0o600 }).catch(() => undefined);
     await rm(output, { recursive: true, force: true }).catch(() => undefined);
     store.update(job.id, { status: "FAILED", error: "The investigation could not be completed. No score was issued." });
     // Internal diagnostics remain private; never send raw model/provider errors to the user.
@@ -95,8 +96,8 @@ async function pump() {
     const ready = store.list().find((job) => job.status === "REPORT_READY");
     if (ready && Date.now() >= nextDelivery) {
       try {
-        await sendEmail(ready.email, "Your TraceDog investigation report", await readFile(ready.reportPath!, "utf8"), "report-" + ready.id);
-        store.update(ready.id, { status: "SENT" });
+        const reportEmailId = await sendEmail(ready.email, `Your TraceDog ${ready.kind === "pdf" ? "PDF" : "text"} investigation report`, await readFile(ready.reportPath!, "utf8"), "report-" + ready.id);
+        store.update(ready.id, { status: "SENT", reportEmailId });
       } catch { nextDelivery = Date.now() + 60000; }
     }
     const job = store.list().find((job) => job.status === "QUEUED");
@@ -120,7 +121,7 @@ export const server = createServer(async (request, response) => {
     if (path === "/health") return json(response, 200, { status: "ok", submissionsEnabled: enabled() });
     if (path.startsWith("/gateway/")) {
       if (!active || !child || request.method !== "POST" || !["/gateway/internal/tools/execute", "/gateway/internal/llm/v1/chat/completions", "/gateway/internal/llm/v1/responses"].includes(path) || !request.headers.authorization) return json(response, 404, { error: "Not found." });
-      const forward = httpRequest({ hostname: "127.0.0.1", port: gatewayPort, path: path.slice("/gateway".length), method: "POST", headers: { ...request.headers, host: "127.0.0.1" }, timeout: 360000 }, (upstream) => { response.writeHead(upstream.statusCode ?? 502, { "content-type": upstream.headers["content-type"] ?? "application/json", "cache-control": "no-store" }); upstream.pipe(response); });
+      const forward = httpRequest({ hostname: "127.0.0.1", port: gatewayPort, path: path.slice("/gateway".length), method: "POST", headers: { ...request.headers, host: "127.0.0.1" }, timeout: 360000 }, (upstream) => { response.writeHead(upstream.statusCode ?? 502, { "content-type": upstream.headers["content-type"] ?? "application/json", "cache-control": "no-store", ...(upstream.headers["retry-after"] ? { "retry-after": upstream.headers["retry-after"] } : {}) }); upstream.pipe(response); });
       forward.on("error", () => { if (!response.headersSent) json(response, 502, { error: "Gateway unavailable." }); else response.destroy(); });
       forward.on("timeout", () => forward.destroy());
       let size = 0;
@@ -133,6 +134,7 @@ export const server = createServer(async (request, response) => {
       if (++requestWindow.count > 60) throw new SubmissionError("Too many requests. Try again shortly.", 429);
       if (request.method !== "POST" || request.headers.origin !== origin || !request.headers["content-type"]?.startsWith("application/json")) throw new SubmissionError("Request not allowed.", 403);
       if (!enabled()) throw new SubmissionError("Investigations are temporarily unavailable while we complete runtime checks.", 503);
+      if (path !== "/api/submissions") return json(response, 404, { error: "Not found." });
       if (path === "/api/submissions") {
         if (acceptingUpload) throw new SubmissionError("Another upload is being validated. Try again shortly.", 429);
         acceptingUpload = true; ownsUpload = true;
@@ -151,22 +153,18 @@ export const server = createServer(async (request, response) => {
         else {
           content = decodePdf(value.pdf);
         }
-        const { job, code } = store.create(email, kind, content, ip);
+        const job = store.create(email, kind, content, ip);
         try {
           if (kind === "pdf") await validatePdf(job);
-          await sendEmail(email, "Verify your work email for TraceDog", `Your TraceDog verification code is ${code}. It expires in 15 minutes. Enter it on the page where you submitted your investigation.\n\nYour plain-text report will be sent to this work email after the investigation. If you did not request this, ignore this email; the investigation will not start.`, "verify-" + job.id);
         } catch (error) {
-          store.update(job.id, { status: "FAILED", codeHash: "" });
+          store.update(job.id, { status: "FAILED" });
           await rm(job.inputPath, { force: true });
           throw error instanceof SubmissionError ? error : new SubmissionError("PDF could not be read. Use a valid text-bearing PDF.");
         }
-        return json(response, 202, { submissionId: job.id, message: "Check your work email for a verification code." });
-      }
-      if (path === "/api/verify") {
-        if (typeof value.submissionId !== "string" || typeof value.code !== "string") throw new SubmissionError("Enter your verification code.");
-        store.verify(value.submissionId, value.code);
+        store.queue(job.id);
+        json(response, 202, { submissionId: job.id, message: "TraceDog is queued. We will email your plain-text report and score when it is ready." });
         void pump().catch(() => console.error("TraceDog worker unavailable"));
-        return json(response, 202, { message: "TraceDog is queued. We will email your plain-text report when it is ready." });
+        return;
       }
       return json(response, 404, { error: "Not found." });
     }
