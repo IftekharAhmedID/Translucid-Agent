@@ -9,16 +9,18 @@ test("model requests use one bounded timeout with a run-time safety reserve", ()
   assert.equal(modelRequestTimeoutMs(10_000), 1);
 });
 
-test("model cost reservation is model-agnostic during publishing", () => {
+test("paid model reservations use conservative peak rates and free routes reserve zero", () => {
   const body = { messages: [{ role: "user", content: "x" }], max_tokens: 1_000 };
-  const expected = (Math.ceil(JSON.stringify(body.messages).length / 4) * 0.14 + 1_000 * 0.28) / 1_000_000;
-  assert.equal(modelCostReservation(body, "any-lead-model"), expected);
+  const expected = ((Buffer.byteLength(JSON.stringify(body)) + 64) * 1.32 + 1_000 * 3.96) / 1_000_000;
+  assert.equal(modelCostReservation(body, "deepseek-v4-pro"), expected);
+  assert.equal(modelCostReservation(body, "cat-jam-free"), 0);
+  assert.equal(modelCostReservation(body, "big-pickle"), 0);
 });
 
 test("Responses accounting accepts input and max_output_tokens", () => {
   const body = { input: [{ role: "user", content: "response input" }], max_output_tokens: 2_000 };
-  const expected = (Math.ceil(JSON.stringify(body.input).length / 4) * 0.14 + 2_000 * 0.28) / 1_000_000;
-  assert.equal(estimateModelInputTokens(body), Math.ceil(JSON.stringify(body.input).length / 4));
+  const expected = ((Buffer.byteLength(JSON.stringify(body)) + 64) * 0.40 + 2_000 * 1.80) / 1_000_000;
+  assert.equal(estimateModelInputTokens(body), Buffer.byteLength(JSON.stringify(body)) + 64);
   assert.equal(modelCostReservation(body, "gpt-5.6-luna"), expected);
 });
 
@@ -34,6 +36,12 @@ test("upstream headers use the host API key", () => {
   assert.deepEqual(modelUpstreamHeaders("host-secret"), {
     authorization: "Bearer host-secret",
     "content-type": "application/json",
+  });
+});
+
+test("the proxy preserves genuine OpenCode session identity without forwarding case credentials", () => {
+  assert.deepEqual(modelUpstreamHeaders("host-key", { "user-agent": "opencode/1.18.18", "x-opencode-session": "session-1", authorization: "Bearer private-case-token", cookie: "private" }), {
+    authorization: "Bearer host-key", "content-type": "application/json", "user-agent": "opencode/1.18.18", "x-opencode-session": "session-1",
   });
 });
 

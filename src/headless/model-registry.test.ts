@@ -25,6 +25,10 @@ test("DeepSeek V4 Pro is the canonical default and Luna is an explicit rollback"
 });
 
 test("model resolution fails closed for unsupported models", () => {
+  assert.equal(resolveResearchModel("cat-jam-free", "medium").reasoningEffort, "medium");
+  assert.equal(resolveResearchModel("cat-jam-free", "xhigh").reasoningEffort, "max");
+  assert.equal(resolveResearchModel("big-pickle").reasoningEffort, undefined);
+  assert.throws(() => resolveResearchModel("big-pickle", "medium"), /does not support/);
   assert.equal(resolveResearchModel(undefined).id, "deepseek-v4-pro");
   assert.deepEqual(resolveResearchModel(undefined), MODEL_REGISTRY["deepseek-v4-pro"]);
   assert.equal(resolveResearchModel("deepseek-v4-pro", "xhigh").reasoningEffort, "max");

@@ -6,26 +6,41 @@ import { writeFixtureCompletion, type Completion } from "./fixture-model.ts";
 import { modelUsesResponses } from "../headless/model-registry.ts";
 
 export function modelCostReservation(body: Record<string, unknown>, model: string): number {
+  if (model === "big-pickle" || model === "cat-jam-free") return 0;
   const estimatedInputTokens = estimateModelInputTokens(body);
-  const maximumOutputTokens = Math.min(Number(body.max_tokens ?? body.max_completion_tokens ?? body.max_output_tokens ?? 32_000), 384_000);
-  void model;
-  const rates = { inputUsdPerMillion: 0.14, outputUsdPerMillion: 0.28 };
+  const maximumOutputTokens = Math.max(0, Math.min(Number(body.max_tokens ?? body.max_completion_tokens ?? body.max_output_tokens ?? 32_000), 384_000));
+  // Conservative peak rates; no cache discounts. Review against provider pricing before enabling a paid route.
+  const rates = model === "deepseek-v4-pro" ? { inputUsdPerMillion: 1.32, outputUsdPerMillion: 3.96 }
+    : model === "deepseek-v4-flash" ? { inputUsdPerMillion: 0.30, outputUsdPerMillion: 0.60 }
+    : model === "gpt-5.6-luna" ? { inputUsdPerMillion: 0.40, outputUsdPerMillion: 1.80 }
+    : { inputUsdPerMillion: 4, outputUsdPerMillion: 16 };
   return (estimatedInputTokens * rates.inputUsdPerMillion + maximumOutputTokens * rates.outputUsdPerMillion) / 1_000_000;
 }
 
 export function estimateModelInputTokens(body: Record<string, unknown>): number {
-  return Math.ceil(JSON.stringify(body.messages ?? body.input ?? []).length / 4);
+  // Byte count conservatively covers content, tool schemas and request overhead instead of assuming four characters per token.
+  return Buffer.byteLength(JSON.stringify(body), "utf8") + 64;
 }
 
 export type ResearchUpstreamFamily = "GO" | "ZEN";
 
 export function resolveResearchUpstream(family: ResearchUpstreamFamily, model: string): string {
+  if (model === "big-pickle" || model === "cat-jam-free") {
+    if (family !== "ZEN") throw new Error("Free models require the OpenCode Console route.");
+    return "https://opencode.ai/inference/v1/chat/completions";
+  }
   const base = family === "GO" ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1";
   return `${base}/${modelUsesResponses(model) ? "responses" : "chat/completions"}`;
 }
 
-export function modelUpstreamHeaders(key: string): Record<string, string> {
-  return { authorization: `Bearer ${key}`, "content-type": "application/json" };
+export function modelUpstreamHeaders(key: string, incoming: Record<string, string | string[] | undefined> = {}): Record<string, string> {
+  const headers: Record<string, string> = { authorization: `Bearer ${key}`, "content-type": "application/json" };
+  // Preserve the actual OpenCode identity and stable session through the host proxy.
+  for (const name of ["user-agent", "x-opencode-session", "x-opencode-project", "x-opencode-version"]) {
+    const value = incoming[name];
+    if (typeof value === "string" && value.length <= 256) headers[name] = value;
+  }
+  return headers;
 }
 
 export function modelRequestTimeoutMs(remainingMs: number): number {
@@ -124,7 +139,7 @@ export async function proxyModelCompletion(input: {
   try {
     upstream = await requestUpstream(
       resolveResearchUpstream(input.researchUpstreamFamily, input.model),
-      modelUpstreamHeaders(input.upstreamKey),
+      modelUpstreamHeaders(input.upstreamKey, input.request.headers),
       JSON.stringify({ ...encoded.body, model: input.model }),
       upstreamAbort.signal,
     );

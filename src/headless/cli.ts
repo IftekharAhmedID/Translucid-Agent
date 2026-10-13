@@ -23,6 +23,7 @@ import { attachOpenCodeTui } from "./visible-tui.ts";
 import { resolveResearchModel } from "./model-registry.ts";
 import { preflightResearchModel } from "../gateway/model-proxy.ts";
 import { RUN_TIMEOUT_MS, researchDeadlineAt } from "./deadlines.ts";
+import { renderTextReport } from "./text-report.ts";
 import { RunTimeline } from "./run-timeline.ts";
 import { evaluateQualification, loadDiegoFactGroupFixture, readEvaluationSources, type QualificationEvaluation } from "./qualification-evaluator.ts";
 
@@ -291,6 +292,27 @@ async function main(): Promise<void> {
       throw error;
     }
     const resultPath = join(workspace.root, "result.json");
+    if (process.env.REPORT_FORMAT === "text") {
+      const telemetry = gateway.telemetry();
+      if (telemetry.semanticAgentCount !== 1 || telemetry.nonLeadSemanticModelRequests !== 0 || telemetry.reportWriterModelRequests !== 0) {
+        throw new Error("Text publication requires exactly one lead investigator.");
+      }
+      const textPath = join(workspace.root, "report.txt");
+      await atomicWrite(textPath, renderTextReport(output.result));
+      await atomicWrite(join(workspace.root, "provenance", "report.json"), JSON.stringify({
+        runId, researchModel, researchSnapshotSha256: actualSnapshotSha256,
+        modelConfig: { ...modelSpec, upstreamFamily: researchProvider }, telemetry,
+        artifact: { path: "report.txt", sha256: createHash("sha256").update(await readFile(textPath)).digest("hex") },
+      }, null, 2));
+      await runtime.stop(handle);
+      handle = undefined;
+      await reportStore.markPublished();
+      if (!options.keepDebug) await removeRunDiagnostics(workspace.root);
+      await atomicWrite(resultPath, `${JSON.stringify(output.result, null, 2)}\n`);
+      leanReportResultSchema.parse(JSON.parse(await readFile(resultPath, "utf8")));
+      process.stdout.write(`${JSON.stringify({ runId, result: resultPath, text: textPath })}\n`);
+      return;
+    }
     const reportPath = join(workspace.root, "report.pdf");
     const auditPath = join(workspace.root, "audit.pdf");
     reportTemporaryPath = `${reportPath}.tmp`;

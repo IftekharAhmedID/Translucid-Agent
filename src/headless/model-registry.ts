@@ -1,14 +1,14 @@
 export type ResearchModelProtocol = "CHAT_COMPLETIONS" | "RESPONSES";
-export type ResearchReasoningVariant = "medium" | "xhigh";
+export type ResearchReasoningVariant = "medium" | "xhigh" | "default";
 export type ResearchWireReasoningEffort = "medium" | "max" | "xhigh";
-export type ResearchEffectiveReasoningEffort = "high" | "max" | "xhigh";
+export type ResearchEffectiveReasoningEffort = "high" | "max" | "xhigh" | "provider-default";
 
 export type ResearchModelSpec = {
   id: string;
   displayName: string;
   protocol: ResearchModelProtocol;
   variant: ResearchReasoningVariant;
-  reasoningEffort: ResearchWireReasoningEffort;
+  reasoningEffort: ResearchWireReasoningEffort | undefined;
   effectiveReasoningEffort: ResearchEffectiveReasoningEffort;
   contextLimit: number;
   outputLimit: number;
@@ -16,6 +16,16 @@ export type ResearchModelSpec = {
 };
 
 export const MODEL_REGISTRY = {
+  "big-pickle": {
+    id: "big-pickle", displayName: "Big Pickle", protocol: "CHAT_COMPLETIONS",
+    variant: "default", reasoningEffort: undefined, effectiveReasoningEffort: "provider-default",
+    contextLimit: 200_000, outputLimit: 32_000, default: false,
+  },
+  "cat-jam-free": {
+    id: "cat-jam-free", displayName: "Cat Jam Free", protocol: "CHAT_COMPLETIONS",
+    variant: "medium", reasoningEffort: "medium", effectiveReasoningEffort: "high",
+    contextLimit: 262_144, outputLimit: 131_072, default: false,
+  },
   "deepseek-v4-pro": {
     id: "deepseek-v4-pro",
     displayName: "DeepSeek V4 Pro",
@@ -61,7 +71,7 @@ export function resolveResearchModel(value?: string, requestedVariant?: string):
   if (!spec) throw new Error(`Unsupported research model: ${id}`);
   const variant = requestedVariant?.trim() || spec.variant;
   if (variant === spec.variant) return spec;
-  if ((id === "deepseek-v4-pro" || id === "deepseek-v4-flash") && variant === "xhigh") return { ...spec, variant: "xhigh", reasoningEffort: "max", effectiveReasoningEffort: "max" };
+  if ((id === "deepseek-v4-pro" || id === "deepseek-v4-flash" || id === "cat-jam-free") && variant === "xhigh") return { ...spec, variant: "xhigh", reasoningEffort: "max", effectiveReasoningEffort: "max" };
   throw new Error(`Research model ${id} does not support reasoning variant ${variant}.`);
 }
 

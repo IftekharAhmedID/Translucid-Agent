@@ -219,6 +219,7 @@ const plugin: Plugin = async () => {
 
   return {
     "chat.headers": async (input, output) => {
+      output.headers["x-opencode-session"] = input.sessionID;
       output.headers["x-run-id"] = configuredRunId;
       output.headers["x-opencode-agent"] = input.agent;
     },
