@@ -62,7 +62,7 @@ async function investigate(job: Job) {
   try {
     await new Promise<void>((done, reject) => {
       child = spawn(process.execPath, ["--import", "tsx", "src/headless/cli.ts", input, job.inputPath, "--classification", "public-professional", "--provider-mode", "live", "--runtime", "e2b", "--output", output], {
-        env: { ...process.env, RESEARCH_MODEL: model, RESEARCH_OPENCODE_PROVIDER: model === "big-pickle" || model === "cat-jam-free" ? "ZEN" : process.env.RESEARCH_OPENCODE_PROVIDER ?? "GO", RESEARCH_REASONING_VARIANT: variant, REPORT_FORMAT: "text", HEADLESS_GATEWAY_PORT: String(gatewayPort), E2B_GATEWAY_PUBLIC_URL: origin + "/gateway" },
+        env: { ...process.env, RESEARCH_MODEL: model, RESEARCH_OPENCODE_PROVIDER: model === "big-pickle" || model === "cat-jam-free" || model === "muse-spark-1.3-contributor-free" ? "ZEN" : process.env.RESEARCH_OPENCODE_PROVIDER ?? "GO", RESEARCH_REASONING_VARIANT: variant, REPORT_FORMAT: "text", HEADLESS_GATEWAY_PORT: String(gatewayPort), E2B_GATEWAY_PUBLIC_URL: origin + "/gateway" },
         stdio: ["ignore", "ignore", "pipe"],
       });
       child.stderr?.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-4000); });

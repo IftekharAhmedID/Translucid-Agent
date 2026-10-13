@@ -6,7 +6,7 @@ import { writeFixtureCompletion, type Completion } from "./fixture-model.ts";
 import { modelUsesResponses } from "../headless/model-registry.ts";
 
 export function modelCostReservation(body: Record<string, unknown>, model: string): number {
-  if (model === "big-pickle" || model === "cat-jam-free") return 0;
+  if (model === "big-pickle" || model === "cat-jam-free" || model === "muse-spark-1.3-contributor-free") return 0;
   const estimatedInputTokens = estimateModelInputTokens(body);
   const maximumOutputTokens = Math.max(0, Math.min(Number(body.max_tokens ?? body.max_completion_tokens ?? body.max_output_tokens ?? 32_000), 384_000));
   // Conservative peak rates; no cache discounts. Review against provider pricing before enabling a paid route.
@@ -25,9 +25,9 @@ export function estimateModelInputTokens(body: Record<string, unknown>): number 
 export type ResearchUpstreamFamily = "GO" | "ZEN";
 
 export function resolveResearchUpstream(family: ResearchUpstreamFamily, model: string): string {
-  if (model === "big-pickle" || model === "cat-jam-free") {
+  if (model === "big-pickle" || model === "cat-jam-free" || model === "muse-spark-1.3-contributor-free") {
     if (family !== "ZEN") throw new Error("Free models require the OpenCode Console route.");
-    return "https://opencode.ai/inference/v1/chat/completions";
+    return `https://opencode.ai/inference/v1/${modelUsesResponses(model) ? "responses" : "chat/completions"}`;
   }
   const base = family === "GO" ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1";
   return `${base}/${modelUsesResponses(model) ? "responses" : "chat/completions"}`;

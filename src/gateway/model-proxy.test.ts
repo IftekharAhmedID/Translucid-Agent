@@ -15,6 +15,7 @@ test("paid model reservations use conservative peak rates and free routes reserv
   assert.equal(modelCostReservation(body, "deepseek-v4-pro"), expected);
   assert.equal(modelCostReservation(body, "cat-jam-free"), 0);
   assert.equal(modelCostReservation(body, "big-pickle"), 0);
+  assert.equal(modelCostReservation(body, "muse-spark-1.3-contributor-free"), 0);
 });
 
 test("Responses accounting accepts input and max_output_tokens", () => {
@@ -25,6 +26,8 @@ test("Responses accounting accepts input and max_output_tokens", () => {
 });
 
 test("research upstream resolution follows the canonical model registry", () => {
+  assert.equal(resolveResearchUpstream("ZEN", "muse-spark-1.3-contributor-free"), "https://opencode.ai/inference/v1/responses");
+  assert.throws(() => resolveResearchUpstream("GO", "muse-spark-1.3-contributor-free"), /Console route/);
   assert.equal(resolveResearchUpstream("GO", "gpt-5.6-luna"), "https://opencode.ai/zen/go/v1/responses");
   assert.equal(resolveResearchUpstream("GO", "deepseek-v4-pro"), "https://opencode.ai/zen/go/v1/chat/completions");
   assert.equal(resolveResearchUpstream("ZEN", "gpt-5.6-luna"), "https://opencode.ai/zen/v1/responses");

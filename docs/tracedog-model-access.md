@@ -52,3 +52,39 @@ The prior PDF/text E2B fixture successes remain fixture qualification only.
 Private artifacts are under `.debug/tracedog-cat-jam-live/`; the sanitized
 catalog/probe data is in `.debug/tracedog-model-access.json`. Both are ignored
 by Git. No new paid service, subscription, or balance top-up was created.
+
+## Muse Spark 1.3 Contributor Free — regular Console test
+
+The user requested this exact model and explicitly excluded Go. Official
+[OpenCode documentation](https://opencode.ai/v2/docs/console/models/) lists
+`muse-spark-1.3-contributor-free` as free for a limited time at
+`https://opencode.ai/inference/v1/responses`. This differs from the Go model
+`muse-spark-1.3-contributor`. Contributor prompts/completions may be used for
+future Meta model training; only synthetic content was used here.
+
+Added the exact free model to the runtime registry/config with Responses,
+medium/xhigh reasoning, and zero model-cost reservation. The route explicitly
+rejects Go. Existing defaults, lead instructions, tools and restrictions remain.
+The fresh E2B build was `1abfa9c1-2afe-422e-9d29-c716c801c9aa`.
+
+Observed probes using actual OpenCode 1.18.18 on E2B and the saved Console key:
+
+- Built-in plan with normal permissions: exit 0, response OK, reported cost 0.
+- Built-in plan with only `permission.bash=deny` added: 403 `FreeTierError`.
+  Both probes used the regular `/inference/v1/responses` endpoint.
+
+Full restricted investigator attempt:
+
+- Run: `a3f67a89-5f60-4562-bfa1-b1422c057de0`
+- Lead: `ses_ecbdda8afffetIiX8qrou5oZZe`
+- Input: the same synthetic Node.js claims used for Cat Jam.
+- Provider: regular Console (`ZEN` in the existing code), never Go.
+- Actual Responses model calls were made; medium reasoning was observed.
+- The lead failed to commit, including after synthesis recovery. Host failure:
+  `RESEARCH_STATE_NOT_READY`. No report, score or success marker was issued.
+- Private artifact: `.debug/tracedog-muse-live/<run-id>/failure.json`.
+- Probe and investigation sandboxes and temporary tunnel were cleaned up.
+
+191 tests and type checking passed. Focused model/route checks passed again
+after adding the free-price assertion. This is a tested failed live attempt,
+not successful research qualification and not permission to enable submissions.

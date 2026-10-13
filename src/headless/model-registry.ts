@@ -1,7 +1,7 @@
 export type ResearchModelProtocol = "CHAT_COMPLETIONS" | "RESPONSES";
 export type ResearchReasoningVariant = "medium" | "xhigh" | "default";
 export type ResearchWireReasoningEffort = "medium" | "max" | "xhigh";
-export type ResearchEffectiveReasoningEffort = "high" | "max" | "xhigh" | "provider-default";
+export type ResearchEffectiveReasoningEffort = "medium" | "high" | "max" | "xhigh" | "provider-default";
 
 export type ResearchModelSpec = {
   id: string;
@@ -16,6 +16,11 @@ export type ResearchModelSpec = {
 };
 
 export const MODEL_REGISTRY = {
+  "muse-spark-1.3-contributor-free": {
+    id: "muse-spark-1.3-contributor-free", displayName: "Muse Spark 1.3 Contributor Free", protocol: "RESPONSES",
+    variant: "medium", reasoningEffort: "medium", effectiveReasoningEffort: "medium",
+    contextLimit: 1_048_576, outputLimit: 131_072, default: false,
+  },
   "big-pickle": {
     id: "big-pickle", displayName: "Big Pickle", protocol: "CHAT_COMPLETIONS",
     variant: "default", reasoningEffort: undefined, effectiveReasoningEffort: "provider-default",
@@ -71,6 +76,7 @@ export function resolveResearchModel(value?: string, requestedVariant?: string):
   if (!spec) throw new Error(`Unsupported research model: ${id}`);
   const variant = requestedVariant?.trim() || spec.variant;
   if (variant === spec.variant) return spec;
+  if (id === "muse-spark-1.3-contributor-free" && variant === "xhigh") return { ...spec, variant: "xhigh", reasoningEffort: "xhigh", effectiveReasoningEffort: "xhigh" };
   if ((id === "deepseek-v4-pro" || id === "deepseek-v4-flash" || id === "cat-jam-free") && variant === "xhigh") return { ...spec, variant: "xhigh", reasoningEffort: "max", effectiveReasoningEffort: "max" };
   throw new Error(`Research model ${id} does not support reasoning variant ${variant}.`);
 }
