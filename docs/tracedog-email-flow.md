@@ -74,8 +74,11 @@ Per-connection-IP quotas may be conservative behind shared Render edges.
   read confirmed `last_event=delivered`. No real applicant data was emailed.
 - The live Go investigation reached the actual model route and returned 403:
   an active Go subscription is required. Genuine OpenCode CLI probes of Big
-  Pickle and Cat Jam returned `FreeTierError` under both 1.18.15 and 1.19.0.
-  Updated provider access is required for live investigation acceptance.
+  Pickle and Cat Jam returned `FreeTierError` with tools denied under both
+  1.18.15 and 1.19.0. Later native OpenCode probes established that both work
+  with the built-in toolset but Cat Jam is rejected when shell is denied.
+  The full restricted Cat Jam live investigation still failed before commit.
+  See [current model-access evidence](tracedog-model-access.md).
 - A fresh E2B template was built under alias `tracedog-investigator-email`,
   separately from the old investigator template. Rebuild whenever the pinned
   runtime manifest changes.
