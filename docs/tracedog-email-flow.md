@@ -2,8 +2,9 @@
 
 Visitors choose Upload PDF or Upload Text on the hero's right side. Deploy
 TraceDog reveals a work-email step. The server validates a work domain with MX
-records and emails a short-lived verification code. Only inbox verification
-queues an E2B investigation. No public case pages, progress sections, PDF
+records, validates the input, and queues an E2B investigation immediately.
+There is no email verification code or verification endpoint. Only the final
+report or failure notice is emailed. No public case pages, progress sections, PDF
 reports, or report attachments are created for this web workflow.
 
 The existing lead prompt, tools, immutable sources, synthesis, and commit
@@ -21,15 +22,17 @@ No submitted findings means no score. Failed runs never get a score or a
 success report. Human review remains necessary.
 
 Abuse controls: 5 MB / 20-page text-bearing PDFs, 10,000-character text, work
-domain screening, verified inbox, five code attempts, 15-minute code expiry,
+domain screening,
 two submissions per email/day, domain and global daily quotas, bounded queue,
 one active investigation, runtime/model/provider ceilings, same-origin APIs,
 no public results, and seven-day case retention. Intake is serialized before
-body buffering; verification requests have a 1 KB cap. Storage admission
+body buffering. PDFs stay in VALIDATING until file checks pass, then queue.
+Storage admission
 requires 256 MB free and under 700 MB retained; a two-second monitor cancels
 cases above 64 MB or approaching capacity, and failed run artifacts are removed.
 Persist job state on a Render
-disk. A process restart marks interrupted work failed rather than silently
+disk. A process restart marks interrupted validation/research and legacy
+code-based pending submissions failed rather than silently
 duplicating paid research. Email delivery uses Resend idempotency keys.
 
 Resend keys stay server-side. The existing verified translucid.cloud sender
@@ -37,7 +40,7 @@ can send with display name TraceDog. reports@tracedog.co requires new sender
 DNS verification. Big Pickle and Cat Jam require a visible acknowledgement
 that their free-period inputs may be used for model improvement.
 
-Acceptance: validate rejected files and emails, verification and rate limits,
+Acceptance: validate rejected files and emails, immediate queueing and rate limits,
 restart recovery, plain-text scoring, Resend delivery/retry, E2B isolation and
 cleanup, actual OpenCode tool use and committed result, PDF/text live runs,
 responsive browser flow, then Render and public HTTPS. Keep submission disabled
@@ -58,12 +61,41 @@ and Cat Jam. Big Pickle exposes no effort control in the provider's model
 catalog, so it uses provider-default reasoning rather than pretending to honor
 medium. Registered fallback models do not change the research prompt or tools.
 
-The work-domain filter and inbox verification do not prove employment. Global,
+The work-domain filter does not prove employment or inbox ownership. Global,
 domain and mailbox quotas limit resources even if an attacker owns a domain.
 Per-connection-IP quotas may be conservative behind shared Render edges.
 
 ## Current qualification evidence
 
+- At the user's request, inbox-code verification was removed from the UI,
+  API and persisted job model. Validated submissions queue immediately;
+  legacy pending-code jobs are retired without launching research. Work-domain
+  filtering, consent, intake admission, quotas, and resource limits remain.
+  Browser tests submit real PDF/text inputs without a code step and prove a
+  third submission to the same email is rejected with HTTP 429.
+- Real-input testing exposed concurrent v3 mutation loss: writes were ordered,
+  but parallel calls constructed updates from stale state. Complete mutations
+  and public commit prevalidation are now serialized. Regression tests prove
+  all parallel findings persist, revisions are unique, queued prevalidation
+  sees them, concurrent plans cannot overwrite one another, and rejected
+  validation does not poison later work. 198 tests and type checking passed.
+- Failed run diagnostics retain at most 4,000 bytes in private case storage;
+  they are never sent in report emails. Successful sends retain their Resend
+  message ID. Report subjects distinguish PDF and text investigations.
+- The authorized real resume and biography were submitted through the full
+  browser/API/worker flow without codes. They reached actual E2B/OpenCode
+  research, but did not commit final reports. Test Cloudflare callbacks were
+  unstable; a later ngrok trace captured OpenRouter HTTP 402 in-flight credit
+  rejection. A read of the account credits endpoint showed $15 total credits
+  versus $15.141 total usage. No real-input success report or score was issued.
+  Model HTTP error status and numeric Retry-After are now preserved through
+  both gateway hops instead of becoming generic HTTP 400.
+- Resend confirmed failure-notice delivery to the submitted work mailbox.
+  Gmail inspection found those notices in Spam, with plain-text bodies and no
+  scores. Successful real-input report delivery and inbox placement remain
+  unqualified until the funded-provider test can finish. No mailbox labels
+  were changed to make acceptance appear successful. Private diagnostics and
+  intake evidence are under ignored `.debug/tracedog-person-live/`.
 - New funded-provider qualification: actual E2B OpenCode 1.18.18 completed
   live text and PDF investigations with `deepseek/deepseek-v4.1-flash` through
   OpenRouter, preserving the restricted investigator. Both caught the false

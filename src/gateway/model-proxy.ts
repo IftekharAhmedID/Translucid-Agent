@@ -5,6 +5,10 @@ import { decodeJsonToolNames, encodeModelToolNames, SseToolNameDecoder } from ".
 import { writeFixtureCompletion, type Completion } from "./fixture-model.ts";
 import { modelUsesResponses, resolveResearchModel } from "../headless/model-registry.ts";
 
+export class ModelUpstreamError extends Error {
+  constructor(readonly status: number, message: string, readonly retryAfter?: string) { super(message); }
+}
+
 export function modelCostReservation(body: Record<string, unknown>, model: string): number {
   if (model === "big-pickle" || model === "cat-jam-free" || model === "muse-spark-1.3-contributor-free") return 0;
   const estimatedInputTokens = estimateModelInputTokens(body);
@@ -188,7 +192,8 @@ export async function proxyModelCompletion(input: {
     let detail = "";
     try { detail = await readUpstreamText(upstream, 2_000); }
     finally { if (timeout) clearTimeout(timeout); }
-    throw new Error(`LLM upstream returned HTTP ${status}: ${detail}`);
+    const retryAfter = upstream.headers["retry-after"];
+    throw new ModelUpstreamError(status, `LLM upstream returned HTTP ${status}: ${detail}`, typeof retryAfter === "string" && /^\d{1,6}$/.test(retryAfter) ? retryAfter : undefined);
   }
   const rawContentType = upstream.headers["content-type"];
   const contentType = Array.isArray(rawContentType) ? rawContentType[0] ?? "application/json" : rawContentType ?? "application/json";

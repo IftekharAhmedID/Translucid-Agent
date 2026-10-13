@@ -11,10 +11,23 @@ import { createFileProviderBackend } from "./provider-store.ts";
 import { FileSourceStore } from "./source-store.ts";
 import { ProviderExecutor } from "../providers/executor.ts";
 import { ResearchStateStore } from "./research-state.ts";
+import { ModelUpstreamError } from "../gateway/model-proxy.ts";
 
 function budget(): MemoryRunBudget {
   return new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 300, repositoryClones: 3, socialProfiles: 1 });
 }
+
+test("gateway preserves model credit errors and Retry-After instead of rewriting them to bad requests", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "tracedog-upstream-status-"));
+  const gateway = createHeadlessGateway({ runId: "run-credit", allowedTools: new Set(), allowedModels: new Set(["deepseek/deepseek-v4.1-flash"]), agentTools: new Map([["lead-researcher", new Set()]]), sourceStore: await FileSourceStore.open(directory), budget: budget(), providerMode: "fixture", fixtureCompletion: async () => { throw new ModelUpstreamError(402, "Model account is out of credits.", "120"); } });
+  const server = await listen(gateway);
+  try {
+    const response = await fetch(server.origin + "/internal/llm/v1/chat/completions", { method: "POST", headers: { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-credit", "x-opencode-agent": "lead-researcher" }, body: JSON.stringify({ model: "deepseek/deepseek-v4.1-flash", messages: [] }) });
+    assert.equal(response.status, 402);
+    assert.equal(response.headers.get("retry-after"), "120");
+    assert.equal((await response.json()).error.code, "MODEL_UPSTREAM_UNAVAILABLE");
+  } finally { gateway.cancel(); await server.close(); await rm(directory, { recursive: true, force: true }); }
+});
 
 test("gateway preserves namespaced OpenRouter model IDs and rejects unapproved namespaces", async () => {
   const directory = await mkdtemp(join(tmpdir(), "tracedog-openrouter-gateway-"));

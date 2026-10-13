@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { performance } from "node:perf_hooks";
 
-import { estimateModelInputTokens, extractObservedReasoningEffort, modelCostReservation, proxyModelCompletion, type ResearchUpstreamFamily } from "../gateway/model-proxy.ts";
+import { estimateModelInputTokens, extractObservedReasoningEffort, ModelUpstreamError, modelCostReservation, proxyModelCompletion, type ResearchUpstreamFamily } from "../gateway/model-proxy.ts";
 import { toolNames } from "../providers/contracts.ts";
 import type { ProviderExecutor } from "../providers/executor.ts";
 import type { MemoryRunBudget } from "./budget.ts";
@@ -370,6 +370,10 @@ export function createHeadlessGateway(input: GatewayInput) {
       }
       if (error instanceof ReportStoreError || error instanceof ResearchStateError) {
         return json(response, 422, { error: { code: error.code, ...(error.field ? { field: error.field } : {}), message: error.message } });
+      }
+      if (error instanceof ModelUpstreamError) {
+        if (error.retryAfter) response.setHeader("retry-after", error.retryAfter);
+        return json(response, error.status, { error: { code: "MODEL_UPSTREAM_UNAVAILABLE", message: error.message } });
       }
       const status = error instanceof GatewayError ? error.status : 400;
       json(response, status, { error: { code: "GATEWAY_REJECTED", message: error instanceof Error ? error.message : "Gateway rejected request." } });
