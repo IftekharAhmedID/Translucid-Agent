@@ -10,8 +10,7 @@ reports, or report attachments are created for this web workflow.
 The existing lead prompt, tools, immutable sources, synthesis, and commit
 boundary remain. A web-only text publication mode converts the committed
 findings to plain text. PDF requests retain configured PDF model/reasoning;
-short text requests ask for medium reasoning. Free model fallback is selected
-before a run, never halfway through a case. Provider support must be measured;
+short text requests ask for medium reasoning. The web intake accepts paid providers only. Provider support must be measured;
 a requested reasoning level is not proof that a stealth model honors it.
 
 PDF intake uses the existing PDF.js parser in `runtime/extract-input.ts`
@@ -47,8 +46,7 @@ duplicating paid research. Email delivery uses Resend idempotency keys.
 
 Resend keys stay server-side. The existing verified translucid.cloud sender
 can send with display name TraceDog. reports@tracedog.co requires new sender
-DNS verification. Big Pickle and Cat Jam require a visible acknowledgement
-that their free-period inputs may be used for model improvement.
+DNS verification. The web service disables ZEN free models.
 
 Acceptance: validate rejected files and emails, immediate queueing and rate limits,
 restart recovery, plain-text scoring, Resend delivery/retry, E2B isolation and
@@ -160,3 +158,12 @@ Per-connection-IP quotas may be conservative behind shared Render edges.
 Sources: [OpenCode model catalog and privacy](https://opencode.ai/v2/docs/console/models/),
 [Go client/session requirements](https://opencode.ai/v2/docs/console/go/),
 [Resend sending API](https://resend.com/docs/api-reference/emails/send-email).
+
+## Local intake
+
+The form asks for a work email and submits directly. The shared
+`landing/public/email-domains.json` list blocks personal and disposable email
+domains in the browser and API; the API also requires working MX records.
+Local HTTP origins accept localhost and 127.0.0.1 at the configured port.
+`TRACEDOG_GATEWAY_ORIGIN` can point to a public callback tunnel while
+`TRACEDOG_ORIGIN` remains the local browser origin. Production origins stay exact.

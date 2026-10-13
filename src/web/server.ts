@@ -10,9 +10,16 @@ import { directoryBytes, hasCaseSpace } from "./storage.ts";
 const root = resolve(process.env.TRACEDOG_DATA_DIR ?? ".debug/tracedog-web");
 const store = new SubmissionStore(root);
 const origin = process.env.TRACEDOG_ORIGIN ?? "http://127.0.0.1:8787";
+const gatewayOrigin = process.env.TRACEDOG_GATEWAY_ORIGIN ?? origin;
+const allowedOrigins = new Set([origin]);
+const originUrl = new URL(origin);
+if (originUrl.protocol === "http:" && ["localhost", "127.0.0.1"].includes(originUrl.hostname)) {
+  originUrl.hostname = originUrl.hostname === "localhost" ? "127.0.0.1" : "localhost";
+  allowedOrigins.add(originUrl.origin);
+}
 const model = process.env.TRACEDOG_MODEL ?? process.env.RESEARCH_MODEL ?? "deepseek-v4-pro";
 const researchProvider = model === "deepseek/deepseek-v4.1-flash" ? "OPENROUTER" : model === "big-pickle" || model === "cat-jam-free" || model === "muse-spark-1.3-contributor-free" ? "ZEN" : process.env.RESEARCH_OPENCODE_PROVIDER ?? "GO";
-const enabled = () => process.env.TRACEDOG_ACCEPT_SUBMISSIONS === "true" && process.env.TRACEDOG_DURABLE_STORAGE === "true" && Boolean(process.env.E2B_API_KEY && process.env.E2B_TEMPLATE_ID && process.env.RESEND_API_KEY && process.env.RESEND_FROM && (researchProvider === "OPENROUTER" ? process.env.OPENROUTER_API_KEY : process.env.OPENCODE_API_KEY));
+const enabled = () => researchProvider !== "ZEN" && process.env.TRACEDOG_ACCEPT_SUBMISSIONS === "true" && process.env.TRACEDOG_DURABLE_STORAGE === "true" && Boolean(process.env.E2B_API_KEY && process.env.E2B_TEMPLATE_ID && process.env.RESEND_API_KEY && process.env.RESEND_FROM && (researchProvider === "OPENROUTER" ? process.env.OPENROUTER_API_KEY : process.env.OPENCODE_API_KEY));
 const gatewayPort = 3001;
 let active = false;
 let stopping = false;
@@ -63,7 +70,7 @@ async function investigate(job: Job) {
   try {
     await new Promise<void>((done, reject) => {
       child = spawn(process.execPath, ["--import", "tsx", "src/headless/cli.ts", input, job.inputPath, "--classification", "public-professional", "--provider-mode", "live", "--runtime", "e2b", "--output", output], {
-        env: { ...process.env, RESEARCH_MODEL: model, RESEARCH_OPENCODE_PROVIDER: researchProvider, RESEARCH_REASONING_VARIANT: variant, REPORT_FORMAT: "text", HEADLESS_GATEWAY_PORT: String(gatewayPort), E2B_GATEWAY_PUBLIC_URL: origin + "/gateway" },
+        env: { ...process.env, RESEARCH_MODEL: model, RESEARCH_OPENCODE_PROVIDER: researchProvider, RESEARCH_REASONING_VARIANT: variant, REPORT_FORMAT: "text", HEADLESS_GATEWAY_PORT: String(gatewayPort), E2B_GATEWAY_PUBLIC_URL: gatewayOrigin + "/gateway" },
         stdio: ["ignore", "ignore", "pipe"],
       });
       child.stderr?.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-4000); });
@@ -107,7 +114,7 @@ async function pump() {
 
 const files: Record<string, [string, string]> = {
   "/": ["index.html", "text/html; charset=utf-8"], "/style.css": ["style.css", "text/css"],
-  "/app.js": ["app.js", "text/javascript"], "/mark.svg": ["mark.svg", "image/svg+xml"],
+  "/app.js": ["app.js", "text/javascript"], "/email-domains.json": ["email-domains.json", "application/json"], "/mark.svg": ["mark.svg", "image/svg+xml"],
   "/robots.txt": ["robots.txt", "text/plain"], "/sitemap.xml": ["sitemap.xml", "application/xml"],
 };
 
@@ -132,7 +139,7 @@ export const server = createServer(async (request, response) => {
     if (path.startsWith("/api/")) {
       if (Date.now() - requestWindow.starts > 60000) requestWindow = { starts: Date.now(), count: 0 };
       if (++requestWindow.count > 60) throw new SubmissionError("Too many requests. Try again shortly.", 429);
-      if (request.method !== "POST" || request.headers.origin !== origin || !request.headers["content-type"]?.startsWith("application/json")) throw new SubmissionError("Request not allowed.", 403);
+      if (request.method !== "POST" || !allowedOrigins.has(request.headers.origin ?? "") || !request.headers["content-type"]?.startsWith("application/json")) throw new SubmissionError("Request not allowed.", 403);
       if (!enabled()) throw new SubmissionError("Investigations are temporarily unavailable while we complete runtime checks.", 503);
       if (path !== "/api/submissions") return json(response, 404, { error: "Not found." });
       if (path === "/api/submissions") {

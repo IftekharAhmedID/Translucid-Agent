@@ -7,10 +7,13 @@ import { SubmissionStore, decodePdf, validateWorkEmail, validateText } from "./s
 
 test("work emails reject consumer domains, malformed addresses and domains without mail", async () => {
   const mx = async () => [{ exchange: "mail.example.org", priority: 10 }];
-  await assert.rejects(() => validateWorkEmail("person@gmail.com", mx), /work email/);
+  for (const domain of ["gmail.com", "googlemail.com", "yahoo.com", "yahoo.de", "outlook.com", "hotmail.com", "icloud.com", "proton.me", "mail.ru", "mailinator.com"]) {
+    await assert.rejects(() => validateWorkEmail(`person@${domain}`, mx), /work email/);
+  }
   await assert.rejects(() => validateWorkEmail("person\n@example.org", mx));
   await assert.rejects(() => validateWorkEmail("person@example.org", async () => []), /mail/);
   assert.equal(await validateWorkEmail("Person@Example.org", mx), "person@example.org");
+  assert.equal(await validateWorkEmail("ia22@rice.edu", mx), "ia22@rice.edu");
   assert.throws(() => validateText("x"), /20/);
   assert.throws(() => validateText("x".repeat(10001)), /10,000/);
 });

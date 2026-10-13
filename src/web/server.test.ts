@@ -20,6 +20,9 @@ test("web API rejects cross-origin, personal email, retired verification and pri
     }
     const post = (path: string, value: unknown, requestOrigin = origin) => fetch(origin + path, { method: "POST", headers: { origin: requestOrigin, "content-type": "application/json" }, body: JSON.stringify(value) });
     assert.equal((await post("/api/submissions", {}, "https://evil.example")).status, 403);
+    const localAlias = await post("/api/submissions", { consent: true, email: "a@yahoo.com", kind: "text", text: "x".repeat(25) }, `http://localhost:${port}`);
+    assert.equal(localAlias.status, 400);
+    assert.match((await localAlias.json()).error, /work email/);
     assert.equal((await post("/api/submissions", { consent: true, email: "a@gmail.com", kind: "text", text: "x".repeat(25) })).status, 400);
     assert.equal((await post("/api/verify", { submissionId: "unknown", code: "123456" })).status, 404);
     assert.equal((await fetch(origin + "/gateway/internal/tools/execute", { method: "POST" })).status, 404);

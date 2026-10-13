@@ -1,3 +1,4 @@
+import blockedEmailDomains from "../../landing/public/email-domains.json" with { type: "json" };
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { resolveMx } from "node:dns/promises";
@@ -7,7 +8,7 @@ export class SubmissionError extends Error {
   constructor(message: string, readonly status = 400) { super(message); }
 }
 
-const consumerDomains = new Set("gmail.com googlemail.com yahoo.com yahoo.co.uk yahoo.fr yahoo.co.in yahoo.ca ymail.com rocketmail.com outlook.com hotmail.com hotmail.co.uk live.com msn.com aol.com icloud.com me.com mac.com proton.me protonmail.com pm.me hey.com fastmail.com mail.com gmx.com gmx.de zoho.com qq.com 163.com 126.com yandex.com yandex.ru tutanota.com tuta.com mailinator.com guerrillamail.com 10minutemail.com temp-mail.org example.com example.net".split(" "));
+const consumerDomains = new Set(blockedEmailDomains);
 
 export async function validateWorkEmail(raw: unknown, mxLookup = resolveMx): Promise<string> {
   if (typeof raw !== "string" || raw.length > 254 || !/^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)+$/.test(raw)) throw new SubmissionError("Enter a valid work email.");
