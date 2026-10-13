@@ -330,6 +330,9 @@ export class ResearchStateStore {
   }
 
   private async validateTargetAnchor(target: z.infer<typeof investigationTargetSchema>): Promise<void> {
+    if (/^(probe|placeholder|todo|tbd)$/i.test(target.predicate)) {
+      throw new ResearchStateError("MATERIAL_PREDICATE_REQUIRED", "Each investigation target must state a material claim; validator probes and placeholders cannot enter the plan.", "target.predicate");
+    }
     if (target.anchor.kind === "PDF_TEXT") await this.validatePdfAnchor(target.anchor);
   }
 

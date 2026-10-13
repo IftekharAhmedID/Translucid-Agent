@@ -57,6 +57,21 @@ async function fixture() {
   return { root, sourceStore, source };
 }
 
+test("placeholder predicates cannot become scored investigation targets", async () => {
+  const { root, sourceStore } = await fixture();
+  try {
+    const state = await ResearchStateStore.open(root, sourceStore);
+    const target = { id: "PROBE", section: "Probe", predicate: "probe", importance: "MEDIUM", anchor };
+    await assert.rejects(() => state.planSet({ targets: [target] }), /material claim/i);
+    assert.equal(await state.current(), undefined);
+    await state.planSet({ targets: [{ ...target, id: "IDENT", section: "Identity", predicate: "The submitted person is Synthetic Candidate." }] });
+    for (const predicate of ["probe", "Placeholder", "TODO", "TBD"]) {
+      await assert.rejects(() => state.targetAdd({ target: { ...target, predicate } }), /material claim/i);
+    }
+    assert.deepEqual((await state.current())?.targets?.map(t => t.id), ["IDENT"]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("v3 persists targets, findings, comments, summary coverage, and host inventory", async () => {
   const { root, sourceStore, source } = await fixture();
   try {
