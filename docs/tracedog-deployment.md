@@ -16,13 +16,27 @@ website records with:
 | Type | Host | Value | TTL |
 | --- | --- | --- | --- |
 | A | @ | 216.24.57.1 | 1 min or Automatic |
-| CNAME | www | The assigned Render site hostname | 1 min or Automatic |
+| CNAME | www | tracedog-site.onrender.com | 1 min or Automatic |
 
 Remove old parking/redirect records and AAAA records for these website hosts.
 Preserve MX, mail-related TXT, and unrelated subdomains. After DNS propagates,
 verify both domains in Render and test HTTPS, `www` redirection, `/robots.txt`,
 and `/sitemap.xml`. Render manages TLS. See
 [Render's Namecheap guide](https://render.com/docs/configure-namecheap-dns).
+
+Render service: `srv-db6rhp3l550s739r1hd0`, in TraceDog environment
+`evm-db6rcbom7kps73b2gstg`. Preview: https://tracedog-site.onrender.com/.
+Both custom domains are registered in Render. Initial deployment of
+`e804ec28efb278d95e38faa71180e8d1f0f877d9` reached `live`; the public page
+returned HTTP 200 with the configured security headers. At setup, Namecheap
+still served parking DNS, so domain verification and custom-domain HTTPS
+remain pending the records above.
+
+Validation: 179 tests and TypeScript checking passed on Node 22.23.3.
+An isolated headless browser verified 320/768/1024/1440px widths, no horizontal
+overflow, loaded images, section navigation, and keyboard entry via the skip
+link. No page console warnings or errors were observed. These checks qualify
+the landing page, not production investigation execution.
 
 ## Investigator service: work needed before public access
 
