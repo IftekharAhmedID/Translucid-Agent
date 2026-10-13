@@ -114,5 +114,27 @@ footer p{width:100%;order:3}
 .file-bottom{font-size:7px}
 }
 
-@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}
-}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+.upload-content{padding:28px}
+.upload-content h2{font-family:Georgia,serif;font-size:30px;font-weight:400;margin-bottom:12px}
+.upload-content>p{font-size:13px;color:var(--muted)}
+.input-options{display:flex;gap:10px;margin:24px 0}
+.input-options button{flex:1;padding:12px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font:inherit;font-size:13px;cursor:pointer}
+.input-options button[aria-pressed=true]{background:var(--ink);color:var(--white)}
+label{display:block;font-size:12px;margin:16px 0 8px}
+input:not([type=checkbox]),textarea{width:100%;padding:12px;border:1px solid var(--line);background:var(--white);font:inherit;color:var(--ink);font-size:13px;min-width:0}
+input[type=file]{font-size:11px}
+textarea{resize:vertical}
+.input-help,.upload-notice{font-size:11px!important;color:var(--muted);margin-top:8px}
+.upload-notice{margin:20px 0}
+.deploy{width:100%}
+button.button{border:0;cursor:pointer;font-family:inherit}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid var(--ink);outline-offset:3px}
+button:disabled{opacity:.6;cursor:wait}
+fieldset{margin:24px 0 0;padding:0;border:0}
+legend{font-size:20px;font-family:Georgia,serif}
+.consent{font-size:11px;line-height:1.6;display:flex;gap:8px;align-items:flex-start;margin:16px 0}
+.consent input{flex-shrink:0;margin-top:3px}
+.honeypot{display:none}
+#form-status{margin-top:18px;font-size:12px;line-height:1.6}
+[hidden]{display:none!important}

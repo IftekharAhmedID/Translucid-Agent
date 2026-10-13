@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-export async function runProcess(command: string, args: string[], options: { cwd?: string; timeoutMs?: number } = {}): Promise<{ stdout: string; stderr: string }> {
+export async function runProcess(command: string, args: string[], options: { cwd?: string; timeoutMs?: number; maxOutputBytes?: number } = {}): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: options.cwd, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
@@ -15,8 +15,16 @@ export async function runProcess(command: string, args: string[], options: { cwd
       else resolve({ stdout, stderr });
     };
     timer = options.timeoutMs ? setTimeout(() => child.kill("SIGKILL"), options.timeoutMs) : undefined;
-    child.stdout?.on("data", (chunk) => { stdout += String(chunk); });
-    child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+    let outputBytes = 0;
+    const capture = (chunk: Buffer, stream: "stdout" | "stderr") => {
+      outputBytes += chunk.length;
+      if (options.maxOutputBytes && outputBytes > options.maxOutputBytes) {
+        child.kill("SIGKILL"); finish(new Error("Process output exceeded the safety limit.")); return;
+      }
+      if (stream === "stdout") stdout += String(chunk); else stderr += String(chunk);
+    };
+    child.stdout?.on("data", (chunk) => capture(chunk, "stdout"));
+    child.stderr?.on("data", (chunk) => capture(chunk, "stderr"));
     child.once("error", (error) => finish(error));
     child.once("close", (code) => {
       if (code === 0) finish();

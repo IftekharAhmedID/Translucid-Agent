@@ -10,6 +10,10 @@ test("captures successful and nonzero process results", async () => {
   await assert.rejects(runProcess(process.execPath, ["--input-type=module", "-e", "console.error('failed'); process.exit(3)"]), /exited 3: failed/);
 });
 
+test("untrusted PDF process output is bounded", async () => {
+  await assert.rejects(() => runProcess(process.execPath, ["-e", "console.log('x'.repeat(100000))"], { maxOutputBytes: 1000, timeoutMs: 1000 }), /safety limit/);
+});
+
 test("spawn errors settle a child process without retaining the command timeout", async () => {
   const started = Date.now();
   const child = spawn(process.execPath, [

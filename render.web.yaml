@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: tracedog-app
+    runtime: docker
+    dockerfilePath: ./Dockerfile.web
+    branch: main
+    region: ohio
+    plan: starter
+    numInstances: 1
+    healthCheckPath: /health
+    disk:
+      name: tracedog-case-data
+      mountPath: /var/data/tracedog
+      sizeGB: 1
+    envVars:
+      - key: TRACEDOG_ORIGIN
+        value: https://tracedog.co
+      - key: TRACEDOG_DATA_DIR
+        value: /var/data/tracedog
+      - key: TRACEDOG_DURABLE_STORAGE
+        value: "true"
+      - key: TRACEDOG_ACCEPT_SUBMISSIONS
+        value: "false"
+      - key: TRACEDOG_MODEL
+        value: cat-jam-free
+      - key: RESEARCH_OPENCODE_PROVIDER
+        value: ZEN
+      - key: TRACEDOG_PDF_REASONING
+        value: medium
+      - key: RESEND_FROM
+        value: TraceDog <reports@translucid.cloud>
+      - key: RESEND_API_KEY
+        sync: false
+      - key: OPENCODE_API_KEY
+        sync: false
+      - key: E2B_API_KEY
+        sync: false
+      - key: E2B_TEMPLATE_ID
+        sync: false
+      - key: EXA_API_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
