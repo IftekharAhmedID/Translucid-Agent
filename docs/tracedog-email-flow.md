@@ -91,7 +91,8 @@ Per-connection-IP quotas may be conservative behind shared Render edges.
   PDF report also reached Inbox but included a scored validator placeholder.
   Host target validation now rejects literal placeholders. Subsequent PDF
   retries did not commit and issued no scores; clean post-fix PDF completion
-  remains unqualified. All 199 tests and type checking pass. See
+  was unqualified at that checkpoint; the October 13 repair acceptance below
+  records the subsequent successful local PDF cycle. All 199 tests and type checking pass. See
   [current Go evidence](tracedog-model-access.md#deepseek-v41-flash-via-the-active-go-subscription).
 - At the user's request, inbox-code verification was removed from the UI,
   API and persisted job model. Validated submissions queue immediately;
@@ -195,3 +196,16 @@ reservation. Concurrent reservations remain serialized under the existing
 ceiling. No prompt, model, tool, evidence or scoring rule changes are required.
 All 207 tests and type checking passed, including split SSE chunks, malformed
 usage, retained failure reservations and concurrent ceiling enforcement.
+
+Live repair acceptance: the exact supplied PDF completed run
+`e2f7fcf2-8871-4f38-bf3e-8150d7ec4be7` on E2B with the existing Go
+`deepseek-v4.1-flash` route. It committed 28 findings (26 submitted claims and
+2 discoveries) with one lead and 30 model requests. Source hashes and the
+research snapshot independently verified. The 32,199-character plain-text
+report was sent through the existing web worker; Resend's email readback
+confirmed `last_event=delivered` and subject
+`Your TraceDog PDF investigation report`. No E2B sandbox remained after the
+run. The local $5 model ceiling was unchanged, and no free model was used.
+The private report and run artifacts remain under ignored
+`.debug/tracedog-local-intake/`. This qualifies the repaired local PDF cycle;
+production deployment is separate.

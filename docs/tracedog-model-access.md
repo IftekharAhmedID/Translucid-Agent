@@ -190,7 +190,10 @@ The next PDF retries `ec3f27b9-7516-46b7-8d65-83a0e933732b` and
 failed closed without reports or scores. Native-session diagnostics from the
 latter show recoverable tool errors (a search preview over the 40 KiB bound
 and a scholarly adapter error), but do not establish the termination cause.
-The clean post-fix PDF outcome remains unqualified; the successful biography
-and preliminary PDF prove Go access and the email cycle, not universal run
-reliability. Real-input artifacts and mailbox checks stay under ignored
+At that checkpoint, the clean post-fix PDF outcome was unqualified. The
+October 13 local repair run `e2f7fcf2-8871-4f38-bf3e-8150d7ec4be7` subsequently
+committed 28 findings from the exact supplied PDF and its plain-text report
+was confirmed delivered by Resend. Recovery uses an asynchronous prompt and
+completed model reservations settle against provider token usage under the
+unchanged $5 guard; see [repair acceptance](tracedog-email-flow.md#pdf-recovery-timeout-fix). Real-input artifacts and mailbox checks stay under ignored
 `.debug/tracedog-person-live/`; they are never committed.
