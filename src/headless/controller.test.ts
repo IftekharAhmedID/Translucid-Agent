@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createServer } from "node:http";
 
 import { readFile } from "node:fs/promises";
 
-import { canPublishAfterResearchFailure, classifyInvestigationFailure, InvestigationStallError, ResearchDeadlineError, waitForResearchIdle } from "./controller.ts";
+import { canPublishAfterResearchFailure, classifyInvestigationFailure, HeadlessInvestigationController, InvestigationStallError, ResearchDeadlineError, waitForResearchIdle } from "./controller.ts";
 import { researchPrompt } from "./prompt-contracts.ts";
 
 test("controller uses one lead session and deterministic v3 materialization", async () => {
@@ -74,4 +75,44 @@ test("only whitelisted research termination can publish with a ready ledger", ()
   assert.equal(canPublishAfterResearchFailure(new ResearchDeadlineError(), true), true);
   assert.equal(canPublishAfterResearchFailure(new Error("provider integrity failure"), true), false);
   assert.equal(canPublishAfterResearchFailure(undefined, true), true);
+});
+
+
+test("synthesis recovery acknowledges asynchronously and waits for the durable commit", async () => {
+  let launches = 0;
+  let polls = 0;
+  let committed = false;
+  let materialized = false;
+  const server = createServer(async (request, response) => {
+    for await (const _ of request) { /* drain the SDK request */ }
+    response.setHeader("content-type", "application/json");
+    if (request.url?.includes("/prompt_async")) {
+      launches++; polls = 0; response.writeHead(204); response.end();
+    } else if (request.url?.includes("/message")) {
+      // A blocking prompt can time out while the investigator is still working.
+      response.writeHead(504); response.end(JSON.stringify({ error: "HeadersTimeoutError" }));
+    } else if (request.url?.includes("/status")) {
+      if (++polls === 1) response.end(JSON.stringify({ lead: { type: "busy" } }));
+      else { if (launches === 2) committed = true; response.end("{}"); }
+    } else {
+      response.end(JSON.stringify({ id: "lead", agent: "lead-researcher", model: { id: "deepseek-v4.1-flash", providerID: "translucid" } }));
+    }
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  try {
+    const result = { runId: "test-commit" };
+    const output = await new HeadlessInvestigationController().run({
+      root: "/unused", handle: { kind: "E2B", id: "test", openCodeUrl: `http://127.0.0.1:${address.port}`, manifestHash: "test" },
+      signal: new AbortController().signal, runtime: "E2B", researchModel: "deepseek-v4.1-flash", researchVariant: "medium",
+      researchState: { current: async () => ({ schemaVersion: 3, phase: committed ? "COMMITTED" : "RESEARCHING" }) } as never,
+      reportStore: { materializeV3: async () => { assert.equal(committed, true); materialized = true; }, result: async () => result } as never,
+      sourceStore: {} as never, activity: { lastProgressAt: Date.now() },
+      persistResearchSnapshot: async () => { assert.equal(committed, true); return "snapshot"; }, bindResearchSnapshot: () => undefined,
+    });
+    assert.equal(launches, 2);
+    assert.equal(materialized, true);
+    assert.equal(output.result, result);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 });

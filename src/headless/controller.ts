@@ -192,15 +192,16 @@ export class HeadlessInvestigationController {
       let state = await input.researchState.current();
       if (!state || state.schemaVersion !== 3 || state.phase !== "COMMITTED") {
         input.onProgress?.("Lead session is continuing durable synthesis and commit recovery.");
-        const recovery = unwrap(await client.session.prompt({
+        const recovery = await client.session.promptAsync({
           sessionID: leadId,
           directory,
           agent: "lead-researcher",
           model: { providerID: "translucid", modelID: input.researchModel },
           variant: input.researchVariant,
           parts: [{ type: "text", text: input.compactContext ? compactSynthesisRecoveryPrompt : synthesisRecoveryPrompt }],
-        }, { signal: researchAbort.signal }), "synthesis recovery prompt");
-        if (recovery) await waitForResearchIdle({
+        }, { signal: researchAbort.signal });
+        if (recovery.error) throw new Error("Synthesis recovery prompt failed: " + describeSdkError(recovery.error));
+        await waitForResearchIdle({
           readStatus: async () => {
             const statuses = unwrap(await client.session.status({ directory }, { signal: researchAbort.signal }), "session status");
             const status = statuses[leadId]?.type;

@@ -167,3 +167,15 @@ domains in the browser and API; the API also requires working MX records.
 Local HTTP origins accept localhost and 127.0.0.1 at the configured port.
 `TRACEDOG_GATEWAY_ORIGIN` can point to a public callback tunnel while
 `TRACEDOG_ORIGIN` remains the local browser origin. Production origins stay exact.
+
+## PDF recovery timeout fix
+
+The October 13 local PDF submission `kOzmwukSa89-NVpZwDTKc6eopm_H7807`
+passed intake and started the E2B lead, then failed with
+`UND_ERR_HEADERS_TIMEOUT` during the blocking synthesis-recovery prompt.
+Recovery now uses OpenCode's acknowledged `promptAsync` endpoint, then the
+existing session-status polling and research deadline/liveness checks. The
+host still requires a durable COMMITTED investigation before snapshot binding
+and deterministic report materialization. Prompts, model settings, tools and
+validation rules are unchanged. A local fake OpenCode server reproduces the
+blocking-request timeout and proves the asynchronous recovery waits for commit.
