@@ -103,3 +103,24 @@ test("qualification budgets retain usage telemetry without a numerical ceiling",
     routeCounts: { "github.clone": 2 },
   });
 });
+
+
+test("completed model calls release unused reservations while unknown usage stays charged", async () => {
+  const budget = new MemoryRunBudget({ modelUsd: 1, providerUsd: 1, externalNetworkCalls: 1, repositoryClones: 0, socialProfiles: 0 });
+  for (let index = 0; index < 10; index++) await budget.withModelReservation(0.5, async () => 0.01);
+  assert.ok(Math.abs(budget.snapshot().modelUsd - 0.1) < 1e-10);
+  await assert.rejects(() => budget.withModelReservation(0.5, async () => { throw new Error("interrupted"); }), /interrupted/);
+  assert.ok(Math.abs(budget.snapshot().modelUsd - 0.6) < 1e-10);
+  await assert.rejects(() => budget.withModelReservation(0.5, async () => 0.01), /budget exhausted/);
+});
+
+test("concurrent model reservations cannot overspend and invalid usage never refunds", async () => {
+  const budget = new MemoryRunBudget({ modelUsd: 1, providerUsd: 1, externalNetworkCalls: 1, repositoryClones: 0, socialProfiles: 0 });
+  let finish!: (cost: number) => void;
+  const active = budget.withModelReservation(0.75, () => new Promise(resolve => { finish = resolve; }));
+  await new Promise(resolve => setImmediate(resolve));
+  await assert.rejects(() => budget.withModelReservation(0.75, async () => 0), /budget exhausted/);
+  finish(0.1); await active;
+  for (const cost of [undefined, NaN, -1, 2]) await budget.withModelReservation(0.1, async () => cost);
+  assert.ok(Math.abs(budget.snapshot().modelUsd - 0.5) < 1e-10);
+});

@@ -93,6 +93,14 @@ export class MemoryRunBudget {
     });
   }
 
+  async withModelReservation(costUsd: number, request: () => Promise<number | undefined>): Promise<void> {
+    await this.reserveModel(costUsd);
+    const actualUsd = await request();
+    // Interrupted calls or missing/invalid usage retain their full reservation.
+    if (actualUsd === undefined || !Number.isFinite(actualUsd) || actualUsd < 0 || actualUsd > costUsd) return;
+    await this.mutate(() => { this.modelUsd = Math.max(0, this.modelUsd - (costUsd - actualUsd)); });
+  }
+
   recordProvider(costUsd: number): Promise<void> {
     assertIncrement(costUsd);
     return this.mutate(() => {

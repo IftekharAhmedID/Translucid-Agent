@@ -10,16 +10,30 @@ export class ModelUpstreamError extends Error {
 }
 
 export function modelCostReservation(body: Record<string, unknown>, model: string): number {
-  if (model === "big-pickle" || model === "cat-jam-free" || model === "muse-spark-1.3-contributor-free") return 0;
-  const estimatedInputTokens = estimateModelInputTokens(body);
   const maximumOutputTokens = Math.max(0, Math.min(Number(body.max_tokens ?? body.max_completion_tokens ?? body.max_output_tokens ?? 32_000), 384_000));
-  // Conservative peak rates; no cache discounts. Review against provider pricing before enabling a paid route.
+  return modelTokenCost(estimateModelInputTokens(body), maximumOutputTokens, model);
+}
+
+function modelTokenCost(inputTokens: number, outputTokens: number, model: string): number {
+  if (model === "big-pickle" || model === "cat-jam-free" || model === "muse-spark-1.3-contributor-free") return 0;
+  // Conservative peak rates; no cache discounts.
   const rates = model === "deepseek-v4-pro" ? { inputUsdPerMillion: 1.32, outputUsdPerMillion: 3.96 }
     : model === "deepseek-v4-flash" ? { inputUsdPerMillion: 0.30, outputUsdPerMillion: 0.60 }
     : model === "deepseek-v4.1-flash" || model === "deepseek/deepseek-v4.1-flash" ? { inputUsdPerMillion: 0.30, outputUsdPerMillion: 1.20 }
     : model === "gpt-5.6-luna" ? { inputUsdPerMillion: 0.40, outputUsdPerMillion: 1.80 }
     : { inputUsdPerMillion: 4, outputUsdPerMillion: 16 };
-  return (estimatedInputTokens * rates.inputUsdPerMillion + maximumOutputTokens * rates.outputUsdPerMillion) / 1_000_000;
+  return (inputTokens * rates.inputUsdPerMillion + outputTokens * rates.outputUsdPerMillion) / 1_000_000;
+}
+
+export function modelUsageCost(payload: unknown, model: string): number | undefined {
+  if (!payload || typeof payload !== "object") return;
+  const data = payload as { usage?: Record<string, unknown>; response?: { usage?: Record<string, unknown> } };
+  const usage = data.usage ?? data.response?.usage;
+  if (!usage || typeof usage !== "object") return;
+  const inputTokens = usage.prompt_tokens ?? usage.input_tokens;
+  const outputTokens = usage.completion_tokens ?? usage.output_tokens;
+  if (typeof inputTokens !== "number" || typeof outputTokens !== "number" || !Number.isSafeInteger(inputTokens) || !Number.isSafeInteger(outputTokens) || inputTokens < 0 || outputTokens < 0) return;
+  return modelTokenCost(inputTokens, outputTokens, model);
 }
 
 export function estimateModelInputTokens(body: Record<string, unknown>): number {
@@ -161,7 +175,7 @@ export async function proxyModelCompletion(input: {
   upstreamKey?: string;
   researchUpstreamFamily: ResearchUpstreamFamily;
   fixtureCompletion: () => Promise<Completion>;
-}): Promise<void> {
+}): Promise<number | undefined> {
   if (input.providerMode === "fixture") {
     const completion = await input.fixtureCompletion();
     writeFixtureCompletion(input.response, input.body, input.model, completion);
@@ -206,10 +220,17 @@ export async function proxyModelCompletion(input: {
     try {
       const payload = await readUpstreamText(upstream);
       input.response.end(contentType.includes("json") ? decodeJsonToolNames(payload, encoded.wireToSemantic) : payload);
+      return contentType.includes("json") ? modelUsageCost(JSON.parse(payload), input.model) : undefined;
     } finally { if (timeout) clearTimeout(timeout); }
     return;
   }
-  const names = new SseToolNameDecoder(encoded.wireToSemantic);
+  let usageCost: number | undefined;
+  let completed = false;
+  const names = new SseToolNameDecoder(encoded.wireToSemantic, (event) => {
+    const cost = modelUsageCost(event, input.model);
+    if (cost !== undefined) usageCost = Math.max(usageCost ?? 0, cost);
+    if (event === "[DONE]" || (event && typeof event === "object" && "type" in event && event.type === "response.completed")) completed = true;
+  });
   try {
     for await (const chunk of upstream) {
       const decoded = names.push(Buffer.from(chunk as Uint8Array));
@@ -217,6 +238,7 @@ export async function proxyModelCompletion(input: {
     }
     const final = names.flush();
     if (final) input.response.write(final);
+    return completed ? usageCost : undefined;
   } finally {
     if (timeout) clearTimeout(timeout);
     input.response.end();

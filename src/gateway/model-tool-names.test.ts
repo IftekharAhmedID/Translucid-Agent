@@ -65,3 +65,15 @@ test("non-streaming GO tool aliases round-trip all affected semantic tool-name f
   for (const semantic of aliases.values()) assert.match(decoded, new RegExp(semantic.replace(".", "\\.")));
   assert.doesNotMatch(decoded, /wire_/);
 });
+
+
+test("stream usage and completion are observed across split chunks without changing the stream", () => {
+  const events: unknown[] = [];
+  const decoder = new SseToolNameDecoder(new Map(), event => events.push(event));
+  const stream = 'data: {"usage":{"prompt_tokens":239299,"completion_tokens":1409}}\r\n\r\ndata: [DONE]';
+  let output = "";
+  for (let index = 0; index < stream.length; index += 7) output += decoder.push(Buffer.from(stream.slice(index, index + 7)));
+  output += decoder.flush();
+  assert.equal(output, stream);
+  assert.deepEqual(events, [{ usage: { prompt_tokens: 239299, completion_tokens: 1409 } }, "[DONE]"]);
+});

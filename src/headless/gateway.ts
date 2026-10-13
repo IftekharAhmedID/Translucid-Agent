@@ -338,8 +338,7 @@ export function createHeadlessGateway(input: GatewayInput) {
         input.onActivity?.({ kind: "model-start", name: model, at: Date.now() });
         const modelStarted = performance.now();
         try {
-          await input.budget.reserveModel(modelCostReservation(body, model));
-          await proxyModelCompletion({
+          await input.budget.withModelReservation(modelCostReservation(body, model), () => proxyModelCompletion({
             request,
             response,
             body,
@@ -350,7 +349,7 @@ export function createHeadlessGateway(input: GatewayInput) {
             upstreamKey: input.researchUpstreamFamily === "OPENROUTER" ? process.env.OPENROUTER_API_KEY : process.env.OPENCODE_API_KEY,
             researchUpstreamFamily: input.researchUpstreamFamily ?? "ZEN",
             fixtureCompletion: () => input.fixtureCompletion?.(body, agent, model) ?? Promise.resolve({ content: "Headless fixture model completed." }),
-          });
+          }));
         } finally {
           const elapsedMs = Math.max(0, Math.round(performance.now() - modelStarted));
           const timing = modelTiming.get(model) ?? { requests: 0, totalElapsedMs: 0, maxElapsedMs: 0 };

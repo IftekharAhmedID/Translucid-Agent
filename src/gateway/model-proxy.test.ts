@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { estimateModelInputTokens, modelCostReservation, modelRequestTimeoutMs, modelUpstreamBody, modelUpstreamHeaders, preflightResearchModel, resolveResearchUpstream } from "./model-proxy.ts";
+import { estimateModelInputTokens, modelUsageCost, modelCostReservation, modelRequestTimeoutMs, modelUpstreamBody, modelUpstreamHeaders, preflightResearchModel, resolveResearchUpstream } from "./model-proxy.ts";
 
 test("OpenRouter uses its approved model and preserves tool requests while normalizing reasoning", () => {
   const model = "deepseek/deepseek-v4.1-flash";
@@ -100,4 +100,13 @@ test("model route preflight probes only the canonical DeepSeek chat route", asyn
 test("model route preflight fails closed for missing credentials and upstream errors", async () => {
   await assert.rejects(() => preflightResearchModel({ family: "GO", model: "deepseek-v4-pro" }), /OPENCODE_API_KEY/);
   await assert.rejects(() => preflightResearchModel({ family: "GO", model: "deepseek-v4-pro", apiKey: "secret", fetchImpl: async () => new Response("no", { status: 503 }) }), /HTTP 503/);
+});
+
+
+test("model usage accounting includes all output tokens and ignores malformed usage", () => {
+  const usage = { prompt_tokens: 239299, completion_tokens: 1409, completion_tokens_details: { reasoning_tokens: 9 } };
+  const expected = (239299 * 0.30 + 1409 * 1.20) / 1_000_000;
+  assert.equal(modelUsageCost({ usage }, "deepseek-v4.1-flash"), expected);
+  assert.equal(modelUsageCost({ response: { usage: { input_tokens: 100, output_tokens: 20 } } }, "gpt-5.6-luna"), (100 * 0.4 + 20 * 1.8) / 1_000_000);
+  for (const usage of [undefined, {}, { prompt_tokens: -1, completion_tokens: 1 }, { prompt_tokens: 10 }, { prompt_tokens: "10", completion_tokens: 1 }]) assert.equal(modelUsageCost({ usage }, "deepseek-v4.1-flash"), undefined);
 });

@@ -179,3 +179,19 @@ host still requires a durable COMMITTED investigation before snapshot binding
 and deterministic report materialization. Prompts, model settings, tools and
 validation rules are unchanged. A local fake OpenCode server reproduces the
 blocking-request timeout and proves the asynchronous recovery waits for commit.
+
+The first retry passed the timeout point but stopped after writing 15/25
+findings: the gateway returned `Model budget exhausted`. Its $5 guard had
+accumulated every worst-case byte/token reservation without reconciling
+successful completions. The provider's completed stream reported 239,299
+input tokens and 1,409 output tokens for one request whose reservation used
+933,349 request bytes plus 32,000 possible output tokens.
+
+Model calls still reserve their conservative maximum before forwarding.
+Successful completed JSON/SSE responses now settle that reservation against
+validated provider token totals at the same peak rates, without cache discounts.
+Missing/malformed usage, truncated streams and failed calls keep the maximum
+reservation. Concurrent reservations remain serialized under the existing
+ceiling. No prompt, model, tool, evidence or scoring rule changes are required.
+All 207 tests and type checking passed, including split SSE chunks, malformed
+usage, retained failure reservations and concurrent ceiling enforcement.

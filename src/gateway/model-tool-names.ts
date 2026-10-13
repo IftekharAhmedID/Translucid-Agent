@@ -52,15 +52,17 @@ export function encodeModelToolNames<T>(body: T): {
   };
 }
 
-function decodeSseLine(line: string, wireToSemantic: Map<string, string>): string {
+function decodeSseLine(line: string, wireToSemantic: Map<string, string>, onEvent?: (event: unknown) => void): string {
   const carriageReturn = line.endsWith("\r") ? "\r" : "";
   const content = carriageReturn ? line.slice(0, -1) : line;
   if (!content.startsWith("data:")) return line;
   const separator = content.startsWith("data: ") ? "data: " : "data:";
   const payload = content.slice(separator.length);
-  if (!payload || payload === "[DONE]") return line;
+  if (!payload) return line;
+  if (payload === "[DONE]") { onEvent?.(payload); return line; }
   try {
     const parsed: unknown = JSON.parse(payload);
+    onEvent?.(parsed);
     replaceNamedFields(parsed, wireToSemantic);
     return `${separator}${JSON.stringify(parsed)}${carriageReturn}`;
   } catch {
@@ -72,14 +74,14 @@ export class SseToolNameDecoder {
   private readonly decoder = new TextDecoder();
   private pending = "";
 
-  constructor(private readonly wireToSemantic: Map<string, string>) {}
+  constructor(private readonly wireToSemantic: Map<string, string>, private readonly onEvent?: (event: unknown) => void) {}
 
   push(chunk: Uint8Array): string {
     this.pending += this.decoder.decode(chunk, { stream: true });
     let output = "";
     let newline = this.pending.indexOf("\n");
     while (newline >= 0) {
-      output += `${decodeSseLine(this.pending.slice(0, newline), this.wireToSemantic)}\n`;
+      output += `${decodeSseLine(this.pending.slice(0, newline), this.wireToSemantic, this.onEvent)}\n`;
       this.pending = this.pending.slice(newline + 1);
       newline = this.pending.indexOf("\n");
     }
@@ -88,7 +90,7 @@ export class SseToolNameDecoder {
 
   flush(): string {
     this.pending += this.decoder.decode();
-    const output = this.pending ? decodeSseLine(this.pending, this.wireToSemantic) : "";
+    const output = this.pending ? decodeSseLine(this.pending, this.wireToSemantic, this.onEvent) : "";
     this.pending = "";
     return output;
   }
