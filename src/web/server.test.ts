@@ -11,7 +11,7 @@ test("web API rejects cross-origin, personal email, unknown codes and private ro
   const port = 18987;
   const origin = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ["--import", "tsx", "src/web/server.ts"], {
-    env: { ...process.env, PORT: String(port), TRACEDOG_ORIGIN: origin, TRACEDOG_DATA_DIR: root, TRACEDOG_ACCEPT_SUBMISSIONS: "true", TRACEDOG_DURABLE_STORAGE: "true", E2B_API_KEY: "test", E2B_TEMPLATE_ID: "test", OPENCODE_API_KEY: "test", RESEND_API_KEY: "test", RESEND_FROM: "test@example.org" }, stdio: "ignore",
+    env: { ...process.env, PORT: String(port), TRACEDOG_ORIGIN: origin, TRACEDOG_DATA_DIR: root, TRACEDOG_ACCEPT_SUBMISSIONS: "true", TRACEDOG_DURABLE_STORAGE: "true", E2B_API_KEY: "test", E2B_TEMPLATE_ID: "test", TRACEDOG_MODEL: "deepseek/deepseek-v4.1-flash", RESEARCH_OPENCODE_PROVIDER: "OPENROUTER", OPENROUTER_API_KEY: "test", OPENCODE_API_KEY: "", RESEND_API_KEY: "test", RESEND_FROM: "test@example.org" }, stdio: "ignore",
   });
   try {
     for (let attempt = 0; attempt < 100; attempt++) {

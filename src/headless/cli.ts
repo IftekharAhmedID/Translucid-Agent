@@ -114,7 +114,7 @@ async function main(): Promise<void> {
     await atomicWrite(join(workspace.root, "provenance", "capability-preflight.json"), `${JSON.stringify({ schemaVersion: 1, providerMode: options.providerMode, required: ["WEB_SEARCH", "GITHUB"], registry: capabilities }, null, 2)}\n`);
     await timeline.record({ kind: "capability.preflight.completed", status: "OK" });
     if (options.qualification && options.providerMode === "live") {
-      if (researchModel !== "deepseek-v4-pro" || modelSpec.protocol !== "CHAT_COMPLETIONS" || modelSpec.variant !== "medium" || modelSpec.reasoningEffort !== "medium" || process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN") {
+      if (researchModel !== "deepseek-v4-pro" || modelSpec.protocol !== "CHAT_COMPLETIONS" || modelSpec.variant !== "medium" || modelSpec.reasoningEffort !== "medium" || (process.env.RESEARCH_OPENCODE_PROVIDER && process.env.RESEARCH_OPENCODE_PROVIDER !== "GO")) {
         throw new Error("Qualification requires deepseek-v4-pro Chat Completions on the GO route with medium reasoning.");
       }
       for (const capability of ["WEB_SEARCH", "GITHUB"] as const) if (capabilities[capability].state !== "READY") throw new Error(`Qualification capability preflight failed: ${capability} is ${capabilities[capability].state}.`);
@@ -187,7 +187,7 @@ async function main(): Promise<void> {
         });
       },
     }));
-    const researchProvider = process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
+    const researchProvider = process.env.RESEARCH_OPENCODE_PROVIDER === "OPENROUTER" ? "OPENROUTER" : process.env.RESEARCH_OPENCODE_PROVIDER === "ZEN" ? "ZEN" : "GO";
     const fixture = createHeadlessFixtureCompletion();
     gateway = createHeadlessGateway({
       runId,

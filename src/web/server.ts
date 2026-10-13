@@ -10,7 +10,9 @@ import { directoryBytes, hasCaseSpace } from "./storage.ts";
 const root = resolve(process.env.TRACEDOG_DATA_DIR ?? ".debug/tracedog-web");
 const store = new SubmissionStore(root);
 const origin = process.env.TRACEDOG_ORIGIN ?? "http://127.0.0.1:8787";
-const enabled = () => process.env.TRACEDOG_ACCEPT_SUBMISSIONS === "true" && process.env.TRACEDOG_DURABLE_STORAGE === "true" && Boolean(process.env.E2B_API_KEY && process.env.E2B_TEMPLATE_ID && process.env.RESEND_API_KEY && process.env.RESEND_FROM && process.env.OPENCODE_API_KEY);
+const model = process.env.TRACEDOG_MODEL ?? process.env.RESEARCH_MODEL ?? "deepseek-v4-pro";
+const researchProvider = model === "deepseek/deepseek-v4.1-flash" ? "OPENROUTER" : model === "big-pickle" || model === "cat-jam-free" || model === "muse-spark-1.3-contributor-free" ? "ZEN" : process.env.RESEARCH_OPENCODE_PROVIDER ?? "GO";
+const enabled = () => process.env.TRACEDOG_ACCEPT_SUBMISSIONS === "true" && process.env.TRACEDOG_DURABLE_STORAGE === "true" && Boolean(process.env.E2B_API_KEY && process.env.E2B_TEMPLATE_ID && process.env.RESEND_API_KEY && process.env.RESEND_FROM && (researchProvider === "OPENROUTER" ? process.env.OPENROUTER_API_KEY : process.env.OPENCODE_API_KEY));
 const gatewayPort = 3001;
 let active = false;
 let stopping = false;
@@ -47,7 +49,6 @@ async function investigate(job: Job) {
   store.update(job.id, { status: "RUNNING" });
   const output = join(root, job.id, "runs");
   const input = job.kind === "pdf" ? "--resume" : "--submission";
-  const model = process.env.TRACEDOG_MODEL ?? process.env.RESEARCH_MODEL ?? "deepseek-v4-pro";
   const variant = model === "big-pickle" ? "default" : job.kind === "text" ? "medium" : process.env.TRACEDOG_PDF_REASONING ?? process.env.RESEARCH_REASONING_VARIANT ?? "medium";
   let stderr = "";
   let checkingStorage = false;
@@ -62,7 +63,7 @@ async function investigate(job: Job) {
   try {
     await new Promise<void>((done, reject) => {
       child = spawn(process.execPath, ["--import", "tsx", "src/headless/cli.ts", input, job.inputPath, "--classification", "public-professional", "--provider-mode", "live", "--runtime", "e2b", "--output", output], {
-        env: { ...process.env, RESEARCH_MODEL: model, RESEARCH_OPENCODE_PROVIDER: model === "big-pickle" || model === "cat-jam-free" || model === "muse-spark-1.3-contributor-free" ? "ZEN" : process.env.RESEARCH_OPENCODE_PROVIDER ?? "GO", RESEARCH_REASONING_VARIANT: variant, REPORT_FORMAT: "text", HEADLESS_GATEWAY_PORT: String(gatewayPort), E2B_GATEWAY_PUBLIC_URL: origin + "/gateway" },
+        env: { ...process.env, RESEARCH_MODEL: model, RESEARCH_OPENCODE_PROVIDER: researchProvider, RESEARCH_REASONING_VARIANT: variant, REPORT_FORMAT: "text", HEADLESS_GATEWAY_PORT: String(gatewayPort), E2B_GATEWAY_PUBLIC_URL: origin + "/gateway" },
         stdio: ["ignore", "ignore", "pipe"],
       });
       child.stderr?.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-4000); });

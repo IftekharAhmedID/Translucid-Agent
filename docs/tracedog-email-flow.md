@@ -64,6 +64,12 @@ Per-connection-IP quotas may be conservative behind shared Render edges.
 
 ## Current qualification evidence
 
+- New funded-provider qualification: actual E2B OpenCode 1.18.18 completed
+  live text and PDF investigations with `deepseek/deepseek-v4.1-flash` through
+  OpenRouter, preserving the restricted investigator. Both caught the false
+  technical claim, committed result-v4, and passed source/snapshot integrity.
+  The actual plain-text report was delivered to Resend's test sink. 194 tests
+  and type checking passed. See [run evidence and model settings](tracedog-model-access.md#deepseek-v41-flash-via-openrouter--live-success).
 - 191 tests and TypeScript checking passed under Node 22.
 - Actual E2B OpenCode 1.18.18 completed full deterministic-fixture text and PDF cases,
   including source capture, single-agent commit, snapshot, plain report, and

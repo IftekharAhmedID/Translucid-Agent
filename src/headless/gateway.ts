@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { performance } from "node:perf_hooks";
 
-import { estimateModelInputTokens, modelCostReservation, proxyModelCompletion, type ResearchUpstreamFamily } from "../gateway/model-proxy.ts";
+import { estimateModelInputTokens, extractObservedReasoningEffort, modelCostReservation, proxyModelCompletion, type ResearchUpstreamFamily } from "../gateway/model-proxy.ts";
 import { toolNames } from "../providers/contracts.ts";
 import type { ProviderExecutor } from "../providers/executor.ts";
 import type { MemoryRunBudget } from "./budget.ts";
@@ -62,20 +62,6 @@ type GatewayInput = {
   onModelRequest?: (request: { agent: string; estimatedInputTokens: number; reasoningEffort: string | null }) => void;
   onActivity?: (event: { kind: "model-start" | "model-end" | "tool-start" | "tool-end"; name: string; at: number }) => void;
 };
-
-export function sanitizeReasoningEffort(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim().toLocaleLowerCase("en-US");
-  return ["low", "medium", "high", "max", "xhigh"].includes(normalized) ? normalized : null;
-}
-
-export function extractObservedReasoningEffort(body: Record<string, unknown>): string | null {
-  const reasoning = body.reasoning;
-  const nestedEffort = reasoning && typeof reasoning === "object" && !Array.isArray(reasoning)
-    ? (reasoning as Record<string, unknown>).effort
-    : undefined;
-  return sanitizeReasoningEffort(body.reasoning_effort ?? body.reasoningEffort ?? nestedEffort);
-}
 
 export function createHeadlessGateway(input: GatewayInput) {
   const token = randomBytes(32).toString("base64url");
@@ -328,7 +314,7 @@ export function createHeadlessGateway(input: GatewayInput) {
       }
       if (request.method === "POST" && (url.pathname === "/internal/llm/v1/chat/completions" || url.pathname === "/internal/llm/v1/responses")) {
         const body = await readJson(request, MAX_MODEL_BODY);
-        const model = typeof body.model === "string" ? body.model.split("/").at(-1) ?? "" : "";
+        const model = typeof body.model === "string" ? body.model.replace(/^translucid\//, "") : "";
         authorize(request, "model", model);
         const responsesPath = url.pathname.endsWith("/responses");
         let responsesModel: boolean;
@@ -361,7 +347,7 @@ export function createHeadlessGateway(input: GatewayInput) {
             model,
             remainingMs,
             providerMode: input.providerMode,
-            upstreamKey: process.env.OPENCODE_API_KEY,
+            upstreamKey: input.researchUpstreamFamily === "OPENROUTER" ? process.env.OPENROUTER_API_KEY : process.env.OPENCODE_API_KEY,
             researchUpstreamFamily: input.researchUpstreamFamily ?? "ZEN",
             fixtureCompletion: () => input.fixtureCompletion?.(body, agent, model) ?? Promise.resolve({ content: "Headless fixture model completed." }),
           });

@@ -3,7 +3,7 @@ import { request as httpsRequest } from "node:https";
 
 import { decodeJsonToolNames, encodeModelToolNames, SseToolNameDecoder } from "./model-tool-names.ts";
 import { writeFixtureCompletion, type Completion } from "./fixture-model.ts";
-import { modelUsesResponses } from "../headless/model-registry.ts";
+import { modelUsesResponses, resolveResearchModel } from "../headless/model-registry.ts";
 
 export function modelCostReservation(body: Record<string, unknown>, model: string): number {
   if (model === "big-pickle" || model === "cat-jam-free" || model === "muse-spark-1.3-contributor-free") return 0;
@@ -12,6 +12,7 @@ export function modelCostReservation(body: Record<string, unknown>, model: strin
   // Conservative peak rates; no cache discounts. Review against provider pricing before enabling a paid route.
   const rates = model === "deepseek-v4-pro" ? { inputUsdPerMillion: 1.32, outputUsdPerMillion: 3.96 }
     : model === "deepseek-v4-flash" ? { inputUsdPerMillion: 0.30, outputUsdPerMillion: 0.60 }
+    : model === "deepseek/deepseek-v4.1-flash" ? { inputUsdPerMillion: 0.30, outputUsdPerMillion: 1.20 }
     : model === "gpt-5.6-luna" ? { inputUsdPerMillion: 0.40, outputUsdPerMillion: 1.80 }
     : { inputUsdPerMillion: 4, outputUsdPerMillion: 16 };
   return (estimatedInputTokens * rates.inputUsdPerMillion + maximumOutputTokens * rates.outputUsdPerMillion) / 1_000_000;
@@ -22,15 +23,50 @@ export function estimateModelInputTokens(body: Record<string, unknown>): number 
   return Buffer.byteLength(JSON.stringify(body), "utf8") + 64;
 }
 
-export type ResearchUpstreamFamily = "GO" | "ZEN";
+export type ResearchUpstreamFamily = "GO" | "ZEN" | "OPENROUTER";
 
 export function resolveResearchUpstream(family: ResearchUpstreamFamily, model: string): string {
+  if (model === "deepseek/deepseek-v4.1-flash") {
+    if (family !== "OPENROUTER") throw new Error("This model requires the OpenRouter route.");
+    return "https://openrouter.ai/api/v1/chat/completions";
+  }
+  if (family === "OPENROUTER") throw new Error(`Unsupported OpenRouter model: ${model}`);
   if (model === "big-pickle" || model === "cat-jam-free" || model === "muse-spark-1.3-contributor-free") {
     if (family !== "ZEN") throw new Error("Free models require the OpenCode Console route.");
     return `https://opencode.ai/inference/v1/${modelUsesResponses(model) ? "responses" : "chat/completions"}`;
   }
   const base = family === "GO" ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1";
   return `${base}/${modelUsesResponses(model) ? "responses" : "chat/completions"}`;
+}
+
+export function modelUpstreamBody(body: Record<string, unknown>, family: ResearchUpstreamFamily, model: string): Record<string, unknown> {
+  if (family !== "OPENROUTER") return { ...body, model };
+  for (const name of ["models", "fallbacks", "route", "plugins", "preset", "provider"]) {
+    if (name in body) throw new Error(`OpenRouter ${name} is not allowed by the investigation gateway.`);
+  }
+  if (body.tools !== undefined && (!Array.isArray(body.tools) || body.tools.some((tool) => !tool || tool.type !== "function" || !tool.function))) {
+    throw new Error("OpenRouter server tools are not allowed by the investigation gateway.");
+  }
+  // Forward only local function tools and ordinary chat settings; provider features cannot escape capture or budgets.
+  const allowed = ["messages", "temperature", "top_p", "frequency_penalty", "presence_penalty", "response_format", "stop", "seed", "tools", "tool_choice", "parallel_tool_calls", "stream", "stream_options", "logit_bias", "logprobs", "top_logprobs"];
+  const effort = extractObservedReasoningEffort(body);
+  const maximum = Number(body.max_tokens ?? body.max_completion_tokens ?? body.max_output_tokens ?? 32_000);
+  if (!Number.isInteger(maximum) || maximum <= 0) throw new Error("OpenRouter max_tokens must be a positive integer.");
+  return { ...Object.fromEntries(Object.entries(body).filter(([key]) => allowed.includes(key))), max_tokens: Math.min(maximum, resolveResearchModel(model).outputLimit), ...(effort ? { reasoning: { effort } } : {}), model };
+}
+
+export function sanitizeReasoningEffort(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLocaleLowerCase("en-US");
+  return ["low", "medium", "high", "max", "xhigh"].includes(normalized) ? normalized : null;
+}
+
+export function extractObservedReasoningEffort(body: Record<string, unknown>): string | null {
+  const reasoning = body.reasoning;
+  const nestedEffort = reasoning && typeof reasoning === "object" && !Array.isArray(reasoning)
+    ? (reasoning as Record<string, unknown>).effort
+    : undefined;
+  return sanitizeReasoningEffort(body.reasoning_effort ?? body.reasoningEffort ?? nestedEffort);
 }
 
 export function modelUpstreamHeaders(key: string, incoming: Record<string, string | string[] | undefined> = {}): Record<string, string> {
@@ -64,7 +100,7 @@ export async function preflightResearchModel(input: {
   fetchImpl?: typeof fetch;
   now?: () => number;
 }): Promise<ModelRoutePreflight> {
-  if (!input.apiKey) throw new Error("OPENCODE_API_KEY is not configured for model route preflight.");
+  if (!input.apiKey) throw new Error(`${input.family === "OPENROUTER" ? "OPENROUTER_API_KEY" : "OPENCODE_API_KEY"} is not configured for model route preflight.`);
   const started = input.now?.() ?? Date.now();
   const startedAt = new Date(started).toISOString();
   const controller = new AbortController();
@@ -127,7 +163,7 @@ export async function proxyModelCompletion(input: {
     writeFixtureCompletion(input.response, input.body, input.model, completion);
     return;
   }
-  if (!input.upstreamKey) throw new Error("OPENCODE_API_KEY is not configured on the host gateway.");
+  if (!input.upstreamKey) throw new Error(`${input.researchUpstreamFamily === "OPENROUTER" ? "OPENROUTER_API_KEY" : "OPENCODE_API_KEY"} is not configured on the host gateway.`);
   const encoded = encodeModelToolNames(input.body);
   const upstreamAbort = new AbortController();
   const timeout = input.remainingMs === undefined
@@ -140,7 +176,7 @@ export async function proxyModelCompletion(input: {
     upstream = await requestUpstream(
       resolveResearchUpstream(input.researchUpstreamFamily, input.model),
       modelUpstreamHeaders(input.upstreamKey, input.request.headers),
-      JSON.stringify({ ...encoded.body, model: input.model }),
+      JSON.stringify(modelUpstreamBody(encoded.body, input.researchUpstreamFamily, input.model)),
       upstreamAbort.signal,
     );
   } catch (error) {

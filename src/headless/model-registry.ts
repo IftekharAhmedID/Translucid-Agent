@@ -16,6 +16,11 @@ export type ResearchModelSpec = {
 };
 
 export const MODEL_REGISTRY = {
+  "deepseek/deepseek-v4.1-flash": {
+    id: "deepseek/deepseek-v4.1-flash", displayName: "DeepSeek V4.1 Flash (OpenRouter)", protocol: "CHAT_COMPLETIONS",
+    variant: "medium", reasoningEffort: "medium", effectiveReasoningEffort: "high",
+    contextLimit: 1_048_576, outputLimit: 384_000, default: false,
+  },
   "muse-spark-1.3-contributor-free": {
     id: "muse-spark-1.3-contributor-free", displayName: "Muse Spark 1.3 Contributor Free", protocol: "RESPONSES",
     variant: "medium", reasoningEffort: "medium", effectiveReasoningEffort: "medium",
@@ -77,7 +82,7 @@ export function resolveResearchModel(value?: string, requestedVariant?: string):
   const variant = requestedVariant?.trim() || spec.variant;
   if (variant === spec.variant) return spec;
   if (id === "muse-spark-1.3-contributor-free" && variant === "xhigh") return { ...spec, variant: "xhigh", reasoningEffort: "xhigh", effectiveReasoningEffort: "xhigh" };
-  if ((id === "deepseek-v4-pro" || id === "deepseek-v4-flash" || id === "cat-jam-free") && variant === "xhigh") return { ...spec, variant: "xhigh", reasoningEffort: "max", effectiveReasoningEffort: "max" };
+  if ((id === "deepseek-v4-pro" || id === "deepseek-v4-flash" || id === "deepseek/deepseek-v4.1-flash" || id === "cat-jam-free") && variant === "xhigh") return { ...spec, variant: "xhigh", reasoningEffort: "max", effectiveReasoningEffort: "max" };
   throw new Error(`Research model ${id} does not support reasoning variant ${variant}.`);
 }
 

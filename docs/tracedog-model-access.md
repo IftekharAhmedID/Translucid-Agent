@@ -42,9 +42,9 @@ shows that this restriction triggers the free-tier rejection. The upstream
 same tool-dependent rejection. No shell permissions or client identities were
 changed in TraceDog to work around the provider gate.
 
-## Remaining dependency
+## Dependency after the free-model attempts
 
-A successful full live investigation with the current tool restrictions needs
+At this stage a successful full live investigation with the current tool restrictions needed
 active Go access, a funded Console account, or another valid funded provider
 connection. Do not enable public submissions based on the free-model OK probes.
 The prior PDF/text E2B fixture successes remain fixture qualification only.
@@ -88,3 +88,63 @@ Full restricted investigator attempt:
 191 tests and type checking passed. Focused model/route checks passed again
 after adding the free-price assertion. This is a tested failed live attempt,
 not successful research qualification and not permission to enable submissions.
+
+## DeepSeek V4.1 Flash via OpenRouter — live success
+
+The user supplied a new OpenRouter credential and requested the exact
+`deepseek/deepseek-v4.1-flash` model. The old saved connection's 401 above is
+historical: the new key returned HTTP 200 from the key endpoint and an actual
+synthetic chat completion. No Go or Console endpoint was used for these runs.
+The key is in ignored local configuration with mode 0600; it is never sent to
+the browser or E2B sandbox. E2B still uses the authenticated host gateway.
+
+Added the model to the explicit registry and pinned runtime. The new template
+build is `705ef68c-c759-434c-b752-af75f7f6ea28`. The original lead prompt,
+custom tools, denied shell, network isolation, source capture, commit boundary,
+runtime limits, and $5 model / $10 provider ceilings were retained.
+
+| Live synthetic input | Text | PDF |
+| --- | --- | --- |
+| Run | `d65c6a58-ecb5-4ba6-83be-81ad465dfb18` | `2be3f595-2472-4170-bb60-a732f7be89e6` |
+| Lead session | `ses_eca54aa8affe4lFMv1xfF97BEJ` | `ses_eca501b7bffenSIiemYBY60xjm` |
+| Time through research freeze | 160.659 seconds | 187.450 seconds |
+| Model requests | 16 | 20 |
+| Provider tools | One search batch, eight fetches | One search batch, twelve fetches |
+| Result | Committed result-v4 and plain report | Committed result-v4 and plain report |
+| Reviewed submitted claims | Four, including project identity | Three explicit technical claims |
+| Evidence-support score | 75/100 | 67/100 |
+
+Both runs established the runtime/V8 and 2024 first-release claims and correctly
+contradicted the claim that every standard Node.js installation bundles the
+TypeScript compiler. Immutable-source integrity and bound research snapshot
+verification passed. Exactly one semantic lead ran; there were no report-writer
+model calls, PDF report artifacts, or failure markers. The score difference
+reflects different claim selection, not different conclusions on the three
+technical claims; this illustrates the documented limitation of the score.
+
+Both requested medium reasoning. The current model catalog advertises max,
+high, and low, so observed medium on the gateway proves the request setting,
+not the provider's exact internal effort. See the official
+[model page](https://openrouter.ai/deepseek/deepseek-v4.1-flash) and
+[reasoning parameter documentation](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens).
+
+The actual text report was sent as plain text to Resend's delivery test sink;
+a subsequent email API read confirmed `last_event=delivered`. No real person or
+customer inbox was used. Both sandboxes and the temporary gateway tunnel were
+removed afterward. Private results and acceptance evidence are under ignored
+`.debug/tracedog-openrouter-live/` and `.debug/tracedog-openrouter-pdf-live/`.
+
+Independent review found and fixed OpenRouter fallback/plugin escapes, effort
+normalization, and output-limit accounting. Only the approved model and local
+function tools can pass; routing overrides and paid server plugins are denied.
+194 tests and TypeScript checking passed on Node 22. PDF extraction retained
+the previously documented standard-font-data warning; extracted text, anchors,
+and all acceptance assertions passed.
+
+To run this route, set `RESEARCH_OPENCODE_PROVIDER=OPENROUTER`,
+`RESEARCH_MODEL=deepseek/deepseek-v4.1-flash`, `OPENROUTER_API_KEY`, and the E2B
+configuration. For the web worker, select
+`TRACEDOG_MODEL=deepseek/deepseek-v4.1-flash`; readiness then requires the
+OpenRouter key and the worker selects its route. This qualification did not
+deploy the web service or enable public submissions. Durable Render hosting,
+public callback routing, and sender-domain verification remain launch work.

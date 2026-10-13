@@ -1,7 +1,34 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { estimateModelInputTokens, modelCostReservation, modelRequestTimeoutMs, modelUpstreamHeaders, preflightResearchModel, resolveResearchUpstream } from "./model-proxy.ts";
+import { estimateModelInputTokens, modelCostReservation, modelRequestTimeoutMs, modelUpstreamBody, modelUpstreamHeaders, preflightResearchModel, resolveResearchUpstream } from "./model-proxy.ts";
+
+test("OpenRouter uses its approved model and preserves tool requests while normalizing reasoning", () => {
+  const model = "deepseek/deepseek-v4.1-flash";
+  assert.equal(resolveResearchUpstream("OPENROUTER", model), "https://openrouter.ai/api/v1/chat/completions");
+  assert.throws(() => resolveResearchUpstream("GO", model), /OpenRouter route/);
+  assert.throws(() => resolveResearchUpstream("ZEN", model), /OpenRouter route/);
+  assert.throws(() => resolveResearchUpstream("OPENROUTER", "deepseek-v4-pro"), /Unsupported OpenRouter model/);
+  const body = { messages: [{ role: "user", content: "Investigate" }], reasoning_effort: "medium", tools: [{ type: "function", function: { name: "research" } }], stream: true };
+  assert.deepEqual(modelUpstreamBody(body, "OPENROUTER", model), { messages: body.messages, tools: body.tools, stream: true, max_tokens: 32000, reasoning: { effort: "medium" }, model });
+  assert.equal(body.reasoning_effort, "medium");
+  assert.deepEqual(modelUpstreamBody(body, "GO", "deepseek-v4-pro"), { ...body, model: "deepseek-v4-pro" });
+  assert.equal(modelCostReservation({ max_tokens: 1000 }, model), (estimateModelInputTokens({ max_tokens: 1000 }) * 0.30 + 1000 * 1.20) / 1_000_000);
+});
+
+test("OpenRouter cannot invoke routing overrides, paid plugins, or server tools", () => {
+  const model = "deepseek/deepseek-v4.1-flash";
+  const base = { messages: [], reasoning_effort: "medium" };
+  for (const override of [{ models: ["unapproved"] }, { plugins: [{ id: "web" }] }, { preset: "external" }, { route: "fallback" }, { provider: { order: ["external"] } }, { tools: [{ type: "web_search" }] }]) {
+    assert.throws(() => modelUpstreamBody({ ...base, ...override }, "OPENROUTER", model), /not allowed/);
+  }
+  for (const effort of [{ reasoning_effort: " MEDIUM " }, { reasoningEffort: "Medium" }, { reasoning: { effort: "medium", enabled: false } }]) {
+    assert.deepEqual(modelUpstreamBody({ messages: [], ...effort }, "OPENROUTER", model).reasoning, { effort: "medium" });
+  }
+  assert.equal(modelUpstreamBody({ ...base, max_tokens: 943718, n: 10 }, "OPENROUTER", model).max_tokens, 384000);
+  assert.equal(modelUpstreamBody({ ...base, n: 10 }, "OPENROUTER", model).n, undefined);
+  assert.equal(modelUpstreamBody({ ...base, max_output_tokens: 1 }, "OPENROUTER", model).max_tokens, 1);
+});
 
 test("model requests use one bounded timeout with a run-time safety reserve", () => {
   assert.equal(modelRequestTimeoutMs(900_000), 360_000);

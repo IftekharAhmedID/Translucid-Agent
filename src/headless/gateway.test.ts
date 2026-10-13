@@ -16,6 +16,17 @@ function budget(): MemoryRunBudget {
   return new MemoryRunBudget({ modelUsd: 5, providerUsd: 10, externalNetworkCalls: 300, repositoryClones: 3, socialProfiles: 1 });
 }
 
+test("gateway preserves namespaced OpenRouter model IDs and rejects unapproved namespaces", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "tracedog-openrouter-gateway-"));
+  const gateway = createHeadlessGateway({ runId: "run-openrouter", allowedTools: new Set(), allowedModels: new Set(["deepseek/deepseek-v4.1-flash"]), agentTools: new Map([["lead-researcher", new Set()]]), sourceStore: await FileSourceStore.open(directory), budget: budget(), providerMode: "fixture", researchUpstreamFamily: "OPENROUTER", expectedReasoningEffort: "medium", fixtureCompletion: async () => ({ content: "ok" }) });
+  const server = await listen(gateway);
+  try {
+    const request = (model: string) => fetch(`${server.origin}/internal/llm/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${gateway.token}`, "content-type": "application/json", "x-run-id": "run-openrouter", "x-opencode-agent": "lead-researcher" }, body: JSON.stringify({ model, messages: [{ role: "user", content: "hello" }], reasoning_effort: "medium", stream: false }) });
+    assert.equal((await request("deepseek/deepseek-v4.1-flash")).status, 200);
+    assert.equal((await request("other/deepseek-v4.1-flash")).status, 403);
+  } finally { gateway.cancel(); await server.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("the gateway verifies and records the sanitized medium reasoning effort", async () => {
   const directory = await mkdtemp(join(tmpdir(), "translucid-reasoning-gateway-"));
   try {
