@@ -9,6 +9,45 @@ import { ResearchStateStore, knownResearchPredicateIds } from "./research-state.
 
 const anchor = { kind: "PDF_TEXT" as const, page: 1, lineStart: 1, lineEnd: 1, exact: "Synthetic Candidate" };
 
+test("parallel findings and summary retain every acknowledged write before commit", async () => {
+  const { root, sourceStore, source } = await fixture();
+  try {
+    const state = await ResearchStateStore.open(root, sourceStore);
+    const ids = ["first", "second", "third"];
+    await state.planSet({ targets: ids.map(id => ({ id, section: "Career", predicate: id, importance: "HIGH", anchor })) });
+    await state.beginSynthesis();
+    const writes = Promise.all([
+      ...ids.map(targetId => state.upsertFinding({ targetId, conclusion: "The source supports this claim.", status: "ESTABLISHED", evidence: [{ sourceRef: source.ref, relation: "SUPPORTS", comment: "Direct record of the claim." }], rationale: "Direct record.", remainingGap: null })),
+      state.setSummary({ text: "All three claims have direct records.", targetIds: ids }),
+    ]);
+    const [results, prevalidated, committed] = await Promise.all([writes, state.validateCommit(), state.commit()]);
+    results.push(committed);
+    assert.equal(prevalidated.findings.length, ids.length);
+    assert.equal(new Set(results.map(r => r.revision)).size, results.length);
+    const current = await state.current();
+    assert.equal(current?.phase, "COMMITTED");
+    assert.deepEqual(current?.findings?.map(f => f.targetId).sort(), ids.sort());
+    assert.deepEqual((await (await ResearchStateStore.open(root, sourceStore)).current())?.findings, current?.findings);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("concurrent plans cannot replace one another and rejected mutations do not poison later work", async () => {
+  const { root, sourceStore } = await fixture();
+  try {
+    const state = await ResearchStateStore.open(root, sourceStore);
+    const target = { id: "initial", section: "Career", predicate: "Initial claim", importance: "HIGH", anchor };
+    const plans = await Promise.allSettled([state.planSet({ targets: [target] }), state.planSet({ targets: [{ ...target, id: "replacement" }] })]);
+    assert.equal(plans.filter(r => r.status === "fulfilled").length, 1);
+    await Promise.all([state.targetAdd({ target: { ...target, id: "second" } }), state.targetAdd({ target: { ...target, id: "third" } })]);
+    assert.deepEqual((await state.current())?.targets?.map(t => t.id), ["initial", "second", "third"]);
+    await state.beginSynthesis();
+    const finding = { conclusion: "Not established.", status: "UNRESOLVED", evidence: [], rationale: "No direct evidence.", remainingGap: "Need a primary record." };
+    const writes = await Promise.allSettled([state.upsertFinding({ ...finding, targetId: "unknown" }), state.upsertFinding({ ...finding, targetId: "initial" }), state.upsertFinding({ ...finding, targetId: "second" })]);
+    assert.equal(writes[0]?.status, "rejected");
+    assert.deepEqual((await state.current())?.findings?.map(f => f.targetId), ["initial", "second"]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "translucid-research-v3-"));
   await mkdir(join(root, "input"), { recursive: true });

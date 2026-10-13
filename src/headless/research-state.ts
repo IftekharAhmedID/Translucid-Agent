@@ -256,6 +256,7 @@ export class ResearchStateStore {
   private state: ResearchState | undefined;
   private readonly attemptedRoutes = new Set<string>();
   private pending: Promise<void> = Promise.resolve();
+  private mutationPending: Promise<unknown> = Promise.resolve();
   private eventPending: Promise<void> = Promise.resolve();
   private pendingFailure: unknown;
 
@@ -353,66 +354,81 @@ export class ResearchStateStore {
     return operation;
   }
 
+  private serializeMutation<T>(action: () => Promise<T>): Promise<T> {
+    // Serialize reads and validation as well as writes, so parallel tool calls cannot publish stale copies.
+    const operation = this.mutationPending.then(action);
+    this.mutationPending = operation.catch(() => undefined);
+    return operation;
+  }
+
   async planSet(input: unknown): Promise<{ ok: true; targetCount: number; revision: number }> {
-    if (this.state) {
-      if (this.state.schemaVersion !== 3) throw new ResearchStateError("LEGACY_STATE_READ_ONLY", "Legacy v1/v2 research ledgers are inspectable but cannot be upgraded in place.");
-      if (this.state.targets.length) throw new ResearchStateError("PLAN_IMMUTABLE", "The investigation plan is already established and cannot be rewritten.", "targets");
-      this.assertV3Mutable(["RESEARCHING"]);
-    }
-    const value = parseInput(v3PlanInputSchema, input) as V3PlanInput;
-    const ids = new Set<string>();
-    for (const target of value.targets) {
-      if (ids.has(target.id)) throw new ResearchStateError("DUPLICATE_TARGET", `Target ID ${target.id} is duplicated.`, "targets");
-      ids.add(target.id);
-      await this.validateTargetAnchor(target);
-    }
-    const sourceRefs = sortedRefs((await this.sourceStore.list()).map(({ ref }) => ref));
-    const next = researchStateV3Schema.parse({
-      schemaVersion: 3,
-      revision: this.state?.schemaVersion === 3 ? this.state.revision + 1 : 0,
-      phase: "RESEARCHING",
-      updatedAt: now(),
-      committedAt: null,
-      identityAnchors: [...new Set(value.identityAnchors ?? [])],
-      targets: value.targets,
-      findings: [],
-      summary: null,
-      sourceRefs,
-      attemptedRoutes: [...this.attemptedRoutes].sort(),
+    return this.serializeMutation(async () => {
+      if (this.state) {
+        if (this.state.schemaVersion !== 3) throw new ResearchStateError("LEGACY_STATE_READ_ONLY", "Legacy v1/v2 research ledgers are inspectable but cannot be upgraded in place.");
+        if (this.state.targets.length) throw new ResearchStateError("PLAN_IMMUTABLE", "The investigation plan is already established and cannot be rewritten.", "targets");
+        this.assertV3Mutable(["RESEARCHING"]);
+      }
+      const value = parseInput(v3PlanInputSchema, input) as V3PlanInput;
+      const ids = new Set<string>();
+      for (const target of value.targets) {
+        if (ids.has(target.id)) throw new ResearchStateError("DUPLICATE_TARGET", `Target ID ${target.id} is duplicated.`, "targets");
+        ids.add(target.id);
+        await this.validateTargetAnchor(target);
+      }
+      const sourceRefs = sortedRefs((await this.sourceStore.list()).map(({ ref }) => ref));
+      const next = researchStateV3Schema.parse({
+        schemaVersion: 3,
+        revision: this.state?.schemaVersion === 3 ? this.state.revision + 1 : 0,
+        phase: "RESEARCHING",
+        updatedAt: now(),
+        committedAt: null,
+        identityAnchors: [...new Set(value.identityAnchors ?? [])],
+        targets: value.targets,
+        findings: [],
+        summary: null,
+        sourceRefs,
+        attemptedRoutes: [...this.attemptedRoutes].sort(),
+      });
+      await this.enqueueWrite(next);
+      return { ok: true, targetCount: next.targets.length, revision: next.revision };
     });
-    await this.enqueueWrite(next);
-    return { ok: true, targetCount: next.targets.length, revision: next.revision };
   }
 
   async targetAdd(input: unknown): Promise<{ ok: true; targetId: string; revision: number }> {
-    const { target } = parseInput(v3TargetAddInputSchema, input);
-    const current = this.assertV3Mutable(["RESEARCHING", "SYNTHESIZING"]);
-    if (current.targets.some(({ id }) => id === target.id)) throw new ResearchStateError("DUPLICATE_TARGET", `Target ID ${target.id} already exists.`, "target.id");
-    await this.validateTargetAnchor(target);
-    const next = researchStateV3Schema.parse({ ...current, revision: current.revision + 1, updatedAt: now(), targets: [...current.targets, target], attemptedRoutes: [...this.attemptedRoutes].sort() });
-    await this.enqueueWrite(next);
-    return { ok: true, targetId: target.id, revision: next.revision };
+    return this.serializeMutation(async () => {
+      const { target } = parseInput(v3TargetAddInputSchema, input);
+      const current = this.assertV3Mutable(["RESEARCHING", "SYNTHESIZING"]);
+      if (current.targets.some(({ id }) => id === target.id)) throw new ResearchStateError("DUPLICATE_TARGET", `Target ID ${target.id} already exists.`, "target.id");
+      await this.validateTargetAnchor(target);
+      const next = researchStateV3Schema.parse({ ...current, revision: current.revision + 1, updatedAt: now(), targets: [...current.targets, target], attemptedRoutes: [...this.attemptedRoutes].sort() });
+      await this.enqueueWrite(next);
+      return { ok: true, targetId: target.id, revision: next.revision };
+    });
   }
 
   async beginSynthesis(): Promise<{ ok: true; phase: "SYNTHESIZING"; revision: number }> {
-    const current = this.assertV3Mutable(["RESEARCHING"]);
-    const next = researchStateV3Schema.parse({ ...current, phase: "SYNTHESIZING", revision: current.revision + 1, updatedAt: now() });
-    await this.enqueueWrite(next);
-    return { ok: true, phase: "SYNTHESIZING", revision: next.revision };
+    return this.serializeMutation(async () => {
+      const current = this.assertV3Mutable(["RESEARCHING"]);
+      const next = researchStateV3Schema.parse({ ...current, phase: "SYNTHESIZING", revision: current.revision + 1, updatedAt: now() });
+      await this.enqueueWrite(next);
+      return { ok: true, phase: "SYNTHESIZING" as const, revision: next.revision };
+    });
   }
 
   async upsertFinding(input: unknown): Promise<{ ok: true; targetId: string; revision: number }> {
-    const finding = parseInput(investigationFindingSchema, input);
-    const current = this.assertV3Mutable(["SYNTHESIZING"]);
-    if (!current.targets.some(({ id }) => id === finding.targetId)) throw new ResearchStateError("UNKNOWN_TARGET", `Finding references unknown target ${finding.targetId}.`, "targetId");
-    await this.validateEvidence(finding.evidence);
-    const findings = [...current.findings];
-    const index = findings.findIndex(({ targetId }) => targetId === finding.targetId);
-    if (index >= 0) findings[index] = finding;
-    else findings.push(finding);
-    const next = researchStateV3Schema.parse({ ...current, findings, revision: current.revision + 1, updatedAt: now() });
-    await this.enqueueWrite(next);
-    return { ok: true, targetId: finding.targetId, revision: next.revision };
+    return this.serializeMutation(async () => {
+      const finding = parseInput(investigationFindingSchema, input);
+      const current = this.assertV3Mutable(["SYNTHESIZING"]);
+      if (!current.targets.some(({ id }) => id === finding.targetId)) throw new ResearchStateError("UNKNOWN_TARGET", `Finding references unknown target ${finding.targetId}.`, "targetId");
+      await this.validateEvidence(finding.evidence);
+      const findings = [...current.findings];
+      const index = findings.findIndex(({ targetId }) => targetId === finding.targetId);
+      if (index >= 0) findings[index] = finding;
+      else findings.push(finding);
+      const next = researchStateV3Schema.parse({ ...current, findings, revision: current.revision + 1, updatedAt: now() });
+      await this.enqueueWrite(next);
+      return { ok: true, targetId: finding.targetId, revision: next.revision };
+    });
   }
 
   async progress(): Promise<ResearchStateV3 | null> {
@@ -421,27 +437,35 @@ export class ResearchStateStore {
   }
 
   async setSummary(input: unknown): Promise<{ ok: true; revision: number }> {
-    const summary = parseInput(v3SummaryInputSchema, input);
-    const current = this.assertV3Mutable(["SYNTHESIZING"]);
-    const known = new Set(current.targets.map(({ id }) => id));
-    const unknown = summary.targetIds.filter((id) => !known.has(id));
-    if (unknown.length) throw new ResearchStateError("UNKNOWN_TARGET", `Summary references unknown target(s): ${unknown.join(", ")}.`, "targetIds");
-    const next = researchStateV3Schema.parse({ ...current, summary, revision: current.revision + 1, updatedAt: now() });
-    await this.enqueueWrite(next);
-    return { ok: true, revision: next.revision };
+    return this.serializeMutation(async () => {
+      const summary = parseInput(v3SummaryInputSchema, input);
+      const current = this.assertV3Mutable(["SYNTHESIZING"]);
+      const known = new Set(current.targets.map(({ id }) => id));
+      const unknown = summary.targetIds.filter((id) => !known.has(id));
+      if (unknown.length) throw new ResearchStateError("UNKNOWN_TARGET", `Summary references unknown target(s): ${unknown.join(", ")}.`, "targetIds");
+      const next = researchStateV3Schema.parse({ ...current, summary, revision: current.revision + 1, updatedAt: now() });
+      await this.enqueueWrite(next);
+      return { ok: true, revision: next.revision };
+    });
   }
 
   async sealHostInventory(): Promise<{ ok: true; revision: number }> {
-    const current = this.state?.schemaVersion === 3 ? this.state : undefined;
-    if (!current) throw new ResearchStateError("STATE_REQUIRED", "A v3 investigation state is required before sealing host inventory.");
-    if (current.phase === "COMMITTED") return { ok: true, revision: current.revision };
-    const sourceRefs = sortedRefs((await this.sourceStore.list()).map(({ ref }) => ref));
-    const next = researchStateV3Schema.parse({ ...current, sourceRefs, attemptedRoutes: [...this.attemptedRoutes].sort(), revision: current.revision + 1, updatedAt: now() });
-    await this.enqueueWrite(next);
-    return { ok: true, revision: next.revision };
+    return this.serializeMutation(async () => {
+      const current = this.state?.schemaVersion === 3 ? this.state : undefined;
+      if (!current) throw new ResearchStateError("STATE_REQUIRED", "A v3 investigation state is required before sealing host inventory.");
+      if (current.phase === "COMMITTED") return { ok: true, revision: current.revision };
+      const sourceRefs = sortedRefs((await this.sourceStore.list()).map(({ ref }) => ref));
+      const next = researchStateV3Schema.parse({ ...current, sourceRefs, attemptedRoutes: [...this.attemptedRoutes].sort(), revision: current.revision + 1, updatedAt: now() });
+      await this.enqueueWrite(next);
+      return { ok: true, revision: next.revision };
+    });
   }
 
   async validateCommit(): Promise<ResearchStateV3> {
+    return this.serializeMutation(() => this.validateCurrentCommit());
+  }
+
+  private async validateCurrentCommit(): Promise<ResearchStateV3> {
     const current = this.assertV3Mutable(["SYNTHESIZING"]);
     const targetIds = new Set(current.targets.map(({ id }) => id));
     const findingIds = new Set(current.findings.map(({ targetId }) => targetId));
@@ -456,41 +480,46 @@ export class ResearchStateStore {
   }
 
   async commit(): Promise<{ ok: true; revision: number }> {
-    const current = await this.validateCommit();
-    const next = researchStateV3Schema.parse({ ...current, phase: "COMMITTED", committedAt: now(), revision: current.revision + 1, updatedAt: now() });
-    await this.enqueueWrite(next);
-    return { ok: true, revision: next.revision };
+    return this.serializeMutation(async () => {
+      const current = await this.validateCurrentCommit();
+      const next = researchStateV3Schema.parse({ ...current, phase: "COMMITTED", committedAt: now(), revision: current.revision + 1, updatedAt: now() });
+      await this.enqueueWrite(next);
+      return { ok: true, revision: next.revision };
+    });
   }
 
   async set(input: unknown): Promise<{ ok: true; claimCount: number; sourceRefs: string[] }> {
-    if (this.state?.schemaVersion === 3) throw new ResearchStateError("V3_STATE_REQUIRES_INVESTIGATION_TOOLS", "A v3 investigation state cannot be rewritten through the legacy claim ledger tool.");
-    if (this.legacy) throw new Error("Legacy research ledgers are read-only and cannot be rewritten.");
-    const value = researchStateInputSchema.parse(input);
-    const sourceRefs = sortedRefs((await this.sourceStore.list()).map(({ ref }) => ref));
-    const known = new Set(sourceRefs);
-    const referenced = value.claims.flatMap(({ supportingRefs, conflictingRefs }) => [...supportingRefs, ...conflictingRefs]);
-    const unknown = sortedRefs(referenced.filter((ref) => !known.has(ref)));
-    if (unknown.length) throw new Error(`Research state references unknown source(s): ${unknown.join(", ")}.`);
-    const next = researchStateV2Schema.parse({
-      schemaVersion: 2,
-      updatedAt: new Date().toISOString(),
-      publicationReady: value.publicationReady,
-      identityAnchors: [...new Set(value.identityAnchors)],
-      sourceRefs,
-      attemptedRoutes: [...this.attemptedRoutes].sort(),
-      claims: value.claims.map((claim) => ({ ...claim, supportingRefs: sortedRefs(claim.supportingRefs), conflictingRefs: sortedRefs(claim.conflictingRefs) })),
+    return this.serializeMutation(async () => {
+      if (this.state?.schemaVersion === 3) throw new ResearchStateError("V3_STATE_REQUIRES_INVESTIGATION_TOOLS", "A v3 investigation state cannot be rewritten through the legacy claim ledger tool.");
+      if (this.legacy) throw new Error("Legacy research ledgers are read-only and cannot be rewritten.");
+      const value = researchStateInputSchema.parse(input);
+      const sourceRefs = sortedRefs((await this.sourceStore.list()).map(({ ref }) => ref));
+      const known = new Set(sourceRefs);
+      const referenced = value.claims.flatMap(({ supportingRefs, conflictingRefs }) => [...supportingRefs, ...conflictingRefs]);
+      const unknown = sortedRefs(referenced.filter((ref) => !known.has(ref)));
+      if (unknown.length) throw new Error(`Research state references unknown source(s): ${unknown.join(", ")}.`);
+      const next = researchStateV2Schema.parse({
+        schemaVersion: 2,
+        updatedAt: new Date().toISOString(),
+        publicationReady: value.publicationReady,
+        identityAnchors: [...new Set(value.identityAnchors)],
+        sourceRefs,
+        attemptedRoutes: [...this.attemptedRoutes].sort(),
+        claims: value.claims.map((claim) => ({ ...claim, supportingRefs: sortedRefs(claim.supportingRefs), conflictingRefs: sortedRefs(claim.conflictingRefs) })),
+      });
+      const operation = this.pending.then(async () => {
+        await atomicWrite(join(this.root, ".work", "research-state.json"), next);
+        this.state = next as ResearchState;
+        this.pendingFailure = undefined;
+      });
+      this.pending = operation.catch((error) => { this.pendingFailure = error; });
+      await operation;
+      return { ok: true, claimCount: next.claims.length, sourceRefs: next.sourceRefs };
     });
-    const operation = this.pending.then(async () => {
-      await atomicWrite(join(this.root, ".work", "research-state.json"), next);
-      this.state = next as ResearchState;
-      this.pendingFailure = undefined;
-    });
-    this.pending = operation.catch((error) => { this.pendingFailure = error; });
-    await operation;
-    return { ok: true, claimCount: next.claims.length, sourceRefs: next.sourceRefs };
   }
 
   async current(): Promise<ResearchState | undefined> {
+    await this.mutationPending;
     await this.pending;
     if (this.pendingFailure) throw this.pendingFailure;
     return this.state ? structuredClone(this.state) : undefined;
@@ -519,23 +548,25 @@ export class ResearchStateStore {
   }
 
   async refresh(): Promise<void> {
-    await this.pending;
-    if (!this.state) return;
-    if (this.state.schemaVersion !== 2) return;
-    const sourceRefs = sortedRefs((await this.sourceStore.list()).map(({ ref }) => ref));
-    const next = researchStateV2Schema.parse({
-      ...this.state,
-      updatedAt: new Date().toISOString(),
-      sourceRefs,
-      attemptedRoutes: [...this.attemptedRoutes].sort(),
+    return this.serializeMutation(async () => {
+      await this.pending;
+      if (!this.state) return;
+      if (this.state.schemaVersion !== 2) return;
+      const sourceRefs = sortedRefs((await this.sourceStore.list()).map(({ ref }) => ref));
+      const next = researchStateV2Schema.parse({
+        ...this.state,
+        updatedAt: new Date().toISOString(),
+        sourceRefs,
+        attemptedRoutes: [...this.attemptedRoutes].sort(),
+      });
+      const operation = this.pending.then(async () => {
+        await atomicWrite(join(this.root, ".work", "research-state.json"), next);
+        this.state = next as ResearchState;
+        this.pendingFailure = undefined;
+      });
+      this.pending = operation.catch((error) => { this.pendingFailure = error; });
+      await operation;
     });
-    const operation = this.pending.then(async () => {
-      await atomicWrite(join(this.root, ".work", "research-state.json"), next);
-      this.state = next as ResearchState;
-      this.pendingFailure = undefined;
-    });
-    this.pending = operation.catch((error) => { this.pendingFailure = error; });
-    await operation;
   }
 }
 
