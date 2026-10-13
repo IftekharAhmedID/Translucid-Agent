@@ -17,6 +17,7 @@ async function writeSyntheticPdf(path: string): Promise<void> {
     document.pipe(output);
     document.fontSize(14).text("Synthetic Candidate");
     document.fontSize(11).text("Principal Engineer at Example Corp from 2020 to 2024.");
+    document.text("Portfolio", { link: "https://example.test/portfolio" });
     document.end();
   });
 }
@@ -92,6 +93,10 @@ test("extracts a PDF once while preserving the immutable original", async () => 
     assert.match(await readFile(join(workspace.root, "input", "document.txt"), "utf8"), /Principal Engineer at Example Corp/);
     const document = JSON.parse(await readFile(join(workspace.root, "input", "document.json"), "utf8"));
     assert.equal(document.pageCount, 1);
+    assert.equal(document.sourceType, "PDFJS_STRUCTURED_TEXT");
+    assert.equal(document.schemaVersion, 2);
+    assert.ok(document.sections.length);
+    assert.deepEqual(document.pages[0].linkAnnotations[0], { url: "https://example.test/portfolio", lineStart: 3, lineEnd: 3, text: "Portfolio" });
     assert.equal(document.pages[0].sparse, true);
     assert.equal(document.pages[0].imagePath, "/workspace/case/input/sparse-pages/page-001.png");
     await stat(join(workspace.root, "input", "sparse-pages", "page-001.png"));

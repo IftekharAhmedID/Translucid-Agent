@@ -14,6 +14,16 @@ short text requests ask for medium reasoning. Free model fallback is selected
 before a run, never halfway through a case. Provider support must be measured;
 a requested reasoning level is not proof that a stealth model honors it.
 
+PDF intake uses the existing PDF.js parser in `runtime/extract-input.ts`
+before E2B starts. `input/document.json` is now schema version 2: numbered
+page lines, recognized resume section ranges, unique URLs, and embedded link
+annotations mapped to line ranges where PDF coordinates allow it. The old
+`pages[].lines[].line/text`, page text, links and clean-text companion remain
+compatible with the existing agent and evidence anchors. No model creates
+or rewrites resume facts during parsing. Geometric gaps separate PDF text
+fragments; unsupported geometry falls back to explicit line endings. Local
+PDF.js fonts/CMaps are configured and parser resources are released.
+
 The optional TraceDog score is an evidence-support index, not a probability of
 truth or a judgment about a person. Only submitted claims count (not discovered
 facts). Established = 100, partial = 50, unresolved/conflicting/contradicted =
@@ -67,6 +77,14 @@ Per-connection-IP quotas may be conservative behind shared Render edges.
 
 ## Current qualification evidence
 
+- Structured-input qualification: the user's actual resume retained all 54
+  numbered lines and 12 unique URLs, with seven section ranges covering every
+  line exactly once. Thirteen of fourteen link annotations mapped to lines;
+  the remaining URL is retained without a guessed anchor. A fresh E2B sandbox
+  verified the mounted JSON exactly matches the host output, the agent file
+  is unchanged, and the pinned runtime manifest matches. No model calls were
+  made for this input check. Template build:
+  `43737892-ea45-4870-8c40-4ae48af1c6ca`. All 202 tests and type checking pass.
 - Active Go qualification: the real biography completed with
   `deepseek-v4.1-flash` on E2B and its 72/100 plain-text report reached the
   authorized Rice Inbox. Source/snapshot integrity, model identity and

@@ -1,20 +1,24 @@
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import {
   buildAgentInputManifest,
+  buildPdfSections,
   isSparseDocument,
   isSparsePage,
   MAX_PDF_PAGES,
-  pdfTextItemsToLines,
+  pdfTextItemsToStructuredLines,
+  type PdfStructuredLine,
   wrapExtractedText,
 } from "../src/core/input.ts";
 
 const defaultInputDirectory = "/workspace/case/input";
+const pdfjsDirectory = dirname(createRequire(import.meta.url).resolve("pdfjs-dist/package.json"));
 
 function run(command: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -32,65 +36,80 @@ export async function extractPdf(
   options: { cleanTextName?: string; documentName?: string; agentInputDirectory?: string } = {},
 ) {
   const bytes = await readFile(pdfPath);
-  const document = await getDocument({ data: new Uint8Array(bytes), disableFontFace: true, useSystemFonts: false }).promise;
-  if (document.numPages > MAX_PDF_PAGES) throw new Error(`PDF has ${document.numPages} pages; the limit is ${MAX_PDF_PAGES}.`);
-  const pages: Array<{
-    page: number;
-    lines: Array<{ line: number; text: string }>;
-    text: string;
-    characterCount: number;
-    sparse: boolean;
-    links: string[];
-    imagePath?: string;
-  }> = [];
-  for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-    const page = await document.getPage(pageNumber);
-    const content = await page.getTextContent();
-    const lines = pdfTextItemsToLines(content.items.flatMap((item) => "str" in item ? [{ str: item.str, hasEOL: item.hasEOL }] : []));
-    const text = lines.join("\n");
-    const annotations = await page.getAnnotations();
-    const links = [...new Set(annotations.flatMap((annotation) => typeof annotation.url === "string" ? [annotation.url] : []))];
-    pages.push({
-      page: pageNumber,
-      lines: lines.map((line, index) => ({ line: index + 1, text: line })),
-      text,
-      characterCount: text.replace(/\s/g, "").length,
-      sparse: isSparsePage(text),
-      links,
-    });
-  }
-  const sparseDocument = isSparseDocument(pages.map((page) => page.text));
-  const renderDirectory = join(inputDirectory, "sparse-pages");
-  await mkdir(renderDirectory, { recursive: true });
-  for (const page of pages) {
-    if (!page.sparse && !sparseDocument) continue;
-    const outputRoot = join(renderDirectory, `page-${String(page.page).padStart(3, "0")}`);
-    await run("pdftoppm", ["-f", String(page.page), "-l", String(page.page), "-r", "144", "-png", "-singlefile", pdfPath, outputRoot]);
-    page.sparse = true;
-    page.imagePath = join(options.agentInputDirectory ?? inputDirectory, "sparse-pages", `${`page-${String(page.page).padStart(3, "0")}`}.png`);
-  }
-  const cleanTextName = options.cleanTextName ?? "resume.clean.txt";
-  const documentName = options.documentName ?? "resume.document.json";
-  const cleanTextPath = join(inputDirectory, cleanTextName);
-  const documentPath = join(inputDirectory, documentName);
-  const cleanText = pages.map((page) => {
-    const links = page.links.length ? `\nLinks extracted from PDF annotations:\n${page.links.map((url) => `- ${url}`).join("\n")}` : "";
-    return `--- Page ${page.page} ---\n${page.lines.map(({ text }) => wrapExtractedText(text)).join("\n")}${links}`;
-  }).join("\n\n");
-  await writeFile(cleanTextPath, cleanText);
-  await writeFile(documentPath, JSON.stringify({
-    schemaVersion: 1,
-    extractionMethod: "PDF.js 6.2.108",
-    pageCount: pages.length,
-    pages,
-  }, null, 2));
-  return {
-    cleanTextPath: join(options.agentInputDirectory ?? inputDirectory, cleanTextName),
-    documentPath: join(options.agentInputDirectory ?? inputDirectory, documentName),
-    pageCount: pages.length,
-    sparsePageNumbers: pages.filter((page) => page.sparse).map((page) => page.page),
-    linkCount: pages.reduce((total, page) => total + page.links.length, 0),
-  };
+  const task = getDocument({ data: new Uint8Array(bytes), disableFontFace: true, useSystemFonts: false, standardFontDataUrl: join(pdfjsDirectory, "standard_fonts") + "/", cMapUrl: join(pdfjsDirectory, "cmaps") + "/", cMapPacked: true });
+  try {
+    const document = await task.promise;
+    if (document.numPages > MAX_PDF_PAGES) throw new Error(`PDF has ${document.numPages} pages; the limit is ${MAX_PDF_PAGES}.`);
+    const pages: Array<{
+      page: number;
+      lines: PdfStructuredLine[];
+      text: string;
+      characterCount: number;
+      sparse: boolean;
+      links: string[];
+      linkAnnotations: Array<{ url: string; lineStart?: number; lineEnd?: number; text?: string }>;
+      imagePath?: string;
+    }> = [];
+    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+      const page = await document.getPage(pageNumber);
+      const content = await page.getTextContent();
+      const lines = pdfTextItemsToStructuredLines(content.items.flatMap((item) => "str" in item ? [item] : []));
+      const text = lines.map(({ text }) => text).join("\n");
+      const annotations = await page.getAnnotations();
+      const links = [...new Set(annotations.flatMap((annotation) => typeof annotation.url === "string" ? [annotation.url] : []))];
+      const linkAnnotations = annotations.flatMap((annotation) => {
+        if (typeof annotation.url !== "string") return [];
+        const rect: unknown = annotation.rect;
+        const matched = Array.isArray(rect) && rect.length === 4 && rect.every(Number.isFinite)
+          ? lines.filter(({ bounds }) => bounds && bounds[0] < Math.max(rect[0], rect[2]) && bounds[2] > Math.min(rect[0], rect[2]) && bounds[1] < Math.max(rect[1], rect[3]) && bounds[3] > Math.min(rect[1], rect[3])) : [];
+        return [{ url: annotation.url, ...(matched.length ? { lineStart: matched[0]!.line, lineEnd: matched.at(-1)!.line, text: matched.map(({ text }) => text).join("\n") } : {}) }];
+      });
+      pages.push({
+        page: pageNumber,
+        lines,
+        text,
+        characterCount: text.replace(/\s/g, "").length,
+        sparse: isSparsePage(text),
+        links,
+        linkAnnotations,
+      });
+      page.cleanup();
+    }
+    const sparseDocument = isSparseDocument(pages.map((page) => page.text));
+    const renderDirectory = join(inputDirectory, "sparse-pages");
+    await mkdir(renderDirectory, { recursive: true });
+    for (const page of pages) {
+      if (!page.sparse && !sparseDocument) continue;
+      const outputRoot = join(renderDirectory, `page-${String(page.page).padStart(3, "0")}`);
+      await run("pdftoppm", ["-f", String(page.page), "-l", String(page.page), "-r", "144", "-png", "-singlefile", pdfPath, outputRoot]);
+      page.sparse = true;
+      page.imagePath = join(options.agentInputDirectory ?? inputDirectory, "sparse-pages", `${`page-${String(page.page).padStart(3, "0")}`}.png`);
+    }
+    const cleanTextName = options.cleanTextName ?? "resume.clean.txt";
+    const documentName = options.documentName ?? "resume.document.json";
+    const cleanTextPath = join(inputDirectory, cleanTextName);
+    const documentPath = join(inputDirectory, documentName);
+    const cleanText = pages.map((page) => {
+      const links = page.links.length ? `\nLinks extracted from PDF annotations:\n${page.links.map((url) => `- ${url}`).join("\n")}` : "";
+      return `--- Page ${page.page} ---\n${page.lines.map(({ text }) => wrapExtractedText(text)).join("\n")}${links}`;
+    }).join("\n\n");
+    await writeFile(cleanTextPath, cleanText);
+    await writeFile(documentPath, JSON.stringify({
+      schemaVersion: 2,
+      sourceType: "PDFJS_STRUCTURED_TEXT",
+      extractionMethod: "PDF.js 6.2.108",
+      pageCount: pages.length,
+      sections: buildPdfSections(pages),
+      pages,
+    }, null, 2));
+    return {
+      cleanTextPath: join(options.agentInputDirectory ?? inputDirectory, cleanTextName),
+      documentPath: join(options.agentInputDirectory ?? inputDirectory, documentName),
+      pageCount: pages.length,
+      sparsePageNumbers: pages.filter((page) => page.sparse).map((page) => page.page),
+      linkCount: pages.reduce((total, page) => total + page.links.length, 0),
+    };
+  } finally { await task.destroy(); }
 }
 
 export async function extractInputDirectory(inputDirectory = process.env.TRANSLUCID_INPUT_DIRECTORY ?? defaultInputDirectory) {

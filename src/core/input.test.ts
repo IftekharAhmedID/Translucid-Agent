@@ -7,6 +7,8 @@ import {
   MAX_SUBMISSION_BYTES,
   normalizeSubmission,
   pdfTextItemsToLines,
+  pdfTextItemsToStructuredLines,
+  buildPdfSections,
   validatePdfBytes,
   wrapExtractedText,
 } from "./input.ts";
@@ -21,6 +23,41 @@ test("normalizeSubmission retains raw JSON and creates a stable normalized repre
     result.normalized,
     '{\n  "candidate": {\n    "name": "Synthetic Casey"\n  },\n  "claims": [\n    "Built Atlas"\n  ]\n}',
   );
+});
+
+test("PDF layout separates words with gaps and lines with distinct baselines", () => {
+  const item = (str: string, x: number, y: number, width: number, hasEOL = false) => ({ str, transform: [10, 0, 0, 10, x, y], width, height: 10, hasEOL });
+  const lines = pdfTextItemsToStructuredLines([
+    item("Rice", 10, 100, 20), item("University", 34, 100, 48),
+    item("Swing", 10, 80, 25), item("Board", 35, 80, 25, true),
+    item("Research", 10, 60, 40, true),
+  ]);
+  assert.deepEqual(lines.map(({ line, text }) => ({ line, text })), [
+    { line: 1, text: "Rice University" }, { line: 2, text: "SwingBoard" }, { line: 3, text: "Research" },
+  ]);
+  assert.deepEqual(lines[0]?.bounds, [10, 100, 82, 110]);
+});
+
+test("structured PDF sections cover numbered lines without reinterpreting claims", () => {
+  const pages = [
+    { page: 1, lines: ["Candidate Name", "EDUCATION", "Rice University, 2023–2027", "WORKING EXPERIENCE", "Founder, Example"].map((text, index) => ({ line: index + 1, text })) },
+    { page: 2, lines: ["More work details", "PUBLICATION", "A research title"].map((text, index) => ({ line: index + 1, text })) },
+  ];
+  assert.deepEqual(buildPdfSections(pages), [
+    { heading: null, ranges: [{ page: 1, lineStart: 1, lineEnd: 1 }] },
+    { heading: "EDUCATION", ranges: [{ page: 1, lineStart: 2, lineEnd: 3 }] },
+    { heading: "WORKING EXPERIENCE", ranges: [{ page: 1, lineStart: 4, lineEnd: 5 }, { page: 2, lineStart: 1, lineEnd: 1 }] },
+    { heading: "PUBLICATION", ranges: [{ page: 2, lineStart: 2, lineEnd: 3 }] },
+  ]);
+});
+
+test("mixed unsupported PDF geometry falls back to explicit line endings", () => {
+  const lines = pdfTextItemsToStructuredLines([
+    { str: "left", transform: [10, 0, 0, 10, 10, 100], width: 20, height: 10 },
+    { str: " fallback " },
+    { str: "right", transform: [10, 0, 0, 10, 10, 80], width: 25, height: 10 },
+  ]);
+  assert.deepEqual(lines, [{ line: 1, text: "left fallback right" }]);
 });
 
 test("normalizeSubmission preserves arbitrary text", () => {
