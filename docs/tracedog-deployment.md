@@ -2,81 +2,53 @@
 
 ## Public landing page
 
-Deploy `landing/public` as a Render static site in the TraceDog project, from
-`main`. Root directory: `landing`; build command: `true`; publish directory:
-`public`; environment: `SKIP_INSTALL_DEPS=true`. `landing/render.yaml` records
-the configuration. The page uses HTML, CSS, and SVG with no build dependencies,
-browser JavaScript, provider credentials, or case data. Contact links lead to
-the founder's existing personal site. The case shown is explicitly fictional.
+The React landing page builds from `landing` with
+`npm ci --legacy-peer-deps && npm run build` and publishes `landing/dist`.
+The existing Render static service follows `main`, uses root directory
+`landing`, and must publish `dist` rather than the former `public` directory.
+Keep `SKIP_INSTALL_DEPS=true` because the build command installs dependencies.
+`landing/render.yaml` records the build and response headers, including the
+same-origin scripts and API connections needed by the form.
 
-Add `tracedog.co` as the apex custom domain in Render; Render also adds `www`
-and redirects it to the apex. In Namecheap Advanced DNS, replace conflicting
-website records with:
+Render service: `srv-db6rhp3l550s739r1hd0`, in the TraceDog production
+environment `evm-db6rcbom7kps73b2gstg`.
+Preview: https://tracedog-site.onrender.com/.
+Both `tracedog.co` and `www.tracedog.co` are verified in Render; the apex
+returns HTTPS 200. The initial successful deployment was
+`e804ec28efb278d95e38faa71180e8d1f0f877d9`.
 
-| Type | Host | Value | TTL |
-| --- | --- | --- | --- |
-| A | @ | 216.24.57.1 | 1 min or Automatic |
-| CNAME | www | tracedog-site.onrender.com | 1 min or Automatic |
+The current frontend supports PDF and text intake, reveals work email after
+input, blocks personal email domains, and uses the existing
+`/api/submissions` contract. PDFs are limited to 2 MB and two pages; text
+requires 15–1,500 words. A static site alone cannot execute this API.
 
-Remove old parking/redirect records and AAAA records for these website hosts.
-Preserve MX, mail-related TXT, and unrelated subdomains. After DNS propagates,
-verify both domains in Render and test HTTPS, `www` redirection, `/robots.txt`,
-and `/sitemap.xml`. Render manages TLS. See
-[Render's Namecheap guide](https://render.com/docs/configure-namecheap-dns).
+Validation: 209 backend tests, three frontend input tests, TypeScript checking,
+and a Node 22 production build pass. Chrome checks cover 320/768/1024/1440px,
+exact copy, rotating words, reduced motion, hidden email, input errors, and a
+clean console. Local API checks reject oversized and three-page PDFs before
+queuing an investigation.
 
-Render service: `srv-db6rhp3l550s739r1hd0`, in TraceDog environment
-`evm-db6rcbom7kps73b2gstg`. Preview: https://tracedog-site.onrender.com/.
-Both custom domains are registered in Render. Initial deployment of
-`e804ec28efb278d95e38faa71180e8d1f0f877d9` reached `live`; the public page
-returned HTTP 200 with the configured security headers. At setup, Namecheap
-still served parking DNS, so domain verification and custom-domain HTTPS
-remain pending the records above.
+## Investigation backend
 
-Validation: 179 tests and TypeScript checking passed on Node 22.23.3.
-An isolated headless browser verified 320/768/1024/1440px widths, no horizontal
-overflow, loaded images, section navigation, and keyboard entry via the skip
-link. No page console warnings or errors were observed. These checks qualify
-the landing page, not production investigation execution.
+`render.web.yaml` prepares a single Docker web service using `Dockerfile.web`,
+with a 1 GB persistent disk mounted at `/var/data/tracedog`, one worker, and
+`/health`. The Docker image builds the same React frontend and serves it with
+the submission API. A public backend needs a Render web service; the existing
+static site is not an investigation host.
 
-## Investigator service: work needed before public access
+Keep credentials server-side. Configure the selected model provider, E2B,
+search tools and Resend through Render environment variables. Set
+`TRACEDOG_ORIGIN` to the page origin and `TRACEDOG_GATEWAY_ORIGIN` to the
+backend's publicly reachable origin for authenticated E2B callbacks. Enable
+submissions only after verifying storage, callback routing, provider access
+and email delivery. The prepared blueprint defaults to submissions disabled.
 
-The publication branch is a CLI, not a hosted application. Its existing
-Dockerfile packages the isolated OpenCode runtime; it is not an HTTP host for
-the CLI. Its case gateway listens on loopback and is created per run. Deploying
-that Dockerfile as a public web service does not produce an investigation app.
-
-The initial landing launch exposes no investigation endpoint. Keep using the
-controlled local CLI described in README until the following work is complete:
-
-1. Add an authenticated submission/status/download API and user interface.
-   Validate input size/type and require case ownership for every operation.
-   Do not expose the internal case gateway, model proxy, or OpenCode endpoint
-   to unauthenticated users.
-2. Add durable job ownership, bounded concurrency, budgets, restart recovery,
-   and cancellation. Run investigations outside HTTP request lifetimes.
-3. Use E2B for isolated runtime execution on Render. Build and pin the E2B
-   template, then qualify parity with the local runtime. The README explicitly
-   lists the E2B parity gate as later work; current unit tests alone are not
-   production acceptance.
-4. Route authenticated E2B callbacks to the correct case gateway through a
-   stable HTTPS service, with a host that binds to Render's `0.0.0.0:$PORT`.
-   `E2B_GATEWAY_PUBLIC_URL` currently needs explicit routing to the per-run
-   gateway; setting it to a domain alone is insufficient.
-5. Store inputs, immutable sources, snapshots, PDFs, and structured results
-   durably with access controls and a retention/deletion policy. Render's
-   default ephemeral filesystem is not case storage.
-6. Configure selected model/provider keys server-side from `.env.example`.
-   Add `E2B_API_KEY`, `E2B_TEMPLATE_ID`, gateway routing, and explicit spending
-   limits. Never put these in the landing service or frontend assets.
-7. Qualify a synthetic end-to-end case, then an authorized public-professional
-   case, including cleanup, callback authentication, interrupted runs,
-   budget exhaustion, report downloads, and immutable source provenance.
-
-No paid investigation hosting tier is provisioned by the landing launch.
-Choose compute/storage tiers after runtime qualification and capacity testing.
+The local PDF workflow has completed committed investigations and email
+delivery. Publication requires a committed research snapshot and materialized
+report; parsed input or intermediate findings alone do not qualify a run.
 
 ## Rollback
 
 For landing defects, redeploy the previous successful static deployment or
-revert the landing commit. Investigation execution remains in the existing
-controlled workflow. DNS can remain pointed to the same static service.
+revert the landing commit. DNS can remain pointed to the same static service. Backend deployment and
+public investigation qualification are separate from a successful page deploy.
