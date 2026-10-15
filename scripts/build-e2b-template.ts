@@ -6,7 +6,9 @@ if (!apiKey) throw new Error("E2B_API_KEY is required to build the investigator 
 const name = process.argv[2] || "translucid-investigator";
 if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(name)) throw new Error("Template name must use lowercase letters, numbers, and hyphens.");
 
-const template = Template({ fileContextPath: process.cwd() }).fromDockerfile("Dockerfile");
+const dockerfile = process.argv[3] ?? "Dockerfile";
+if (!["Dockerfile", "Dockerfile.coordinator"].includes(dockerfile)) throw new Error("Unsupported runtime Dockerfile.");
+const template = Template({ fileContextPath: process.cwd() }).fromDockerfile(dockerfile);
 const result = await Template.build(template, name, {
   apiKey,
   cpuCount: 2,

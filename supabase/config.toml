@@ -1,0 +1,4 @@
+project_id = "tracedog"
+
+[functions.start-investigation]
+verify_jwt = false

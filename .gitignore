@@ -26,4 +26,5 @@ runtime-manifest.json
 *.key
 *.log
 *.tsbuildinfo
+supabase/.temp/
 .DS_Store

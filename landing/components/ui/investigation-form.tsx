@@ -26,7 +26,8 @@ export default function InvestigationForm() {
     try {
       const website = String(new FormData(form).get("website") ?? "");
       const payload = await buildSubmission({ kind, pdf, text, textFile, email, website });
-      const response = await fetch("/api/submissions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const endpoint = import.meta.env.VITE_SUBMISSIONS_URL || "/api/submissions";
+      const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const result = await response.json().catch(() => ({ error: "Please try again in a moment." }));
       if (!response.ok || !result.submissionId) throw new Error(result.error || "Please try again in a moment.");
       setQueued(true);

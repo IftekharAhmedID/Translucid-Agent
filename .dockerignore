@@ -8,3 +8,6 @@ landing/dist
 !.env.example
 coverage
 npm-debug.log*
+.debug
+.omo
+supabase/.temp

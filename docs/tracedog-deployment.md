@@ -8,7 +8,7 @@ The existing Render static service follows `main`, uses root directory
 `landing`, and must publish `dist` rather than the former `public` directory.
 Keep `SKIP_INSTALL_DEPS=true` because the build command installs dependencies.
 `landing/render.yaml` records the build and response headers, including the
-same-origin scripts and API connections needed by the form.
+same-origin scripts and the Supabase API connection needed by the form.
 
 Render service: `srv-db6rhp3l550s739r1hd0`, in the TraceDog production
 environment `evm-db6rcbom7kps73b2gstg`.
@@ -19,8 +19,10 @@ returns HTTPS 200. The initial successful deployment was
 
 The current frontend supports PDF and text intake, reveals work email after
 input, blocks personal email domains, and uses the existing
-`/api/submissions` contract. PDFs are limited to 2 MB and two pages; text
-requires 15–1,500 words. A static site alone cannot execute this API.
+`/api/submissions` payload contract. The public build sends it to a free
+Supabase Edge Function, which starts an E2B job and returns immediately.
+PDFs are limited to 2 MB and two pages; text requires 15–1,500 words.
+See [the serverless deployment](tracedog-serverless.md) for the live setup.
 
 Validation: 209 backend tests, three frontend input tests, TypeScript checking,
 and a Node 22 production build pass. Chrome checks cover 320/768/1024/1440px,
@@ -28,13 +30,14 @@ exact copy, rotating words, reduced motion, hidden email, input errors, and a
 clean console. Local API checks reject oversized and three-page PDFs before
 queuing an investigation.
 
-## Investigation backend
+## Optional persistent backend
 
 `render.web.yaml` prepares a single Docker web service using `Dockerfile.web`,
 with a 1 GB persistent disk mounted at `/var/data/tracedog`, one worker, and
 `/health`. The Docker image builds the same React frontend and serves it with
 the submission API. A public backend needs a Render web service; the existing
-static site is not an investigation host.
+static site is not an investigation host. This paid alternative is not deployed;
+production uses the serverless path above without an application database.
 
 Keep credentials server-side. Configure the selected model provider, E2B,
 search tools and Resend through Render environment variables. Set

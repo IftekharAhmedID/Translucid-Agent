@@ -19,6 +19,9 @@ blur overlay. It uses the existing `/api/submissions` endpoint and the same bloc
 as the backend. `npm test` checks the payload and input limits. Browser tests
 can mock the submission response to avoid launching paid investigations.
 
+For the serverless deployment, set the public endpoint in `.env.example`;
+provider keys remain in the Edge Function. See `../docs/tracedog-serverless.md`.
+
 Verified: production build under Node 22, 209 backend tests, three input tests,
 and Chrome at 320/768/1024/1440px. PDF, pasted text and text-file flows,
 personal-email rejection, file replacement and error recovery passed with

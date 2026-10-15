@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 
-import { ALL_TRAFFIC, Sandbox } from "e2b";
+import { ALL_TRAFFIC, Sandbox, type CommandHandle } from "e2b";
 
 import { waitForHttp } from "./process.ts";
 import { openCodeRuntimeEnvironment, type InvestigatorRuntime, type RunHandle, type RunStatus, type RuntimeStartInput } from "./types.ts";
@@ -40,9 +40,10 @@ export class E2BRuntime implements InvestigatorRuntime {
       network: { allowOut: [gatewayHost], denyOut: [ALL_TRAFFIC], allowPublicTraffic: false },
       lifecycle: { onTimeout: "kill" },
     });
+    let startup: CommandHandle | undefined;
     try {
       for (const file of await workspaceFiles(input.caseDirectory)) await sandbox.files.write(file.path, Uint8Array.from(file.data).buffer);
-      await sandbox.commands.run("/opt/investigator/runtime/start.sh", { background: true, timeoutMs: input.timeoutMs });
+      startup = await sandbox.commands.run("/opt/investigator/runtime/start.sh", { background: true, timeoutMs: input.timeoutMs });
       const openCodeUrl = `https://${sandbox.getHost(4096)}`;
       const trafficAccessToken = sandbox.trafficAccessToken;
       if (!trafficAccessToken) throw new Error("Secure E2B sandbox did not return a traffic-access token.");
@@ -58,7 +59,9 @@ export class E2BRuntime implements InvestigatorRuntime {
       if (!input.expectedManifestHash || manifest.manifestHash !== input.expectedManifestHash) throw new Error("E2B publisher runtime manifest does not equal the pinned local manifest.");
       return { kind: "E2B", id: sandbox.sandboxId, openCodeUrl, accessHeaders, manifestHash: manifest.manifestHash };
     } catch (error) {
+      const log = `${startup?.stderr ?? ""}\n${startup?.stdout ?? ""}`.trim().slice(-2000).replaceAll(input.caseToken, "[redacted]").replaceAll(input.openCodePassword, "[redacted]");
       await sandbox.kill().catch(() => undefined);
+      if (log) throw new Error(`${error instanceof Error ? error.message : "E2B startup failed."} Runtime startup: ${log}`);
       throw error;
     }
   }

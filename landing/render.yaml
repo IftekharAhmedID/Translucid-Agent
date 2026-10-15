@@ -6,6 +6,11 @@ services:
     rootDir: landing
     buildCommand: "npm ci --legacy-peer-deps && npm run build"
     staticPublishPath: ./dist
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      - key: VITE_SUBMISSIONS_URL
+        value: https://qlhstbyydtjlrdytapgm.supabase.co/functions/v1/start-investigation
     headers:
       - path: /*
         name: X-Content-Type-Options
@@ -15,4 +20,4 @@ services:
         value: strict-origin-when-cross-origin
       - path: /*
         name: Content-Security-Policy
-        value: "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+        value: "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self' https://qlhstbyydtjlrdytapgm.supabase.co; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
