@@ -125,16 +125,13 @@ label{display:block;font-size:12px;margin:16px 0 8px}
 input:not([type=checkbox]),textarea{width:100%;padding:12px;border:1px solid var(--line);background:var(--white);font:inherit;color:var(--ink);font-size:13px;min-width:0}
 input[type=file]{font-size:11px}
 textarea{resize:vertical}
-.input-help,.upload-notice{font-size:11px!important;color:var(--muted);margin-top:8px}
-.upload-notice{margin:20px 0}
+.input-help{font-size:11px!important;color:var(--muted);margin-top:8px}
 .deploy{width:100%}
 button.button{border:0;cursor:pointer;font-family:inherit}
 button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid var(--ink);outline-offset:3px}
 button:disabled{opacity:.6;cursor:wait}
 fieldset{margin:24px 0 0;padding:0;border:0}
 legend{font-size:20px;font-family:Georgia,serif}
-.consent{font-size:11px;line-height:1.6;display:flex;gap:8px;align-items:flex-start;margin:16px 0}
-.consent input{flex-shrink:0;margin-top:3px}
 .honeypot{display:none}
 #form-status{margin-top:18px;font-size:12px;line-height:1.6}
 [hidden]{display:none!important}

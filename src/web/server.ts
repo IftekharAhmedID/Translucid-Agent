@@ -140,7 +140,7 @@ export const server = createServer(async (request, response) => {
       if (Date.now() - requestWindow.starts > 60000) requestWindow = { starts: Date.now(), count: 0 };
       if (++requestWindow.count > 60) throw new SubmissionError("Too many requests. Try again shortly.", 429);
       if (request.method !== "POST" || !allowedOrigins.has(request.headers.origin ?? "") || !request.headers["content-type"]?.startsWith("application/json")) throw new SubmissionError("Request not allowed.", 403);
-      if (!enabled()) throw new SubmissionError("Investigations are temporarily unavailable while we complete runtime checks.", 503);
+      if (!enabled()) throw new SubmissionError("Investigations are temporarily unavailable. Please try again later.", 503);
       if (path !== "/api/submissions") return json(response, 404, { error: "Not found." });
       if (path === "/api/submissions") {
         if (acceptingUpload) throw new SubmissionError("Another upload is being validated. Try again shortly.", 429);
@@ -150,7 +150,7 @@ export const server = createServer(async (request, response) => {
       // Shared edge addresses may make this quota conservative. Global/domain/email quotas also bound cost.
       const ip = request.socket.remoteAddress ?? "unknown";
       if (path === "/api/submissions") {
-        if (value.website || value.consent !== true) throw new SubmissionError("Confirm you may submit this public professional information.");
+        if (value.website) throw new SubmissionError("Submission could not be accepted.");
         if (!await hasCaseSpace(root)) throw new SubmissionError("TraceDog storage is at capacity. Please try again later.", 503);
         const email = await validateWorkEmail(value.email);
         const kind = value.kind === "pdf" ? "pdf" : value.kind === "text" ? "text" : undefined;

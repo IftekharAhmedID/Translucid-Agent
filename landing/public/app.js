@@ -47,7 +47,7 @@ byId('send-report').addEventListener('click', async () => {
     const domain = byId('work-email').value.toLowerCase().split('@')[1];
     const personalDomains = await fetch('/email-domains.json').then((response) => response.json());
     if (personalDomains.includes(domain) || /(?:^|\.)(?:gmail|yahoo|hotmail|outlook|mailinator|guerrillamail)\./.test(domain)) throw new Error('Enter your work email. Personal email addresses are not accepted.');
-    const value = { kind, email: byId('work-email').value, consent: true, website: byId('website').value };
+    const value = { kind, email: byId('work-email').value, website: byId('website').value };
     if (kind === 'text') value.text = byId('submission').value;
     else {
       const bytes = new Uint8Array(await byId('resume').files[0].arrayBuffer());

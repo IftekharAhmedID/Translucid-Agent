@@ -20,10 +20,15 @@ test("web API rejects cross-origin, personal email, retired verification and pri
     }
     const post = (path: string, value: unknown, requestOrigin = origin) => fetch(origin + path, { method: "POST", headers: { origin: requestOrigin, "content-type": "application/json" }, body: JSON.stringify(value) });
     assert.equal((await post("/api/submissions", {}, "https://evil.example")).status, 403);
-    const localAlias = await post("/api/submissions", { consent: true, email: "a@yahoo.com", kind: "text", text: "x".repeat(25) }, `http://localhost:${port}`);
+    const localAlias = await post("/api/submissions", { email: "a@yahoo.com", kind: "text", text: "x".repeat(25) }, `http://localhost:${port}`);
     assert.equal(localAlias.status, 400);
     assert.match((await localAlias.json()).error, /work email/);
-    assert.equal((await post("/api/submissions", { consent: true, email: "a@gmail.com", kind: "text", text: "x".repeat(25) })).status, 400);
+    const personalEmail = await post("/api/submissions", { email: "a@gmail.com", kind: "text", text: "x".repeat(25) });
+    assert.equal(personalEmail.status, 400);
+    assert.match((await personalEmail.json()).error, /work email/);
+    const spam = await post("/api/submissions", { website: "spam.example", email: "a@gmail.com", kind: "text", text: "x".repeat(25) });
+    assert.equal(spam.status, 400);
+    assert.match((await spam.json()).error, /Submission could not be accepted/);
     assert.equal((await post("/api/verify", { submissionId: "unknown", code: "123456" })).status, 404);
     assert.equal((await fetch(origin + "/gateway/internal/tools/execute", { method: "POST" })).status, 404);
     assert.equal((await fetch(origin + "/.env")).status, 404);

@@ -97,7 +97,7 @@ Per-connection-IP quotas may be conservative behind shared Render edges.
 - At the user's request, inbox-code verification was removed from the UI,
   API and persisted job model. Validated submissions queue immediately;
   legacy pending-code jobs are retired without launching research. Work-domain
-  filtering, consent, intake admission, quotas, and resource limits remain.
+  filtering, intake admission, quotas, and resource limits remain.
   Browser tests submit real PDF/text inputs without a code step and prove a
   third submission to the same email is rejected with HTTP 429.
 - Real-input testing exposed concurrent v3 mutation loss: writes were ordered,
@@ -168,6 +168,10 @@ domains in the browser and API; the API also requires working MX records.
 Local HTTP origins accept localhost and 127.0.0.1 at the configured port.
 `TRACEDOG_GATEWAY_ORIGIN` can point to a public callback tunnel while
 `TRACEDOG_ORIGIN` remains the local browser origin. Production origins stay exact.
+
+The landing page and form contain no authorization disclaimer or consent
+checkbox. The API accepts the same direct submission payload without a consent
+field; work-email screening and the honeypot remain enforced.
 
 ## PDF recovery timeout fix
 
