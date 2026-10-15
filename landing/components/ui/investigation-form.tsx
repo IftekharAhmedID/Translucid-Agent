@@ -1,6 +1,6 @@
 import { useRef, useState, type FormEvent } from "react";
 import { ArrowRight, Check, FileText, LoaderCircle, Mail, Upload, X } from "lucide-react";
-import { buildSubmission, type InputKind } from "@/lib/submission";
+import { buildSubmission, countWords, type InputKind } from "@/lib/submission";
 
 const inputClass = "w-full rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white placeholder:text-zinc-500 transition-colors focus:border-white/30 focus:outline-none focus:ring-2 focus:ring-white/15";
 
@@ -14,6 +14,7 @@ export default function InvestigationForm() {
   const [busy, setBusy] = useState(false);
   const [queued, setQueued] = useState(false);
   const submitting = useRef(false);
+  const showEmail = kind === "pdf" ? Boolean(pdf) : Boolean(textFile) || countWords(text) >= 15;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -46,7 +47,7 @@ export default function InvestigationForm() {
   );
 
   return (
-    <form onSubmit={submit} aria-busy={busy}>
+    <form onSubmit={submit} noValidate aria-busy={busy}>
       <fieldset disabled={busy} className="space-y-6 disabled:opacity-70">
         <legend className="sr-only">Investigation input</legend>
         <div className="flex rounded-full border border-white/10 bg-black/20 p-1" role="group" aria-label="Input type">
@@ -65,7 +66,7 @@ export default function InvestigationForm() {
           <div className="space-y-3">
             {textFile ? <div className="flex min-h-40 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-white/20 bg-white/[.025] px-5 py-6 text-center"><FileText className="size-6 text-[#ffcd75]" aria-hidden="true" /><span className="max-w-full truncate text-sm font-medium">{textFile.name}</span></div> : <>
               <label htmlFor="submission" className="sr-only">Information to investigate</label>
-              <textarea id="submission" value={text} onChange={event => { setText(event.target.value); setStatus(""); }} rows={5} maxLength={10000} placeholder="Paste the information to investigate…" className={`${inputClass} resize-y`} />
+              <textarea id="submission" value={text} onChange={event => { setText(event.target.value); setStatus(""); }} rows={5} placeholder="Paste the information to investigate…" className={`${inputClass} resize-y`} />
             </>}
             <div className="flex min-w-0 items-center gap-2 text-xs text-zinc-400">
               <input id="submission-file" type="file" accept="text/plain,.txt" className="peer sr-only" onChange={event => { setTextFile(event.target.files?.[0] ?? null); event.target.value = ""; setStatus(""); }} />
@@ -74,14 +75,16 @@ export default function InvestigationForm() {
             </div>
           </div>
         )}
-        <div className="h-px bg-white/10" />
-        <div>
-          <label htmlFor="work-email" className="mb-2.5 block text-xs font-medium text-zinc-300">Work email</label>
-          <div className="relative"><Mail className="pointer-events-none absolute left-4 top-3.5 size-4 text-zinc-500" aria-hidden="true" /><input id="work-email" type="email" required autoComplete="email" placeholder="you@company.com" value={email} onChange={event => { setEmail(event.target.value); setStatus(""); }} className={`${inputClass} pl-11`} /></div>
-        </div>
+        {showEmail && <>
+          <div className="h-px bg-white/10" />
+          <div className="animate-fade-in">
+            <label htmlFor="work-email" className="mb-2.5 block text-xs font-medium text-zinc-300">Work email</label>
+            <div className="relative"><Mail className="pointer-events-none absolute left-4 top-3.5 size-4 text-zinc-500" aria-hidden="true" /><input id="work-email" type="email" required autoComplete="email" placeholder="you@company.com" value={email} onChange={event => { setEmail(event.target.value); setStatus(""); }} className={`${inputClass} pl-11`} /></div>
+          </div>
+        </>}
         <label hidden aria-hidden="true">Website<input type="text" name="website" tabIndex={-1} autoComplete="off" /></label>
         <button type="submit" className="group flex w-full items-center justify-center gap-2 rounded-full bg-white px-6 py-3.5 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-200 active:scale-[.98] disabled:cursor-wait" disabled={busy}>
-          {busy ? <><LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />Starting…</> : <>Start investigation<ArrowRight className="size-4 transition-transform group-hover:translate-x-1" aria-hidden="true" /></>}
+          {busy ? <><LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />Starting…</> : <>Deploy TraceDog<ArrowRight className="size-4 transition-transform group-hover:translate-x-1" aria-hidden="true" /></>}
         </button>
       </fieldset>
       <p role="status" aria-live="polite" className={`text-xs leading-relaxed text-amber-200 ${status ? "mt-4" : ""}`}>{status}</p>

@@ -1,7 +1,8 @@
 # TraceDog email investigations
 
-Visitors choose PDF or Text in the hero's right-side card, enter their work
-email and submit. The server validates a work domain with MX
+Visitors choose PDF or Text in the hero's right-side card. Work email stays
+hidden until a file is selected or pasted text reaches 15 words, then visitors
+enter their email and submit. The server validates a work domain with MX
 records, validates the input, and queues an E2B investigation immediately.
 There is no email verification code or verification endpoint. Only the final
 report or failure notice is emailed. No public case pages, progress sections, PDF
@@ -30,7 +31,7 @@ facts). Established = 100, partial = 50, unresolved/conflicting/contradicted =
 No submitted findings means no score. Failed runs never get a score or a
 success report. Human review remains necessary.
 
-Abuse controls: 5 MB / 20-page text-bearing PDFs, 10,000-character text, work
+Abuse controls: 5 MB / 20-page text-bearing PDFs, 15–1,500-word text, work
 domain screening,
 two submissions per email/day, domain and global daily quotas, bounded queue,
 one active investigation, runtime/model/provider ceilings, same-origin APIs,

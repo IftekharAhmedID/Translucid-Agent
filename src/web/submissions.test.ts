@@ -14,8 +14,16 @@ test("work emails reject consumer domains, malformed addresses and domains witho
   await assert.rejects(() => validateWorkEmail("person@example.org", async () => []), /mail/);
   assert.equal(await validateWorkEmail("Person@Example.org", mx), "person@example.org");
   assert.equal(await validateWorkEmail("ia22@rice.edu", mx), "ia22@rice.edu");
-  assert.throws(() => validateText("x"), /20/);
-  assert.throws(() => validateText("x".repeat(10001)), /10,000/);
+});
+
+test("text intake enforces 15 through 1,500 words for pasted or uploaded text", () => {
+  assert.throws(() => validateText("word ".repeat(14)), /Minimum 15 words required/);
+  assert.throws(() => validateText("word ".repeat(1501)), /Maximum 1,500 words/);
+  for (const count of [15, 1500]) {
+    const text = Array.from({ length: count }, () => "professional").join(" \t\n");
+    assert.equal(validateText(` ${text} `), text);
+  }
+  assert.throws(() => validateText("word\0 ".repeat(15)), /invalid characters/);
 });
 
 test("PDF input rejects forged types, invalid base64 and files above the byte limit", () => {

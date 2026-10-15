@@ -21,8 +21,10 @@ export async function validateWorkEmail(raw: unknown, mxLookup = resolveMx): Pro
 }
 
 export function validateText(raw: unknown): string {
-  if (typeof raw !== "string" || raw.trim().length < 20) throw new SubmissionError("Enter at least 20 characters to investigate.");
-  if (raw.length > 10_000) throw new SubmissionError("Text must be no more than 10,000 characters.");
+  if (typeof raw !== "string" || !raw.trim()) throw new SubmissionError("Minimum 15 words required.");
+  const words = raw.trim().split(/\s+/u).length;
+  if (words < 15) throw new SubmissionError("Minimum 15 words required.");
+  if (words > 1500) throw new SubmissionError("Maximum 1,500 words allowed.");
   if (raw.includes("\0")) throw new SubmissionError("Text contains invalid characters.");
   return raw.trim();
 }
