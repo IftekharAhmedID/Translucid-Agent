@@ -1,7 +1,7 @@
 # TraceDog email investigations
 
-Visitors choose Upload PDF or Upload Text on the hero's right side. Deploy
-TraceDog reveals a work-email step. The server validates a work domain with MX
+Visitors choose PDF or Text in the hero's right-side card, enter their work
+email and submit. The server validates a work domain with MX
 records, validates the input, and queues an E2B investigation immediately.
 There is no email verification code or verification endpoint. Only the final
 report or failure notice is emailed. No public case pages, progress sections, PDF
@@ -172,6 +172,12 @@ Local HTTP origins accept localhost and 127.0.0.1 at the configured port.
 The landing page and form contain no authorization disclaimer or consent
 checkbox. The API accepts the same direct submission payload without a consent
 field; work-email screening and the honeypot remain enforced.
+
+The frontend is a React/TypeScript/Tailwind package under `landing`.
+Build it before starting the web service (`npm --prefix landing run build`);
+the service serves `landing/dist`. Docker and the static Render blueprint
+perform that build. The UI component is in `landing/components/ui` and uses
+the supplied dog image, with no statistics or client-logo strip.
 
 ## PDF recovery timeout fix
 

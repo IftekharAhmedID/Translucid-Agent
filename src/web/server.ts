@@ -114,7 +114,7 @@ async function pump() {
 
 const files: Record<string, [string, string]> = {
   "/": ["index.html", "text/html; charset=utf-8"], "/style.css": ["style.css", "text/css"],
-  "/app.js": ["app.js", "text/javascript"], "/email-domains.json": ["email-domains.json", "application/json"], "/mark.svg": ["mark.svg", "image/svg+xml"],
+  "/app.js": ["app.js", "text/javascript"], "/email-domains.json": ["email-domains.json", "application/json"], "/favicon.svg": ["favicon.svg", "image/svg+xml"], "/background.png": ["background.png", "image/png"],
   "/robots.txt": ["robots.txt", "text/plain"], "/sitemap.xml": ["sitemap.xml", "application/xml"],
 };
 
@@ -177,7 +177,7 @@ export const server = createServer(async (request, response) => {
     }
     if (!["GET", "HEAD"].includes(request.method ?? "") || !files[path]) return json(response, 404, { error: "Not found." });
     const [file, type] = files[path];
-    const bytes = await readFile(resolve("landing/public", file));
+    const bytes = await readFile(resolve("landing/dist", file));
     response.writeHead(200, { "content-type": type, "cache-control": "no-cache" });
     response.end(request.method === "HEAD" ? undefined : bytes);
   } catch (error) {

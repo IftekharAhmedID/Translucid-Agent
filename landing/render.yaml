@@ -4,11 +4,8 @@ services:
     runtime: static
     branch: main
     rootDir: landing
-    buildCommand: "true"
-    staticPublishPath: ./public
-    envVars:
-      - key: SKIP_INSTALL_DEPS
-        value: "true"
+    buildCommand: "npm ci --legacy-peer-deps && npm run build"
+    staticPublishPath: ./dist
     headers:
       - path: /*
         name: X-Content-Type-Options
