@@ -2,9 +2,8 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { spawn } from "node:child_process";
 import { readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { SubmissionError, SubmissionStore, decodePdf, validateText, validateWorkEmail, type Job } from "./submissions.ts";
+import { SubmissionError, SubmissionStore, decodePdf, validatePdfFile, validateText, validateWorkEmail, type Job } from "./submissions.ts";
 import { sendEmail } from "./email.ts";
-import { runProcess } from "../runtime/process.ts";
 import { directoryBytes, hasCaseSpace } from "./storage.ts";
 
 const root = resolve(process.env.TRACEDOG_DATA_DIR ?? ".debug/tracedog-web");
@@ -42,14 +41,6 @@ async function body(request: IncomingMessage, maximum = 7 * 1024 * 1024) {
   }
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>; }
   catch { throw new SubmissionError("Invalid request."); }
-}
-
-async function validatePdf(job: Job) {
-  const { stdout } = await runProcess("pdfinfo", [job.inputPath], { timeoutMs: 10000, maxOutputBytes: 100000 });
-  const pages = Number(stdout.match(/^Pages:\s+(\d+)/m)?.[1]);
-  if (!pages || pages > 20 || /^Encrypted:\s+yes/m.test(stdout)) throw new SubmissionError("Use an unencrypted PDF with at most 20 pages.");
-  const extracted = await runProcess("pdftotext", ["-f", "1", "-l", "20", job.inputPath, "-"], { timeoutMs: 10000, maxOutputBytes: 400000 });
-  if (extracted.stdout.trim().length < 20 || extracted.stdout.length > 100000) throw new SubmissionError("Use a text-bearing PDF with at most 100,000 extracted characters. Scanned images are not supported.");
 }
 
 async function investigate(job: Job) {
@@ -162,7 +153,7 @@ export const server = createServer(async (request, response) => {
         }
         const job = store.create(email, kind, content, ip);
         try {
-          if (kind === "pdf") await validatePdf(job);
+          if (kind === "pdf") await validatePdfFile(job.inputPath);
         } catch (error) {
           store.update(job.id, { status: "FAILED" });
           await rm(job.inputPath, { force: true });

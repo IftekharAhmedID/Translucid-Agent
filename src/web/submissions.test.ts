@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, createWriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SubmissionStore, decodePdf, validateWorkEmail, validateText } from "./submissions.ts";
+import PDFDocument from "pdfkit";
+import { SubmissionStore, decodePdf, validatePdfFile, validateWorkEmail, validateText } from "./submissions.ts";
 
 test("work emails reject consumer domains, malformed addresses and domains without mail", async () => {
   const mx = async () => [{ exchange: "mail.example.org", priority: 10 }];
@@ -29,8 +30,29 @@ test("text intake enforces 15 through 1,500 words for pasted or uploaded text", 
 test("PDF input rejects forged types, invalid base64 and files above the byte limit", () => {
   assert.throws(() => decodePdf(Buffer.from("not a PDF").toString("base64")), /PDF/);
   assert.throws(() => decodePdf("!!!!"), /PDF/);
-  const oversized = Buffer.alloc(5 * 1024 * 1024 + 1); oversized.write("%PDF-");
-  assert.throws(() => decodePdf(oversized.toString("base64")), /5 MB/);
+  const limit = Buffer.alloc(2 * 1024 * 1024); limit.write("%PDF-");
+  assert.equal(decodePdf(limit.toString("base64")).length, limit.length);
+  const oversized = Buffer.alloc(2 * 1024 * 1024 + 1); oversized.write("%PDF-");
+  assert.throws(() => decodePdf(oversized.toString("base64")), /2 MB/);
+});
+
+test("PDF intake accepts two real pages and rejects three before investigation", async () => {
+  const root = mkdtempSync(join(tmpdir(), "tracedog-pdf-pages-"));
+  try {
+    for (const pages of [2, 3]) {
+      const path = join(root, `${pages}.pdf`);
+      await new Promise<void>((resolve, reject) => {
+        const output = createWriteStream(path);
+        output.once("finish", resolve); output.once("error", reject);
+        const document = new PDFDocument({ autoFirstPage: false });
+        document.pipe(output);
+        for (let page = 0; page < pages; page++) document.addPage().text("Synthetic professional profile with enough text for PDF intake.");
+        document.end();
+      });
+      if (pages === 2) await validatePdfFile(path);
+      else await assert.rejects(() => validatePdfFile(path), /at most 2 pages/);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("validated inputs queue without email codes and persist queued work", () => {

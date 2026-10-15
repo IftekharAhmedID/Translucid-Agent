@@ -10,15 +10,16 @@ frontend editing; run the backend alongside it for submissions. The Docker
 web image builds the frontend in a separate stage. Render's static blueprint
 also builds this package before publishing `dist`.
 
-The form supports a PDF, a text file, or pasted text and a work email. It
-reveals work email after selecting a file or entering 15 words. Text submissions
+The form supports a PDF up to 2 MB and two pages, a text file, or pasted text
+and a work email. It reveals work email after selecting a file or entering 15 words. Text submissions
 must contain 15–1,500 whitespace-separated words; these limits appear only as
-submission errors. The background has a dark blur overlay. It uses the
-existing `/api/submissions` endpoint and the same blocked-domain list
+submission errors. The card heading rotates through Resume, Profile and Claim,
+and the left contact button links to ahmedifty.com. The background has a dark
+blur overlay. It uses the existing `/api/submissions` endpoint and the same blocked-domain list
 as the backend. `npm test` checks the payload and input limits. Browser tests
 can mock the submission response to avoid launching paid investigations.
 
-Verified: production build under Node 22, 208 backend tests, three input tests,
+Verified: production build under Node 22, 209 backend tests, three input tests,
 and Chrome at 320/768/1024/1440px. PDF, pasted text and text-file flows,
 personal-email rejection, file replacement and error recovery passed with
 mocked submission responses. The Docker build was not run because the local

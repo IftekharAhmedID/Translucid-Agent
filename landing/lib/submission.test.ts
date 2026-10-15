@@ -23,6 +23,8 @@ test("personal emails and invalid files are rejected before submission", async (
   }
   await assert.rejects(() => buildSubmission({ ...input, kind: "pdf" }), /choose a PDF/i);
   await assert.rejects(() => buildSubmission({ ...input, kind: "pdf", pdf: new File(["x"], "fake.pdf") }), /valid PDF/i);
+  const oversized = new Uint8Array(2 * 1024 * 1024 + 1); oversized.set(new TextEncoder().encode("%PDF-"));
+  await assert.rejects(() => buildSubmission({ ...input, kind: "pdf", pdf: new File([oversized], "large.pdf") }), /2 MB/);
   await assert.rejects(() => buildSubmission({ ...input, text: "word ".repeat(10), email: "" }), /Minimum 15 words required/);
   await assert.rejects(() => buildSubmission({ ...input, text: "word ".repeat(1501) }), /Maximum 1,500 words/);
   await assert.rejects(() => buildSubmission({ ...input, textFile: new File(["x".repeat(40_001)], "large.txt") }), /40 KB/);

@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { resolveMx } from "node:dns/promises";
 import { join } from "node:path";
+import { runProcess } from "../runtime/process.ts";
 
 export class SubmissionError extends Error {
   constructor(message: string, readonly status = 400) { super(message); }
@@ -32,8 +33,16 @@ export function validateText(raw: unknown): string {
 export function decodePdf(raw: unknown): Buffer {
   if (typeof raw !== "string" || raw.length > 7 * 1024 * 1024 || !/^[A-Za-z0-9+/]*={0,2}$/.test(raw)) throw new SubmissionError("Invalid PDF.");
   const bytes = Buffer.from(raw, "base64");
-  if (bytes.length > 5 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== "%PDF-") throw new SubmissionError("Upload a PDF no larger than 5 MB.");
+  if (bytes.length > 2 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== "%PDF-") throw new SubmissionError("Upload a PDF no larger than 2 MB.");
   return bytes;
+}
+
+export async function validatePdfFile(inputPath: string): Promise<void> {
+  const { stdout } = await runProcess("pdfinfo", [inputPath], { timeoutMs: 10000, maxOutputBytes: 100000 });
+  const pages = Number(stdout.match(/^Pages:\s+(\d+)/m)?.[1]);
+  if (!pages || pages > 2 || /^Encrypted:\s+yes/m.test(stdout)) throw new SubmissionError("Use an unencrypted PDF with at most 2 pages.");
+  const extracted = await runProcess("pdftotext", ["-f", "1", "-l", "2", inputPath, "-"], { timeoutMs: 10000, maxOutputBytes: 400000 });
+  if (extracted.stdout.trim().length < 20 || extracted.stdout.length > 100000) throw new SubmissionError("Use a text-bearing PDF with at most 100,000 extracted characters. Scanned images are not supported.");
 }
 
 export type Job = {

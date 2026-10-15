@@ -59,7 +59,7 @@ export default function InvestigationForm() {
             <label htmlFor="resume" className="group flex min-h-40 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-white/20 bg-white/[.025] px-5 py-6 text-center transition-colors hover:border-white/40 hover:bg-white/5 peer-focus-visible:outline-2 peer-focus-visible:outline-offset-4 peer-focus-visible:outline-amber-200">
               {pdf ? <FileText className="size-6 text-[#ffcd75]" aria-hidden="true" /> : <Upload className="size-6 text-zinc-400 transition-colors group-hover:text-white" aria-hidden="true" />}
               <span className="max-w-full truncate text-sm font-medium">{pdf?.name ?? "Choose your PDF"}</span>
-              <span className="text-xs text-zinc-400">{pdf ? "Click to change" : "Up to 5 MB · 20 pages"}</span>
+              <span className="text-xs text-zinc-400">{pdf ? "Click to change" : "Up to 2 MB · 2 pages"}</span>
             </label>
           </div>
         ) : (

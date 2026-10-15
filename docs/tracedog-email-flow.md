@@ -31,7 +31,7 @@ facts). Established = 100, partial = 50, unresolved/conflicting/contradicted =
 No submitted findings means no score. Failed runs never get a score or a
 success report. Human review remains necessary.
 
-Abuse controls: 5 MB / 20-page text-bearing PDFs, 15–1,500-word text, work
+Abuse controls: 2 MB / 2-page text-bearing PDFs, 15–1,500-word text, work
 domain screening,
 two submissions per email/day, domain and global daily quotas, bounded queue,
 one active investigation, runtime/model/provider ceilings, same-origin APIs,

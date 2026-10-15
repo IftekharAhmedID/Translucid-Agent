@@ -24,7 +24,7 @@ export async function buildSubmission(input: SubmissionInput): Promise<Record<st
     if (words > 1500) throw new Error("Maximum 1,500 words allowed.");
     payload.text = text.trim();
   } else {
-    if (!input.pdf || !input.pdf.name.toLowerCase().endsWith(".pdf") || input.pdf.size > 5 * 1024 * 1024) throw new Error("Choose a PDF under 5 MB.");
+    if (!input.pdf || !input.pdf.name.toLowerCase().endsWith(".pdf") || input.pdf.size > 2 * 1024 * 1024) throw new Error("Choose a PDF no larger than 2 MB.");
     const bytes = new Uint8Array(await input.pdf.arrayBuffer());
     if (new TextDecoder().decode(bytes.subarray(0, 5)) !== "%PDF-") throw new Error("Choose a valid PDF.");
     let binary = "";
