@@ -30,4 +30,3 @@ export function decodePdf(raw: unknown): Buffer {
   if (bytes.length > 2 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== "%PDF-") throw new SubmissionError("Upload a PDF no larger than 2 MB.");
   return bytes;
 }
-

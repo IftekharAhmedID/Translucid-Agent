@@ -25,18 +25,21 @@ Jobs interrupted by sandbox termination cannot resume in this storage-free path.
 
 ## Deployment
 
-Build the coordinator with Node 22:
+Build the coordinator with Node 22. If the runtime, Dockerfile, or package lock
+changes, rebuild the existing investigator template first so its pinned runtime
+manifest matches the coordinator:
 
 ```sh
+node --env-file=.env --env-file=.env.local --import tsx scripts/build-e2b-template.ts tracedog-investigator-email
 node --env-file=.env --env-file=.env.local --import tsx scripts/build-e2b-template.ts tracedog-coordinator Dockerfile.coordinator
 ```
 
 Set server-side secrets via `supabase secrets set --env-file ... --project-ref
 qlhstbyydtjlrdytapgm`: `E2B_API_KEY`, `E2B_TEMPLATE_ID`,
 `TRACEDOG_COORDINATOR_TEMPLATE_ID`, `OPENCODE_API_KEY`, `EXA_API_KEY`,
-optional `GITHUB_TOKEN`, `RESEND_API_KEY`, `RESEND_FROM`, `TRACEDOG_MODEL`,
-and enable with `TRACEDOG_ACCEPT_SUBMISSIONS=true`
-only when configuration and acceptance checks pass. Never put these keys in
+optional `GITHUB_TOKEN`, `RESEND_API_KEY`, `RESEND_FROM`, and `TRACEDOG_MODEL`.
+Enable with `TRACEDOG_ACCEPT_SUBMISSIONS=true` only when configuration and
+acceptance checks pass. Never put these keys in
 the frontend. `TRACEDOG_RETAIN_FOR_VERIFICATION=true` is only for controlled
 acceptance runs; those sandboxes must be killed after inspecting their proof.
 
@@ -65,6 +68,31 @@ disconnection, committed snapshot and report integrity, Resend delivery, and
 cleanup. Verify invalid emails, word/byte/page limits, capacity rejection,
 CORS, and generic infrastructure errors. No result/download/history API is
 provided. A browser error must never be presented as successful submission.
+
+## Live acceptance — October 14, 2026
+
+Render deployed commit `872ee4827956403d9d1e2560400e27bce0b9e679` and the
+Supabase health endpoint confirmed submissions enabled. Chrome submitted the
+text investigation through `tracedog.co`; the original resume PDF was submitted
+to the same public endpoint (197,489 bytes, accepted in 5.94 seconds). The
+Chrome extension's file-picker permission prevented automating that upload UI.
+Both jobs continued after their launch request ended, produced report emails,
+and Resend confirmed `delivered`:
+
+- Text job `1e39573f-b4d2-4111-8e5a-6f88bf88496a`, email
+  `01a13dc4-a6c5-7dac-999b-5c72c40d0dbc`, 11,239-byte report.
+- PDF job `318096a7-5e8f-41cc-b8e6-167649859545`, email
+  `01a13dc7-ec6f-7ab6-906d-cd349f69550b`.
+
+Both coordinators and investigators terminated automatically. An earlier
+controlled PDF run also passed explicit COMMITTED-state, snapshot and report
+hash verification before its delivery was confirmed. Live checks rejected
+personal emails, short/oversized text, invalid PDF input, wrong origins, and
+a third concurrent job. The page and www redirect returned HTTPS 200, CSP
+allowed the function, and the public bundle contained no provider credentials.
+All 216 backend tests, three frontend tests, type checking, and the frontend
+production build passed. Both dependency audits reported zero vulnerabilities.
+Private report and delivery evidence stays in the ignored `.debug` directory.
 
 Rollback: disable the Edge Function with `TRACEDOG_ACCEPT_SUBMISSIONS=false`
 and restore the previous Render deployment. Keep the local workflow available.

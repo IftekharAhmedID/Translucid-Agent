@@ -24,7 +24,7 @@ Supabase Edge Function, which starts an E2B job and returns immediately.
 PDFs are limited to 2 MB and two pages; text requires 15–1,500 words.
 See [the serverless deployment](tracedog-serverless.md) for the live setup.
 
-Validation: 209 backend tests, three frontend input tests, TypeScript checking,
+Validation: 216 backend tests, three frontend input tests, TypeScript checking,
 and a Node 22 production build pass. Chrome checks cover 320/768/1024/1440px,
 exact copy, rotating words, reduced motion, hidden email, input errors, and a
 clean console. Local API checks reject oversized and three-page PDFs before
