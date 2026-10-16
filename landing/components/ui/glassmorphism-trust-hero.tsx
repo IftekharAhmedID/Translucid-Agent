@@ -24,6 +24,7 @@ export default function HeroSection() {
           </section>
         </div>
       </main>
+      <footer className="mx-auto max-w-7xl px-6 pb-8 text-xs text-zinc-400 lg:px-8">Built by <a href="https://ahmedifty.com/" className="underline underline-offset-4 hover:text-white">Iftekhar “Ifty” Ahmed</a></footer>
     </div>
   );
 }
