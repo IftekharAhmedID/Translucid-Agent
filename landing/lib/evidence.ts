@@ -1,5 +1,4 @@
 export type Relation = "supports" | "contradicts" | "unresolved";
-export type EvidenceFilter = Relation | "all";
 export type EvidenceSource = {
   id: string;
   title: string;
@@ -39,10 +38,6 @@ export const investigationCases: InvestigationCase[] = [
     { id: "ownership", title: "Original ownership", type: "Missing record", relation: "unresolved", date: "2019", strength: "Not established", quote: "The original ownership split is not public.", detail: "Founding year evidence does not establish founder equity or beneficial ownership." },
   ] },
 ];
-
-export function visibleEvidence(investigation: InvestigationCase, filter: EvidenceFilter): EvidenceSource[] {
-  return investigation.evidence.filter(source => filter === "all" || source.relation === filter);
-}
 
 // Aggregates from the committed, delivered resume report of 14 October 2026.
 // Source: .debug/tracedog-serverless/canary-proof/result.json, run f6d68f56-9ae6-49fe-9838-deee2697d28e.

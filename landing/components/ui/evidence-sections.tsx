@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowRight, ArrowUpRight, Check, ChevronDown, Dog } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Check, ChevronDown, Dog } from "lucide-react";
 import { sampleReport } from "@/lib/evidence";
 import EvidenceMap from "./evidence-map";
 
@@ -22,11 +22,11 @@ export default function EvidenceSections() {
           {steps.map((step, index) => <div className="process-step" key={step.title}><span className="section-kicker">0{index + 1} / {index === 0 ? "Extract" : index === 1 ? "Investigate" : "Resolve"}</span><h2>{step.title}</h2><p>{step.description}</p></div>)}
         </section>
         <section id="evidence" className="story-section graph-section" aria-labelledby="evidence-heading">
-          <div className="section-heading"><div><p className="section-kicker">The evidence map</p><h2 id="evidence-heading">Nothing in isolation.<br /><span>Every connection counts.</span></h2></div><p className="section-intro">A claim. Its sources. The gaps between them.<br />Explore how an investigation takes shape.</p></div>
+          <div className="section-heading"><div><p className="section-kicker">The evidence map</p><h2 id="evidence-heading">Nothing in isolation.<br /><span>Every connection counts.</span></h2></div></div>
           <EvidenceMap />
         </section>
         <section id="results" className="story-section results-section" aria-labelledby="results-heading">
-          <div className="section-heading"><div><p className="section-kicker">Inside a completed investigation</p><h2 id="results-heading">Evidence you can count.</h2></div><a className="quiet-link" href="#sample-method">About this sample<ArrowDown size={14} aria-hidden="true" /></a></div>
+          <div className="section-heading"><div><p className="section-kicker">Inside a completed investigation</p><h2 id="results-heading">Evidence you can count.</h2></div></div>
           <div className="sample-metrics">
             <div><span className="metric-number">{sampleReport.claims}</span><h3>Claims assessed</h3><p>Each with its own finding.</p></div>
             <div><span className="metric-number">{sampleReport.sources}</span><h3>Distinct sources cited</h3><p>A trail beyond the first result.</p></div>
@@ -36,7 +36,6 @@ export default function EvidenceSections() {
             <div className="sample-context"><p className="section-kicker">The full picture</p><h3>A finding for every claim.<br /><span>Including the uncertain ones.</span></h3><p>One completed résumé investigation.<br />Five outcomes. No forced yes or no.</p><span className="sample-seal"><Check size={13} aria-hidden="true" />Report committed & delivered</span></div>
             <div className="outcome-table" role="table" aria-label="Sample investigation outcomes"><div className="outcome-table-head" role="row"><span role="columnheader">Finding</span><span role="columnheader">Claims / 24</span></div>{sampleReport.outcomes.map(outcome => <div className={`outcome-row outcome-${outcome.tone}`} role="row" key={outcome.label}><span role="cell">{outcome.label}</span><span className="outcome-bar-cell" role="cell"><span className="outcome-track" aria-hidden="true"><span style={{ width: `${outcome.count / sampleReport.claims * 100}%` }} /></span><span>{outcome.count.toString().padStart(2, "0")}</span></span></div>)}</div>
           </div>
-          <p className="sample-note" id="sample-method">Published sample · 14 Oct 2026 · One résumé, 24 findings, 22 unique cited URLs. These are report counts, not an accuracy benchmark.</p>
         </section>
         <section id="method" className="story-section method-section" aria-labelledby="method-heading">
           <div className="method-introduction"><p className="section-kicker">The method</p><h2 id="method-heading">The answer matters.<br /><span>So does the trail.</span></h2><p>Source by source. Claim by claim.<br />With the uncertainty left in.</p></div>

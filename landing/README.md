@@ -2,9 +2,8 @@ TraceDog's landing page uses React, TypeScript, Tailwind CSS and Lucide icons.
 The hero is followed by a three-step process, an interactive SVG evidence map,
 sample report counts, and expandable methodology notes. The map's employment,
 education, and company cases are explicitly fictional; they are a landing-page
-demonstration, not a live investigation or a new report feature. Relationship
-filters, source selection, keyboard controls, and zoom/reset work locally with
-no graph dependency or API calls.
+demonstration, not a live investigation or a new report feature. Source selection and keyboard
+controls work locally with no graph dependency or API calls.
 
 The results section uses aggregates from published run
 `f6d68f56-9ae6-49fe-9838-deee2697d28e` (14 October 2026): 24 findings,
@@ -15,7 +14,7 @@ data in `lib/evidence.ts` includes no personal report content.
 
 Start the local UI with `npm run dev -- --port 5173` from `landing`.
 The submission form still uses its existing backend; previewing or interacting
-with the graph does not launch investigations. `npm test` checks graph filtering,
+with the graph does not launch investigations. `npm test` checks example data,
 sample totals, and the existing intake contract; `npm run build` checks types
 and produces the static bundle. Responsive browser checks cover 320, 768,
 1024, and 1440 pixels.

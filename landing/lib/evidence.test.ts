@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { investigationCases, visibleEvidence, sampleReport } from "./evidence.ts";
+import { investigationCases, sampleReport } from "./evidence.ts";
 
-test("each example keeps supporting, opposing and missing evidence separately selectable", () => {
+test("example sources have unique identifiers and sample totals remain consistent", () => {
   for (const investigation of investigationCases) {
-    const all = visibleEvidence(investigation, "all");
+    const all = investigation.evidence;
     assert.equal(new Set(all.map(source => source.id)).size, all.length);
     for (const relation of ["supports", "contradicts", "unresolved"] as const) {
-      const sources = visibleEvidence(investigation, relation);
+      const sources = all.filter(source => source.relation === relation);
       assert.ok(sources.length > 0);
       assert.ok(sources.every(source => source.relation === relation));
       assert.ok(sources.every(source => source.quote && source.detail && source.date));
