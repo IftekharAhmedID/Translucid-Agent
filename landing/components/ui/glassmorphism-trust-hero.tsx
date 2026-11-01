@@ -1,14 +1,15 @@
-import { ArrowRight, Dog, Target } from "lucide-react";
+import { ArrowDown, ArrowRight, Dog, Target } from "lucide-react";
 import InvestigationForm from "./investigation-form";
 
 export default function HeroSection() {
   return (
-    <div className="relative isolate min-h-dvh overflow-hidden bg-zinc-950 font-sans text-white">
+    <section id="top" aria-label="TraceDog" className="tracedog-hero relative isolate min-h-dvh overflow-hidden bg-zinc-950 font-sans text-white">
       <div className="hero-background pointer-events-none absolute inset-0 -z-10" />
-      <header className="mx-auto flex max-w-7xl items-center justify-between px-6 py-8 lg:px-8">
+      <header className="mx-auto flex w-full max-w-7xl items-center justify-between px-6 py-8 lg:px-8">
         <a href="/" className="inline-flex items-center gap-2.5 text-xl font-semibold tracking-tight"><Dog className="size-6 text-[#ffcd75]" aria-hidden="true" />TraceDog</a>
+        <nav aria-label="Main navigation" className="hero-nav"><a href="#evidence">The evidence</a><a href="#results">Results</a><a href="#method">Method</a></nav>
       </header>
-      <main className="mx-auto max-w-7xl px-6 pb-12 pt-12 sm:pt-20 lg:px-8 lg:pb-24 lg:pt-28">
+      <div className="mx-auto w-full max-w-7xl px-6 pb-12 pt-12 sm:pt-20 lg:px-8 lg:pb-24 lg:pt-28">
         <div className="grid grid-cols-1 items-start gap-12 lg:grid-cols-12 lg:gap-12">
           <div className="space-y-8 pt-4 lg:col-span-7">
             <h1 className="heading-mask animate-fade-in delay-200 text-5xl font-medium leading-[.95] tracking-tighter sm:text-6xl lg:text-7xl xl:text-8xl">Every claim<br /><span className="bg-gradient-to-br from-white via-white to-[#ffcd75] bg-clip-text text-transparent">leaves a trail.</span></h1>
@@ -23,8 +24,8 @@ export default function HeroSection() {
             </div>
           </section>
         </div>
-      </main>
-      <footer className="mx-auto max-w-7xl px-6 pb-8 text-xs text-zinc-400 lg:px-8">Built by <a href="https://ahmedifty.com/" className="underline underline-offset-4 hover:text-white">Iftekhar “Ifty” Ahmed</a></footer>
-    </div>
+      </div>
+      <div className="hero-scroll mx-auto max-w-7xl px-6 pb-8 lg:px-8"><a href="#evidence">Follow the evidence<ArrowDown size={13} aria-hidden="true" /></a><span>Claims. Sources. Connections.</span></div>
+    </section>
   );
 }
