@@ -38,17 +38,3 @@ export const investigationCases: InvestigationCase[] = [
     { id: "ownership", title: "Original ownership", type: "Missing record", relation: "unresolved", date: "2019", strength: "Not established", quote: "The original ownership split is not public.", detail: "Founding year evidence does not establish founder equity or beneficial ownership." },
   ] },
 ];
-
-// Aggregates from the committed, delivered resume report of 14 October 2026.
-// Source: .debug/tracedog-serverless/canary-proof/result.json, run f6d68f56-9ae6-49fe-9838-deee2697d28e.
-// Only counts are public; no personal content from the report is included.
-export const sampleReport = {
-  claims: 24, sources: 22, linkedFindings: 21,
-  outcomes: [
-    { label: "Established", count: 8, tone: "supports" },
-    { label: "Partially established", count: 7, tone: "partial" },
-    { label: "Unresolved", count: 6, tone: "unresolved" },
-    { label: "Conflicting", count: 1, tone: "conflicting" },
-    { label: "Contradicted", count: 2, tone: "contradicts" },
-  ],
-} as const;

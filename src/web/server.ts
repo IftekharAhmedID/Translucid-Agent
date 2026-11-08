@@ -105,7 +105,7 @@ async function pump() {
 
 const files: Record<string, [string, string]> = {
   "/": ["index.html", "text/html; charset=utf-8"], "/style.css": ["style.css", "text/css"],
-  "/app.js": ["app.js", "text/javascript"], "/email-domains.json": ["email-domains.json", "application/json"], "/favicon.svg": ["favicon.svg", "image/svg+xml"], "/background.png": ["background.png", "image/png"],
+  "/app.js": ["app.js", "text/javascript"], "/email-domains.json": ["email-domains.json", "application/json"], "/favicon.svg": ["favicon.svg", "image/svg+xml"], "/background.png": ["background.png", "image/png"], "/tracedog-logo.png": ["tracedog-logo.png", "image/png"],
   "/robots.txt": ["robots.txt", "text/plain"], "/sitemap.xml": ["sitemap.xml", "application/xml"],
 };
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildSubmission } from "./submission.ts";
+import { buildSubmission, countWords } from "./submission.ts";
 
 const text = Array.from({ length: 15 }, (_, index) => `word${index}`).join(" ");
 
@@ -38,4 +38,43 @@ test("text accepts exactly 15 through 1,500 words including varied whitespace", 
     assert.equal((await buildSubmission({ ...input, text })).text, text);
   }
   await assert.rejects(() => buildSubmission({ ...input, text: "", textFile: new File(["word ".repeat(14)], "short.txt") }), /15 words/);
+});
+
+test("LinkedIn profiles and social IDs use the existing text submission contract", async () => {
+  const input = { pdf: null, text: "stale text", email: "person@company.org", website: "" };
+  const linkedin = await buildSubmission({ ...input, kind: "linkedin", profile: "linkedin.com/in/nora-chen/?trk=test" });
+  assert.equal(linkedin.kind, "text");
+  assert.match(linkedin.text, /LinkedIn profile: https:\/\/linkedin.com\/in\/nora-chen\//);
+  assert.ok(!linkedin.text.includes("trk=test") && !linkedin.text.includes("stale text"));
+  for (const socialId of ["Instagram @nora.chen", "https://x.com/nora_chen"]) {
+    const result = await buildSubmission({ ...input, kind: "social", socialId });
+    assert.equal(result.kind, "text");
+    assert.ok(result.text.includes(socialId));
+    assert.ok(countWords(result.text) >= 15 && countWords(result.text) <= 1500);
+  }
+  for (const profile of ["", "https://linkedin.com.evil.test/in/nora", "https://linkedin.com/company/aster", "javascript:alert(1)"]) {
+    await assert.rejects(() => buildSubmission({ ...input, kind: "linkedin", profile }), /LinkedIn profile/);
+  }
+  await assert.rejects(() => buildSubmission({ ...input, kind: "social", socialId: "@nora" }), /platform/);
+  await assert.rejects(() => buildSubmission({ ...input, kind: "social", socialId: "http://localhost/profile" }), /profile URL/);
+  await assert.rejects(() => buildSubmission({ ...input, kind: "linkedin", profile: "https://linkedin.com/in/nora", email: "nora@gmail.com" }), /work email/i);
+});
+
+test("Person requires name and context, accepts an optional claim, and preserves supplied details", async () => {
+  const person = { name: "Nora Chen", context: "Aster Labs", claim: "Led the engineering team." };
+  const input = { kind: "person" as const, person, pdf: null, text: "stale text", email: "person@company.org", website: "" };
+  const result = await buildSubmission(input);
+  assert.equal(result.kind, "text");
+  assert.match(result.text, /Name: Nora Chen\nWorkplace or school: Aster Labs\nClaim: Led the engineering team\./);
+  assert.ok(countWords(result.text) >= 15 && !result.text.includes("stale text"));
+  for (const [field, message] of [["name", /name/i], ["context", /workplace or school/i]] as const) {
+    await assert.rejects(() => buildSubmission({ ...input, person: { ...person, [field]: "  " } }), message);
+  }
+  for (const claim of [undefined, "", "  "]) {
+    const withoutClaim = await buildSubmission({ ...input, person: { ...person, claim } });
+    assert.match(withoutClaim.text, /Name: Nora Chen\nWorkplace or school: Aster Labs$/);
+    assert.ok(!withoutClaim.text.includes("Claim:") && countWords(withoutClaim.text) >= 15);
+  }
+  await assert.rejects(() => buildSubmission({ ...input, person: { ...person, claim: "word ".repeat(1501) } }), /1,500 words/);
+  await assert.rejects(() => buildSubmission({ ...input, email: "nora@yahoo.com" }), /work email/i);
 });

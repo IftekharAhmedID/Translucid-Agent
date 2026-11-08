@@ -75,7 +75,7 @@ export default function EvidenceMap() {
             <blockquote>{selected.quote}</blockquote>
             <p className="source-explanation">{selected.detail}</p>
           </div>
-          <a className="quiet-link inspector-link" href="#method">How evidence is weighed<ArrowUpRight size={14} aria-hidden="true" /></a>
+          <a className="quiet-link inspector-link" href="#process">How findings are formed<ArrowUpRight size={14} aria-hidden="true" /></a>
         </aside>
       </div>
     </div>
